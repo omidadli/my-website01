@@ -7,6 +7,8 @@ import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { RichText } from '../components/RichText';
+import { mdToPlainText } from '../utils/plainText';
 
 interface BlogPostDetailPageProps {
   theme: Theme;
@@ -30,6 +32,9 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
         content: typeof section.content === 'string' ? section.content : '',
         keyPoints: Array.isArray(section.keyPoints) ? section.keyPoints.filter((point): point is string => typeof point === 'string') : [],
       }))
+    : [];
+  const postFaq = Array.isArray(post?.faq)
+    ? post.faq.filter((item) => item && typeof item.question === 'string' && typeof item.answer === 'string')
     : [];
 
   const [commentName, setCommentName] = useState('');
@@ -162,7 +167,11 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
 
         {/* Article body */}
         <article className={`${postToc.length ? 'lg:col-span-8 xl:col-span-9' : 'lg:col-span-12'} space-y-10`}>
-          <p className={`${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'} text-sm sm:text-base leading-loose`}>{post.excerpt}</p>
+          <RichText
+            text={post.excerpt}
+            isDark={isDark}
+            paragraphClass={`text-sm sm:text-base leading-loose ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}
+          />
           {postSections.length > 0 && (
             <div className="space-y-10">
               {postSections.map((sec, sIdx) => (
@@ -173,9 +182,7 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                       {sec.heading}
                     </h2>
                   )}
-                  {sec.content.split('\n\n').map((para, pi) => (
-                    <p key={pi} className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-sm leading-loose`}>{para}</p>
-                  ))}
+                  {sec.content && <RichText text={sec.content} isDark={isDark} />}
                   {sec.callout && (
                     <div className={`${isDark ? 'nd-glass-dark' : ''} rounded-2xl p-5 text-xs sm:text-sm font-bold leading-relaxed`} style={isDark ? undefined : { background: 'var(--nd-accent-soft)', color: 'var(--nd-accent-strong)' }}>
                       {sec.callout}
@@ -194,6 +201,32 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                 </section>
               ))}
             </div>
+          )}
+
+          {/* FAQ */}
+          {postFaq.length > 0 && (
+            <section id="faq" className="space-y-4 scroll-mt-28">
+              <h2 className={`nd-h2 text-lg sm:text-2xl leading-snug flex items-center gap-3 ${isDark ? 'text-white' : ''}`}>
+                <span className="w-1.5 h-7 rounded-full shrink-0" style={{ background: 'var(--nd-accent)' }} aria-hidden />
+                <span>پرسش‌های پرتکرار</span>
+              </h2>
+              <div className="space-y-3">
+                {postFaq.map((item, fi) => (
+                  <details
+                    key={fi}
+                    className={`nd-card px-5 py-4 group ${isDark ? '' : ''}`}
+                  >
+                    <summary className={`flex items-start justify-between gap-3 cursor-pointer list-none text-xs sm:text-sm font-extrabold leading-relaxed ${isDark ? 'text-slate-100' : 'text-[color:var(--nd-ink)]'}`}>
+                      <span>{item.question}</span>
+                      <ChevronLeft className={`w-4 h-4 mt-0.5 shrink-0 opacity-60 transition-transform group-open:-rotate-90`} />
+                    </summary>
+                    <div className={`pt-3 text-xs sm:text-sm leading-loose ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
+                      <RichText text={item.answer} isDark={isDark} />
+                    </div>
+                  </details>
+                ))}
+              </div>
+            </section>
           )}
 
           {/* Author */}
@@ -321,7 +354,7 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                 <div className="p-5 space-y-2.5 grow flex flex-col">
                   <span className="nd-chip w-fit">{rel.categoryFa}</span>
                   <h4 className={`nd-h2 text-sm leading-snug line-clamp-2 group-hover:text-[color:var(--nd-accent)] transition-colors ${isDark ? 'text-white' : ''}`}>{rel.title}</h4>
-                  <p className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-xs line-clamp-2 leading-relaxed`}>{rel.excerpt}</p>
+                  <p className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-xs line-clamp-2 leading-relaxed`}>{mdToPlainText(rel.excerpt)}</p>
                   <span className={`mt-auto pt-3 border-t flex items-center justify-between text-[11px] ${isDark ? 'border-white/10 text-slate-500' : 'border-[color:var(--nd-line)] text-[color:var(--nd-faint)]'}`}>
                     <span>{rel.author || 'امید عدلی'}</span>
                     <span>{rel.readTime}</span>

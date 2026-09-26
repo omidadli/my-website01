@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { useContent } from '../context/ContentContext';
 import { Page } from '../types';
 import { pathForPage, postPath } from '../utils/router';
-import { resolveSeo, buildDocumentTitle, NOT_FOUND_TITLE } from '../../lib/seoDefaults';
+import { resolveSeo, buildDocumentTitle, buildPostJsonLd, NOT_FOUND_TITLE } from '../../lib/seoDefaults';
 
 interface SEOHeadProps {
   currentPage: Page;
@@ -61,6 +61,18 @@ export const SEOHead: React.FC<SEOHeadProps> = ({ currentPage, blogPostId, notFo
     if (globalSeo.faviconUrl) {
       setLinkRel('icon', globalSeo.faviconUrl);
     }
+
+    // JSON-LD — BlogPosting + BreadcrumbList (+ FAQPage) for open posts only.
+    if (post && !seo.noIndex && !missingPost) {
+      setJsonLd(
+        buildPostJsonLd(post, base || '', {
+          categoryName: typeof (post as any).categoryFa === 'string' && (post as any).categoryFa ? (post as any).categoryFa : undefined,
+          authorRole: typeof (post as any).authorRole === 'string' ? (post as any).authorRole : undefined,
+        }),
+      );
+    } else {
+      setJsonLd(null);
+    }
   }, [currentPage, blogPostId, post, pageSeo, globalSeo, isAdmin, notFound]);
 
   return null;
@@ -101,4 +113,19 @@ function setLinkRel(rel: string, href: string) {
     if (type) element.setAttribute('type', type);
     else element.removeAttribute('type');
   }
+}
+
+function setJsonLd(json: string | null) {
+  let element = document.getElementById('nd-post-jsonld') as HTMLScriptElement | null;
+  if (!json) {
+    element?.remove();
+    return;
+  }
+  if (!element) {
+    element = document.createElement('script');
+    element.type = 'application/ld+json';
+    element.id = 'nd-post-jsonld';
+    document.head.appendChild(element);
+  }
+  element.textContent = json;
 }

@@ -27,6 +27,11 @@ export interface SeoPageLike {
   noIndex?: boolean;
 }
 
+export interface SeoPostFaqLike {
+  question?: string;
+  answer?: string;
+}
+
 export interface SeoPostLike {
   id: string;
   title: string;
@@ -35,6 +40,13 @@ export interface SeoPostLike {
   status?: string;
   coverImage?: string;
   tags?: string[];
+  date?: string;
+  updatedAt?: string;
+  /** ISO publish/modify dates for machine-readable schema (the display `date` is localized). */
+  dateIso?: string;
+  updatedIso?: string;
+  author?: string;
+  faq?: SeoPostFaqLike[] | null;
   seo?: SeoPageLike;
 }
 
@@ -147,4 +159,75 @@ export const resolveSeo = (args: {
     ogType: 'website',
     noIndex: pageSeo.noIndex === true || args.page === 'admin',
   };
+};
+
+/**
+ * JSON-LD for a blog post — `BlogPosting` + `BreadcrumbList`, plus `FAQPage`
+ * when the post carries real Q&A pairs (the master prompt's schema rule:
+ * propose structured data only when it matches the visible content).
+ *
+ * Shared by the SPA head (SEOHead) and the edge middleware so the schema a
+ * crawler reads without JavaScript matches what the hydrated page shows.
+ */
+export const buildPostJsonLd = (
+  post: SeoPostLike,
+  baseUrl: string,
+  opts: { categoryName?: string; authorRole?: string } = {},
+): string => {
+  const base = String(baseUrl || '').replace(/\/$/, '');
+  const postUrl = `${base}${post.slug || post.id ? `/blog/${post.slug || post.id}` : '/blog'}`;
+  const abs = (u?: string) => (!u ? undefined : /^https?:\/\//i.test(u) ? u : `${base}${u.startsWith('/') ? '' : '/'}${u}`);
+
+  const faqItems = Array.isArray(post.faq)
+    ? post.faq.filter((q): q is Required<SeoPostFaqLike> => !!q && typeof q.question === 'string' && typeof q.answer === 'string' && !!q.question.trim() && !!q.answer.trim())
+    : [];
+
+  const graph: Record<string, unknown>[] = [
+    {
+      '@type': 'BlogPosting',
+      '@id': `${postUrl}#article`,
+      mainEntityOfPage: { '@type': 'WebPage', '@id': postUrl },
+      headline: post.seo?.title || post.title,
+      description: post.seo?.metaDescription || post.excerpt || undefined,
+      image: abs(post.seo?.ogImage || post.coverImage) || undefined,
+      inLanguage: 'fa-IR',
+      keywords: post.seo?.keywords || (post.tags || []).join(', ') || undefined,
+      author: {
+        '@type': 'Person',
+        name: post.author || 'امید عدلی',
+        jobTitle: opts.authorRole || 'متخصص پرفورمنس مارکتینگ، ترکینگ و CRO',
+        url: `${base}/about`,
+      },
+      datePublished: post.dateIso || undefined,
+      dateModified: post.updatedIso || post.dateIso || undefined,
+      publisher: {
+        '@type': 'Person',
+        name: post.author || 'امید عدلی',
+        url: base || undefined,
+      },
+    },
+    {
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'خانه', item: `${base}/` },
+        { '@type': 'ListItem', position: 2, name: 'مقالات', item: `${base}/blog` },
+        ...(opts.categoryName ? [{ '@type': 'ListItem', position: 3, name: opts.categoryName, item: undefined }] : []),
+        { '@type': 'ListItem', position: opts.categoryName ? 4 : 3, name: post.title, item: postUrl },
+      ],
+    },
+  ];
+
+  if (faqItems.length > 0) {
+    graph.push({
+      '@type': 'FAQPage',
+      '@id': `${postUrl}#faq`,
+      mainEntity: faqItems.map((q) => ({
+        '@type': 'Question',
+        name: q.question.trim(),
+        acceptedAnswer: { '@type': 'Answer', text: q.answer.trim() },
+      })),
+    });
+  }
+
+  return JSON.stringify({ '@context': 'https://schema.org', '@graph': graph });
 };
