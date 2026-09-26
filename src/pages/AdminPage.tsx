@@ -53,6 +53,10 @@ const POST_FIELDS: FieldDef[] = [
     { key: 'id', label: 'شناسه بخش', dir: 'ltr' },
     { key: 'title', label: 'عنوان در فهرست' },
   ] },
+  { key: 'faq', label: 'پرسش‌های پرتکرار (FAQ)', type: 'items', singular: 'پرسش', defaults: { question: '', answer: '' }, fields: [
+    { key: 'question', label: 'پرسش' },
+    { key: 'answer', label: 'پاسخ', type: 'textarea', rows: 3 },
+  ] },
   { key: 'coverImage', label: 'تصویر شاخص', type: 'image' },
   { key: 'category', label: 'دسته‌بندی مقاله', type: 'category' },
   { key: 'pathCategory', label: 'مسیر مخاطب', type: 'select', options: [

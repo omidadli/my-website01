@@ -138,6 +138,11 @@ export interface BlogPostSection {
   image?: string;
 }
 
+export interface BlogFaqItem {
+  question: string;
+  answer: string;
+}
+
 export interface BlogComment {
   id: string;
   postId: string;
@@ -171,12 +176,16 @@ export interface BlogPost {
   isPopular?: boolean;
   tableOfContents?: TableOfContentItem[];
   sections?: BlogPostSection[];
+  faq?: BlogFaqItem[];
   tags?: string[];
   slug?: string;
   status?: 'published' | 'draft';
   seo?: PageSeoConfig;
   viewsCount?: number;
   commentsCount?: number;
+  /** ISO dates for schema/sitemap; the display `date` is a localized string. */
+  dateIso?: string;
+  updatedIso?: string;
 }
 
 export interface SkillTool {

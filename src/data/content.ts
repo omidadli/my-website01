@@ -1,4 +1,6 @@
 import { ServiceItem, CaseStudy, Testimonial, BlogPost, SkillTool, TimelineMilestone, ProductItem, OngoingProjectItem, BlogComment } from '../types';
+import { BATCH01_POSTS } from './batch01Posts';
+import { BATCH02_POSTS } from './batch02Posts';
 
 export const PERSONAL_INFO = {
   name: 'امید عدلی',
@@ -734,6 +736,10 @@ export const INITIAL_BLOG_COMMENTS: BlogComment[] = [
 ];
 
 export const BLOG_POSTS: BlogPost[] = [
+  // Batch 1 of the 12-week content plan (articles 1–15) — generated, see scripts/batch-to-posts.mjs
+  ...BATCH01_POSTS,
+  // Batch 2 of the 12-week content plan (articles 16–30) — generated, see scripts/batch-to-posts.mjs
+  ...BATCH02_POSTS,
   {
     id: 'ecommerce-beginner-mistakes',
     title: '۵ اشتباه رایج فروشگاه‌های تازه‌کار موقع طراحی اولین سایتشون',

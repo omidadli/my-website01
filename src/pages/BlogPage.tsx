@@ -10,6 +10,7 @@ import { linkProps, postPath } from '../utils/router';
 import { categoryOrder, normalizeCategory } from '../data/blogTaxonomy';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { mdToPlainText } from '../utils/plainText';
 
 interface BlogPageProps {
   theme: Theme;
@@ -26,7 +27,7 @@ export const BlogPage: React.FC<BlogPageProps> = ({ theme, onNavigate, onSelectP
     .map((post) => ({
       ...post,
       title: typeof post.title === 'string' ? post.title : 'بدون عنوان',
-      excerpt: typeof post.excerpt === 'string' ? post.excerpt : '',
+      excerpt: typeof post.excerpt === 'string' ? mdToPlainText(post.excerpt) : '',
       categoryFa: typeof post.categoryFa === 'string' ? post.categoryFa : 'عمومی',
     }));
   const [query, setQuery] = usePreservedState<string>('blog_search_query', '');

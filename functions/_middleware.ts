@@ -1,7 +1,7 @@
 import type { Env } from './api/_shared';
 import { loadPublicContent, resolveBaseUrl, type PublicSiteContent } from './_seo';
 import { parsePath, pathForPage, postPath } from '../lib/routes';
-import { resolveSeo, buildDocumentTitle, findPublishedPost, NOT_FOUND_TITLE, type SeoPostLike } from '../lib/seoDefaults';
+import { resolveSeo, buildDocumentTitle, buildPostJsonLd, findPublishedPost, NOT_FOUND_TITLE, type SeoPostLike } from '../lib/seoDefaults';
 import { BLOG_POSTS as DEFAULT_BLOG_POSTS } from '../src/data/content';
 
 /**
@@ -41,6 +41,8 @@ interface HeadValues {
   canonical: string;
   robots: string;
   status: number;
+  /** JSON-LD for open blog posts (BlogPosting + BreadcrumbList [+ FAQPage]); '' otherwise. */
+  jsonLd: string;
 }
 
 const headFor = (pathname: string, content: PublicSiteContent | null, baseUrl: string): HeadValues | null => {
@@ -55,7 +57,7 @@ const headFor = (pathname: string, content: PublicSiteContent | null, baseUrl: s
   if (!route) {
     const seo = resolveSeo({ page: 'home', globalSeo });
     const title = buildDocumentTitle(NOT_FOUND_TITLE, globalSeo || {});
-    return { ...seo, title, ogTitle: title, canonical: `${baseUrl}/`, robots: 'noindex, nofollow', status: 404 };
+    return { ...seo, title, ogTitle: title, canonical: `${baseUrl}/`, robots: 'noindex, nofollow', status: 404, jsonLd: '' };
   }
 
   if (route.page === 'blog' && route.postId) {
@@ -64,7 +66,7 @@ const headFor = (pathname: string, content: PublicSiteContent | null, baseUrl: s
     if (!post) {
       const seo = resolveSeo({ page: 'blog', globalSeo, pageSeo: pageSeo.blog });
       const title = buildDocumentTitle(NOT_FOUND_TITLE, globalSeo || {});
-      return { ...seo, title, ogTitle: title, canonical: `${baseUrl}/blog`, robots: 'noindex, nofollow', status: 404 };
+      return { ...seo, title, ogTitle: title, canonical: `${baseUrl}/blog`, robots: 'noindex, nofollow', status: 404, jsonLd: '' };
     }
     const seo = resolveSeo({ page: 'blog', post, globalSeo });
     return {
@@ -72,6 +74,12 @@ const headFor = (pathname: string, content: PublicSiteContent | null, baseUrl: s
       canonical: post.seo?.canonicalUrl || `${baseUrl}${postPath(post)}`,
       robots: seo.noIndex ? 'noindex, nofollow' : 'index, follow',
       status: 200,
+      jsonLd: seo.noIndex
+        ? ''
+        : buildPostJsonLd(post, baseUrl, {
+            categoryName: (post as { categoryFa?: string }).categoryFa || undefined,
+            authorRole: (post as { authorRole?: string }).authorRole || undefined,
+          }),
     };
   }
 
@@ -81,6 +89,7 @@ const headFor = (pathname: string, content: PublicSiteContent | null, baseUrl: s
     canonical: pageSeo[route.page]?.canonicalUrl || `${baseUrl}${pathForPage(route.page)}`,
     robots: seo.noIndex ? 'noindex, nofollow' : 'index, follow',
     status: 200,
+    jsonLd: '',
   };
 };
 
@@ -138,7 +147,10 @@ export const onRequest: PagesFunction<Env> = async ({ request, env, next }) => {
           el.append(
             `<meta name="twitter:title" content="${escapeAttr(head.ogTitle)}">` +
               `<meta name="twitter:description" content="${escapeAttr(head.ogDescription)}">` +
-              (ogImage ? `<meta name="twitter:image" content="${escapeAttr(ogImage)}">` : ''),
+              (ogImage ? `<meta name="twitter:image" content="${escapeAttr(ogImage)}">` : '') +
+            (head.jsonLd
+              ? `<script type="application/ld+json">${head.jsonLd.replace(/</g, '\u003c')}</script>`
+              : ''),
             { html: true },
           );
         },

@@ -40,11 +40,14 @@ assert.equal(
 assert.ok(locs(emptyArray).includes(`${base}/blog`), 'the blog index itself is still listed');
 
 // ---- real CMS content wins over the defaults ----
+// The fixture posts deliberately use ids/slugs that are NOT among the bundled
+// defaults, so "defaults are not mixed in" is actually observable (batch-01
+// shipped real posts like `ai-marketing` that would otherwise collide).
 const fromCms = buildSitemapXml(
   base,
   {
     BLOG_POSTS: [
-      { id: 'ai-marketing', title: 'AI Marketing', slug: 'ai-marketing' },
+      { id: 'cms-only-post', title: 'CMS post', slug: 'cms-only-post' },
       { id: 'draft-post', title: 'پیش‌نویس', slug: 'draft-post', status: 'draft' },
       { id: 'hidden-post', title: 'مخفی', slug: 'hidden-post', seo: { noIndex: true } },
     ] as any,
@@ -52,7 +55,7 @@ const fromCms = buildSitemapXml(
   null,
 );
 const cmsLocs = locs(fromCms);
-assert.ok(cmsLocs.includes(`${base}/blog/ai-marketing`), 'published CMS post is listed');
+assert.ok(cmsLocs.includes(`${base}/blog/cms-only-post`), 'published CMS post is listed');
 assert.ok(!cmsLocs.includes(`${base}/blog/draft-post`), 'draft is excluded');
 assert.ok(!cmsLocs.includes(`${base}/blog/hidden-post`), 'noIndex post is excluded');
 assert.ok(!cmsLocs.includes(`${base}/blog/${bundledIds[0]}`), 'defaults are not mixed in when CMS has posts');
