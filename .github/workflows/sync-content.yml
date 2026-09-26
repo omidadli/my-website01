@@ -25,6 +25,10 @@ on:
         description: 'Only report what would change'
         type: boolean
         default: false
+      base_ref:
+        description: 'Git ref/commit whose content/site-content.json is the merge base (3-way merge keeps live edits). Empty = Git wins for every changed section.'
+        type: string
+        default: ''
 
 concurrency:
   group: sync-content
@@ -53,12 +57,18 @@ jobs:
 
       # The version of the content file BEFORE this push = 3-way merge base.
       - name: Extract merge base
-        if: ${{ env.HAS_SITE_URL == 'true' && github.event_name == 'push' }}
+        if: ${{ env.HAS_SITE_URL == 'true' && (github.event_name == 'push' || inputs.base_ref != '') }}
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
         run: |
           before="${{ github.event.before }}"
+          [ -n "$BASE_REF" ] && before="$BASE_REF"
           if [ -n "$before" ] && ! echo "$before" | grep -Eq '^0+$' && git cat-file -e "$before:content/site-content.json" 2>/dev/null; then
             git show "$before:content/site-content.json" > /tmp/base.json
             echo "merge base: $before"
+          elif [ -n "$BASE_REF" ]; then
+            echo "::error title=Bad base_ref::'$BASE_REF' has no content/site-content.json"
+            exit 1
           else
             echo '{}' > /tmp/base.json
             echo "no usable merge base (first push / force-push) — Git wins for changed sections"
@@ -72,7 +82,7 @@ jobs:
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |
           args=""
-          [ "${{ github.event_name }}" = "push" ] && args="$args --base /tmp/base.json"
+          [ -f /tmp/base.json ] && args="$args --base /tmp/base.json"
           [ "${{ inputs.force }}" = "true" ] && args="$args --force"
           [ "${{ inputs.dry_run }}" = "true" ] && args="$args --dry-run"
           node scripts/sync-content.mjs import $args
