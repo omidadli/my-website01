@@ -74,7 +74,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[12000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 text-right dir-rtl font-sans">
-      <div className="bg-[color:var(--nd-surface)] border-2 border-[color:var(--nd-accent)] rounded-3xl p-6 max-w-2xl w-full shadow-xl text-[color:var(--nd-ink)] space-y-5 max-h-[90dvh] flex flex-col">
+      <div className="bg-[color:var(--nd-surface)] border-2 border-[color:var(--nd-accent)] rounded-3xl p-6 max-w-2xl w-full shadow-xl text-[color:var(--nd-ink)] space-y-5 max-h-[90vh] supports-[max-height:90dvh]:max-h-[90dvh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center gap-3">

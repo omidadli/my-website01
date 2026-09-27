@@ -1071,11 +1071,19 @@ body.chat-open .mascot-root {
    ========================================================================== */
 
 .mascot-chat {
-  /* % of the initial containing block = scrollbar-safe viewport width;
-     dvh tracks the visible viewport on mobile (URL bar / keyboard). */
   width: min(94%, 390px);
-  height: min(72dvh, 600px);
+  /* vh as the universal baseline; the @supports block below upgrades to dvh
+     (URL-bar / keyboard aware) only where the engine knows it — iOS 15.4+ /
+     Chrome 108+. Kept as @supports so the fallback survives minification. */
+  height: min(72vh, 600px);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
+}
+
+@supports (height: 1dvh) {
+  .mascot-chat {
+    height: min(72dvh, 600px);
+  }
 }
 
 .mascot-chat-stage {

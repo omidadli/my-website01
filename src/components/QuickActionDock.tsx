@@ -228,7 +228,7 @@ export const QuickActionDock: React.FC<QuickActionDockProps> = ({
   return (
     <nav
       aria-label="منوی ناوبری شناور"
-      className="fixed bottom-3 sm:bottom-6 inset-x-0 z-40 flex justify-center px-3 pointer-events-none select-none"
+      className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] sm:bottom-[max(1.5rem,env(safe-area-inset-bottom))] inset-x-0 z-40 flex justify-center px-3 pointer-events-none select-none"
     >
       <div
         ref={containerRef}

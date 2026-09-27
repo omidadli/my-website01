@@ -548,7 +548,7 @@ export function MascotAvatar() {
   const askVisible = !!bubble?.askName;
 
   return (
-    <div ref={rootRef} className="mascot-root fixed bottom-2 start-2 z-[50] sm:bottom-4 sm:start-5">
+    <div ref={rootRef} className="mascot-root fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] start-2 z-[50] sm:bottom-[max(1rem,env(safe-area-inset-bottom))] sm:start-5">
       <div
         className="mascot-card"
         onClick={() => window.dispatchEvent(new CustomEvent('nd:open-chat'))}
