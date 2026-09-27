@@ -18,7 +18,9 @@
  *      live CMS content),
  *   6. prints a QA report (master-prompt compliance checks).
  *
- * The generated TS module is imported by src/data/content.ts. Regenerating is
+ * The generated TS module is imported by src/data/blogPosts.ts (which the web
+ * app loads via a background dynamic import) and re-exported through
+ * src/data/content.ts for Node scripts/tests. Regenerating is
  * idempotent: edit the markdown sources and run again.
  */
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';

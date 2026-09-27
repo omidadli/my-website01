@@ -9,6 +9,7 @@ import { GraduationCap, Award, Sparkles, Target, Rocket } from 'lucide-react';
 import { motion } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { responsiveImageProps } from '../utils/responsiveImage';
 
 interface AboutPageProps {
   theme: Theme;
@@ -75,7 +76,16 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
         <div className="lg:col-span-5">
           <div className="nd-card rounded-[var(--nd-radius-panel)] p-7 space-y-6 relative overflow-hidden">
             <div className="relative w-fit mx-auto">
-              <img src={personal.avatar} alt={personal.name} onError={imageFallback('/avatar-fallback.svg')} className="w-40 h-40 rounded-[var(--nd-radius-card)] object-cover shadow-md" />
+              <img
+                alt={personal.name}
+                {...responsiveImageProps(personal.avatar, {
+                  sizes: '(max-width: 640px) 160px, 160px',
+                  displayWidth: 160,
+                  displayHeight: 160,
+                })}
+                onError={imageFallback('/avatar-fallback.svg')}
+                className="w-40 h-40 rounded-[var(--nd-radius-card)] object-cover shadow-md"
+              />
               <div className="absolute -bottom-4 -right-4">
                 <IconBadge3D iconName="award" theme={theme} size="lg" glowColor="magenta" />
               </div>

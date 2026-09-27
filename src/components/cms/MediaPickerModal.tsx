@@ -74,7 +74,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[12000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 text-right dir-rtl font-sans">
-      <div className="bg-[color:var(--nd-surface)] border-2 border-[color:var(--nd-accent)] rounded-3xl p-6 max-w-2xl w-full shadow-xl text-[color:var(--nd-ink)] space-y-5 max-h-[90vh] flex flex-col">
+      <div className="bg-[color:var(--nd-surface)] border-2 border-[color:var(--nd-accent)] rounded-3xl p-6 max-w-2xl w-full shadow-xl text-[color:var(--nd-ink)] space-y-5 max-h-[90dvh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center gap-3">
@@ -134,7 +134,7 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="جستجو بر اساس عنوان یا تگ..."
-                className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-10 py-2.5 text-xs text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
+                className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-10 py-2.5 text-base text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
               />
               <Search className="w-4 h-4 text-slate-400 absolute top-3 right-3" />
             </div>
@@ -161,6 +161,8 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                       <img
                         src={item.url}
                         alt={item.title}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-28 object-cover bg-black/40"
                       />
 
@@ -226,6 +228,10 @@ export const MediaPickerModal: React.FC<MediaPickerModalProps> = ({
                   <img
                     src={uploadedPreview}
                     alt="Preview"
+                    loading="lazy"
+                    decoding="async"
+                    width={96}
+                    height={96}
                     className="w-24 h-24 object-cover rounded-xl border border-white/20"
                   />
                   <div className="space-y-1.5 text-xs flex-1">

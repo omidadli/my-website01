@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo } from 'react';
 import { api } from '../services/api';
-import * as initialData from '../data/content';
+// NOTE: the eager import goes to contentCore (WITHOUT the 748 kB of generated
+// article batches) so the first-paint bundle stays small. The batches load in
+// the background via the dynamic import below and are merged in as defaults.
+import * as initialData from '../data/contentCore';
 
 import { 
   CustomPage, 
@@ -12,7 +15,8 @@ import {
   VersionSnapshot, 
   AuditLogEntry, 
   ThemeConfig,
-  BlogComment
+  BlogComment,
+  BlogPost
 } from '../types';
 import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
 import { mergeContentDefaults } from '../utils/contentDefaults';
@@ -21,6 +25,16 @@ import { publicContentView } from '../../lib/contentVisibility';
 const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
 const LOCAL_STORAGE_PIN_KEY = 'OMID_ADLI_ADMIN_PIN_CODE';
 const DEFAULT_PIN = '1234';
+
+/**
+ * Background load of the generated article batches (batch01+batch02). The
+ * network request starts as soon as this module evaluates — parallel to first
+ * paint, never blocking it. Resolved posts are treated as DEFAULTS: any
+ * localStorage/CMS BLOG_POSTS array that already owns the state wins.
+ */
+const blogPostsChunk: Promise<BlogPost[]> = import('../data/blogPosts')
+  .then((m) => m.GENERATED_BATCH_POSTS)
+  .catch(() => []);
 
 export const defaultGlobalSeo: GlobalSeoConfig = { ...sharedGlobalSeoDefaults };
 
@@ -113,7 +127,7 @@ export interface ContentState {
   CASE_STUDIES: typeof initialData.CASE_STUDIES;
   STATS: typeof initialData.STATS;
   TESTIMONIALS: typeof initialData.TESTIMONIALS;
-  BLOG_POSTS: typeof initialData.BLOG_POSTS;
+  BLOG_POSTS: BlogPost[];
   BLOG_COMMENTS: BlogComment[];
   PRODUCTS: typeof initialData.PRODUCTS;
   PROJECTS_PAGE_DATA: typeof initialData.PROJECTS_PAGE_DATA;
@@ -149,7 +163,7 @@ const defaultContentState: ContentState = {
   CASE_STUDIES: initialData.CASE_STUDIES,
   STATS: initialData.STATS,
   TESTIMONIALS: initialData.TESTIMONIALS,
-  BLOG_POSTS: initialData.BLOG_POSTS,
+  BLOG_POSTS: initialData.CORE_BLOG_POSTS,
   BLOG_COMMENTS: initialData.INITIAL_BLOG_COMMENTS || [],
   PRODUCTS: initialData.PRODUCTS,
   PROJECTS_PAGE_DATA: initialData.PROJECTS_PAGE_DATA,
@@ -331,7 +345,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
             tools: { ...initialData.AI_TOOLS_CONFIG.tools, ...(parsed.AI_TOOLS_CONFIG?.tools || {}) },
           },
           BLOG_PAGE_DATA: { ...initialData.BLOG_PAGE_DATA, ...(parsed.BLOG_PAGE_DATA || {}) },
-          BLOG_POSTS: parsed.BLOG_POSTS || initialData.BLOG_POSTS,
+          BLOG_POSTS: parsed.BLOG_POSTS || initialData.CORE_BLOG_POSTS,
           ONGOING_PROJECTS: parsed.ONGOING_PROJECTS || initialData.ONGOING_PROJECTS,
           PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...(parsed.PERSONAL_INFO || {}) },
           GLOBAL_SEO: { ...defaultGlobalSeo, ...parsed.GLOBAL_SEO },
@@ -357,6 +371,26 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     localStorage.setItem('OMID_ADLI_ADMIN_ACTIVE', isAdmin ? 'true' : 'false');
   }, [isAdmin]);
+
+  // Merge the generated article batches when their chunk arrives. The batches
+  // are DEFAULTS: if localStorage/CMS already provided a BLOG_POSTS array of
+  // its own, leave it untouched. identity (`=== CORE_BLOG_POSTS`) tells us
+  // whether the state still holds the bare fallback list.
+  useEffect(() => {
+    let cancelled = false;
+    blogPostsChunk.then((batchPosts) => {
+      if (cancelled || batchPosts.length === 0) return;
+      const nextDefault = [...batchPosts, ...initialData.CORE_BLOG_POSTS];
+      // Future merges (remote fetch, resetToDefaults) must see the full default list too.
+      defaultContentState.BLOG_POSTS = nextDefault;
+      setData((d) =>
+        d.BLOG_POSTS === initialData.CORE_BLOG_POSTS ? { ...d, BLOG_POSTS: nextDefault } : d,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ---------- Cloud (Cloudflare D1) persistence ----------
   const [persistence, setPersistence] = useState<'local' | 'cloud'>('local');

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme } from '../../types';
 import { soulJourney } from './soul';
+import { useStaticMediaMode } from './useStaticMediaMode';
 
 interface MascotWelcomeOverlayProps {
   theme?: Theme;
@@ -59,6 +60,8 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
   const [subText, setSubText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  // Touch / reduced-motion / Save-Data / 2G → static WebP instead of the MP4.
+  const staticMode = useStaticMediaMode();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -368,16 +371,22 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
             </div>
           )}
 
-          {/* The Welcome Card (Metamorphosis into stardust) */}
+          {/* The Welcome Card (Metamorphosis into stardust) — filter/blur tweens
+              are skipped in static mode (touch / reduced-motion): MotionConfig
+              strips the transforms, this drops the expensive blur repaints. */}
           <motion.div
-            initial={{ scale: 0.92, y: 20, opacity: 0, filter: 'blur(12px)' }}
-            animate={{
-              scale: isDissolving ? 0.6 : 1,
-              x: isDissolving ? targetCorner.x * 0.42 : 0,
-              y: isDissolving ? targetCorner.y * 0.42 : 0,
-              opacity: isDissolving ? 0 : 1,
-              filter: isDissolving ? 'blur(26px)' : 'blur(0px)',
-            }}
+            initial={staticMode ? { opacity: 0 } : { scale: 0.92, y: 20, opacity: 0, filter: 'blur(12px)' }}
+            animate={
+              staticMode
+                ? { opacity: isDissolving ? 0 : 1 }
+                : {
+                    scale: isDissolving ? 0.6 : 1,
+                    x: isDissolving ? targetCorner.x * 0.42 : 0,
+                    y: isDissolving ? targetCorner.y * 0.42 : 0,
+                    opacity: isDissolving ? 0 : 1,
+                    filter: isDissolving ? 'blur(26px)' : 'blur(0px)',
+                  }
+            }
             transition={{
               duration: isDissolving ? 1.6 : 0.65,
               ease: isDissolving ? [0.32, 0, 0.67, 0] : [0.16, 1, 0.3, 1],
@@ -420,19 +429,34 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
                 <div className="absolute -inset-2 bg-gradient-to-tr from-cyan-500 via-indigo-500 to-purple-500 rounded-2xl blur-md opacity-40 animate-pulse-glow" />
 
                 <div className="relative w-28 h-28 sm:w-36 sm:h-36 rounded-2xl overflow-hidden border border-white/20 shadow-xl bg-slate-950 flex items-center justify-center">
-                  <video
-                    ref={videoRef}
-                    src="/mascot/confident.mp4"
-                    poster="/mascot/confident.webp"
-                    autoPlay
-                    loop
-                    muted
-                    playsInline
-                    onCanPlay={() => setVideoReady(true)}
-                    className={`w-full h-full object-cover object-center transition-all duration-500 ${
-                      videoReady ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
-                    }`}
-                  />
+                  {staticMode ? (
+                    <img
+                      src="/mascot/confident.webp"
+                      alt=""
+                      width={640}
+                      height={698}
+                      decoding="async"
+                      onLoad={() => setVideoReady(true)}
+                      className={`w-full h-full object-cover object-center transition-all duration-500 ${
+                        videoReady ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
+                      }`}
+                    />
+                  ) : (
+                    <video
+                      ref={videoRef}
+                      src="/mascot/confident.mp4"
+                      poster="/mascot/confident.webp"
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      preload="metadata"
+                      onCanPlay={() => setVideoReady(true)}
+                      className={`w-full h-full object-cover object-center transition-all duration-500 ${
+                        videoReady ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
+                      }`}
+                    />
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-white/10 pointer-events-none" />
                 </div>
 
@@ -484,7 +508,7 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
                         placeholder="نام یا نام خانوادگی‌ات رو بنویس..."
                         maxLength={24}
                         disabled={isSubmitting}
-                        className={`w-full px-3.5 py-2.5 sm:py-3 rounded-xl text-center text-sm sm:text-base font-semibold transition-all duration-200 outline-none border ${
+                        className={`w-full px-3.5 py-2.5 sm:py-3 rounded-xl text-center text-base font-semibold transition-all duration-200 outline-none border ${
                           isDark
                             ? 'bg-white/5 border-white/15 text-white placeholder-white/40 focus:border-cyan-400 focus:bg-white/10 focus:ring-2 focus:ring-cyan-500/20'
                             : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15'

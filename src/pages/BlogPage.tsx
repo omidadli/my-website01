@@ -10,6 +10,7 @@ import { linkProps, postPath } from '../utils/router';
 import { categoryOrder, normalizeCategory } from '../data/blogTaxonomy';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_FEATURED_SIZES } from '../utils/responsiveImage';
 import { mdToPlainText } from '../utils/plainText';
 
 interface BlogPageProps {
@@ -112,7 +113,18 @@ export const BlogPage: React.FC<BlogPageProps> = ({ theme, onNavigate, onSelectP
             </div>
           </div>
           <div className={`rounded-[var(--nd-radius-card)] overflow-hidden aspect-[16/10] border ${isDark ? 'border-white/12' : 'border-white/60'} shadow-md`}>
-            <img src={featured.coverImage} alt={featured.title} className="w-full h-full object-cover group-hover:scale-[1.04] transition-transform duration-700" referrerPolicy="no-referrer" onError={imageFallback()} />
+            <img
+              alt={featured.title}
+              {...responsiveImageProps(featured.coverImage, {
+                sizes: BLOG_FEATURED_SIZES,
+                displayWidth: 1376,
+                displayHeight: 768,
+                priority: true,
+              })}
+              className="w-full h-full object-cover group-hover:scale-[1.04] transition-transform duration-700"
+              referrerPolicy="no-referrer"
+              onError={imageFallback()}
+            />
           </div>
         </motion.a>
       )}
@@ -141,7 +153,17 @@ export const BlogPage: React.FC<BlogPageProps> = ({ theme, onNavigate, onSelectP
                 className="nd-card nd-card-hover overflow-hidden text-right flex flex-col group cursor-pointer"
               >
                 <div className={`aspect-[16/9] overflow-hidden border-b ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
-                  <img src={post.coverImage} alt={post.title} loading="lazy" decoding="async" className="w-full h-full object-cover group-hover:scale-[1.05] transition-transform duration-700" referrerPolicy="no-referrer" onError={imageFallback()} />
+                  <img
+                    alt={post.title}
+                    {...responsiveImageProps(post.coverImage, {
+                      sizes: BLOG_COVER_SIZES,
+                      displayWidth: 1376,
+                      displayHeight: 768,
+                    })}
+                    className="w-full h-full object-cover group-hover:scale-[1.05] transition-transform duration-700"
+                    referrerPolicy="no-referrer"
+                    onError={imageFallback()}
+                  />
                 </div>
                 <div className="p-6 space-y-3 flex flex-col grow">
                   <div className="flex items-center gap-2">

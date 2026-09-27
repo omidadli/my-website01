@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { PERSONAL_INFO } from '../data/content';
+// contentCore (not data/content) so re-enabling the splash can never pull the
+// generated article batches into the critical path. The splash is currently
+// NOT mounted by App.tsx — zero impact on LCP by construction.
+import { PERSONAL_INFO } from '../data/contentCore';
 
 interface SplashScreenProps {
   onComplete?: () => void;

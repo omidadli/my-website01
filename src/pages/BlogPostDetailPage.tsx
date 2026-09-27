@@ -7,6 +7,7 @@ import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_DETAIL_COVER_SIZES } from '../utils/responsiveImage';
 import { RichText } from '../components/RichText';
 import { mdToPlainText } from '../utils/plainText';
 
@@ -136,7 +137,18 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
         </div>
         {post.coverImage && (
           <div className={`rounded-[var(--nd-radius-card)] overflow-hidden border shadow-md aspect-[21/9] ${isDark ? 'border-white/12' : 'border-white/70'}`}>
-            <img src={post.coverImage} alt={post.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={imageFallback()} />
+            <img
+              alt={post.title}
+              {...responsiveImageProps(post.coverImage, {
+                sizes: BLOG_DETAIL_COVER_SIZES,
+                displayWidth: 1376,
+                displayHeight: 768,
+                priority: true,
+              })}
+              className="w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={imageFallback()}
+            />
           </div>
         )}
       </header>
@@ -232,8 +244,11 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
           {/* Author */}
           <div className={`nd-card p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-5 sm:gap-6 text-center sm:text-right`}>
             <img
-              src={post.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80'}
               alt={post.author}
+              {...responsiveImageProps(
+                post.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+                { sizes: '80px', displayWidth: 80, displayHeight: 80 },
+              )}
               className="w-20 h-20 rounded-2xl object-cover shadow-sm shrink-0"
               referrerPolicy="no-referrer"
               onError={imageFallback('/avatar-fallback.svg')}
@@ -309,7 +324,7 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                       <span className={`text-xs font-extrabold ${isDark ? 'text-white' : ''}`}>{c.authorName}</span>
                       <span className={`text-[10px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>{c.date}</span>
                     </div>
-                    <p className={`text-xs leading-relaxed ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}>{c.content}</p>
+                    <p className={`text-xs leading-relaxed break-words ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}>{c.content}</p>
                     {c.reply && (
                       <div className={`p-4 rounded-2xl border text-xs leading-relaxed ${isDark ? 'bg-white/5 border-white/10 text-slate-300' : 'bg-[color:var(--nd-accent-soft)] border-transparent text-[color:var(--nd-ink-2)]'}`}>
                         <span className="font-extrabold text-[color:var(--nd-accent)] block mb-1">پاسخ امید عدلی:</span>
@@ -349,7 +364,17 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                 className="nd-card nd-card-hover overflow-hidden text-right flex flex-col group cursor-pointer"
               >
                 <div className={`aspect-[16/10] overflow-hidden border-b ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
-                  <img src={rel.coverImage} alt={rel.title} loading="lazy" decoding="async" className="w-full h-full object-cover group-hover:scale-[1.05] transition-transform duration-700" referrerPolicy="no-referrer" onError={imageFallback()} />
+                  <img
+                    alt={rel.title}
+                    {...responsiveImageProps(rel.coverImage, {
+                      sizes: BLOG_COVER_SIZES,
+                      displayWidth: 1376,
+                      displayHeight: 768,
+                    })}
+                    className="w-full h-full object-cover group-hover:scale-[1.05] transition-transform duration-700"
+                    referrerPolicy="no-referrer"
+                    onError={imageFallback()}
+                  />
                 </div>
                 <div className="p-5 space-y-2.5 grow flex flex-col">
                   <span className="nd-chip w-fit">{rel.categoryFa}</span>

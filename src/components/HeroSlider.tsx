@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
 import { EditableText } from './cms/EditableText';
+import { useReducedMotion } from 'motion/react';
 import { ArrowUpLeft, FileText, CheckCircle2, Sparkles, ChevronRight, ChevronLeft, Pause, Play, Target, Rocket, BarChart3, Search } from 'lucide-react';
 
 interface SlideItem {
@@ -38,6 +39,8 @@ export const HeroSlider: React.FC<HeroSliderProps> = ({ theme, onNavigate, onOpe
   const [isPlaying, setIsPlaying] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
   const touchStartX = useRef<number | null>(null);
+  // Reduced motion → the slider holds still (manual dots/swipe still work).
+  const reducedMotion = useReducedMotion();
 
   const slides: SlideItem[] = [
     {
@@ -80,12 +83,12 @@ export const HeroSlider: React.FC<HeroSliderProps> = ({ theme, onNavigate, onOpe
 
   // Auto-slide effect
   useEffect(() => {
-    if (!isPlaying || isHovered) return;
+    if (!isPlaying || isHovered || reducedMotion) return;
     const timer = setInterval(() => {
       setCurrentSlide((prev) => (prev + 1) % slides.length);
     }, 6000);
     return () => clearInterval(timer);
-  }, [isPlaying, isHovered, slides.length]);
+  }, [isPlaying, isHovered, reducedMotion, slides.length]);
 
   const handleNext = () => {
     setCurrentSlide((prev) => (prev + 1) % slides.length);

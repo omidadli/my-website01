@@ -147,8 +147,10 @@ export const RichText: React.FC<RichTextProps> = ({ text, isDark, paragraphClass
   if (!text) return null;
   const blocks = text.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
 
+  // break-words: long URLs / unbroken tokens in article bodies must wrap
+  // instead of forcing horizontal scroll on 320px screens.
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 break-words">
       {blocks.map((block, bi) => {
         const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
 
@@ -159,7 +161,7 @@ export const RichText: React.FC<RichTextProps> = ({ text, isDark, paragraphClass
         // heading
         if (lines[0].startsWith('####')) {
           return (
-            <h3 key={bi} className={`text-sm sm:text-base font-extrabold ${isDark ? 'text-white' : 'text-[color:var(--nd-ink)]'}`}>
+            <h3 key={bi} className={`text-sm sm:text-base font-extrabold break-words ${isDark ? 'text-white' : 'text-[color:var(--nd-ink)]'}`}>
               <Inline text={lines[0].replace(/^#+\s*/, '')} isDark={isDark} />
             </h3>
           );
@@ -170,7 +172,7 @@ export const RichText: React.FC<RichTextProps> = ({ text, isDark, paragraphClass
           return (
             <div
               key={bi}
-              className={`rounded-2xl p-5 text-xs sm:text-sm leading-loose flex items-start gap-3 ${isDark ? 'nd-glass-dark' : ''}`}
+              className={`rounded-2xl p-5 text-xs sm:text-sm leading-loose break-words flex items-start gap-3 ${isDark ? 'nd-glass-dark' : ''}`}
               style={isDark ? undefined : { background: 'var(--nd-accent-soft)', color: 'var(--nd-accent-strong)' }}
             >
               <Quote className="w-4 h-4 mt-0.5 shrink-0 opacity-70" />
@@ -200,7 +202,7 @@ export const RichText: React.FC<RichTextProps> = ({ text, isDark, paragraphClass
 
         // paragraph (may contain soft line breaks)
         return (
-          <p key={bi} className={paragraphClass || `text-sm leading-loose ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
+          <p key={bi} className={paragraphClass || `text-sm leading-loose break-words ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 && <br />}

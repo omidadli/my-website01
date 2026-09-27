@@ -31,12 +31,14 @@ import {
   Send,
   Search,
 } from 'lucide-react';
-import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'motion/react';
+import { motion, AnimatePresence, useMotionValue, useSpring, useTransform, useReducedMotion } from 'motion/react';
+import { useHoverCapable } from '../utils/useHoverCapable';
 import { MaskLines, Magnetic } from '../components/motion/Cinematic';
 import { linkProps, postPath } from '../utils/router';
 import { normalizeCaseStudies } from '../utils/caseStudies';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { responsiveImageProps } from '../utils/responsiveImage';
 
 interface HomePageProps {
   theme: Theme;
@@ -107,7 +109,11 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const [auditPrompt, setAuditPrompt] = usePreservedState<string>('homepage_audit_prompt', '');
   const [openFaq, setOpenFaq] = usePreservedState<number>('homepage_open_faq', -1);
 
-  // Cinematic pointer parallax for the hero stage
+  // Cinematic pointer parallax for the hero stage — desktop-fine-pointer only
+  // (touch and reduced-motion visitors get a still stage, zero rAF work).
+  const hoverCapable = useHoverCapable();
+  const reducedMotion = useReducedMotion();
+  const parallaxEnabled = hoverCapable && !reducedMotion;
   const px = useMotionValue(0);
   const py = useMotionValue(0);
   const sx = useSpring(px, { stiffness: 90, damping: 20 });
@@ -119,6 +125,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const spotY = useTransform(sy, (v) => `${42 + v * 34}%`);
 
   const handleStageMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!parallaxEnabled) return;
     const r = e.currentTarget.getBoundingClientRect();
     px.set(((e.clientX - r.left) / r.width - 0.5) * 2);
     py.set(((e.clientY - r.top) / r.height - 0.5) * 2);
@@ -279,8 +286,13 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                 >
                   <span className="flex">
                     <img
-                      src={personal.avatar}
                       alt={personal.name}
+                      {...responsiveImageProps(personal.avatar, {
+                        sizes: '28px',
+                        displayWidth: 28,
+                        displayHeight: 28,
+                        priority: true,
+                      })}
                       referrerPolicy="no-referrer"
                       onError={imageFallback('/avatar-fallback.svg')}
                       className={`w-7 h-7 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
@@ -410,9 +422,14 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
               transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
               className={`relative z-10 nd-card max-w-3xl mx-auto p-6 sm:p-8 flex flex-col sm:flex-row items-start gap-5 ${isDark ? '-mt-10 sm:-mt-12' : 'mt-6'}`}
             >
-              <img src={personal.avatar} alt={personal.name} loading="lazy" decoding="async" onError={imageFallback('/avatar-fallback.svg')} className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0" />
+              <img
+                alt={personal.name}
+                {...responsiveImageProps(personal.avatar, { sizes: '64px', displayWidth: 64, displayHeight: 64 })}
+                onError={imageFallback('/avatar-fallback.svg')}
+                className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0"
+              />
               <p className="text-sm sm:text-base leading-relaxed text-[color:var(--nd-ink-2)]">
-                <span className="font-black text-[color:var(--nd-accent)] ml-1">من امید عدلی هستم؛</span>
+                <span className="font-black text-[color:var(--nd-accent)] me-1">من امید عدلی هستم؛</span>
                 متخصص رشد دیجیتال برای فروشگاه‌ها. کمک می‌کنم بفهمید مشتری‌ها کجا شما را پیدا می‌کنند، چرا بعضی‌ها خرید می‌کنند و بعضی‌ها نه، و برای بهتر شدن فروش باید دقیقاً روی چه چیزی کار کنید.
               </p>
             </motion.div>
@@ -772,7 +789,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   viewport={{ once: true, margin: '-60px' }}
                   transition={{ duration: 0.6, delay: idx * 0.08, ease: [0.22, 1, 0.36, 1] }}
                   onClick={() => onSelectCaseStudy(study)}
-                  className="nd-card nd-card-hover snap-start shrink-0 w-[86vw] sm:w-[420px] text-right overflow-hidden group cursor-pointer flex flex-col"
+                  className="nd-card nd-card-hover snap-start shrink-0 w-[min(86vw,420px)] text-right overflow-hidden group cursor-pointer flex flex-col"
                 >
                   {/* Cover */}
                   <div
@@ -894,7 +911,12 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   <div className="space-y-4">
                     <p className="text-sm sm:text-base leading-relaxed font-medium text-[color:var(--nd-ink-2)]">{testimonials[0].quote}</p>
                     <div className="flex flex-wrap items-center gap-3">
-                      <img src={testimonials[0].avatarUrl} alt={testimonials[0].clientName} loading="lazy" decoding="async" onError={imageFallback('/avatar-fallback.svg')} className="w-10 h-10 rounded-full object-cover" />
+                      <img
+                        alt={testimonials[0].clientName}
+                        {...responsiveImageProps(testimonials[0].avatarUrl, { sizes: '40px', displayWidth: 40, displayHeight: 40 })}
+                        onError={imageFallback('/avatar-fallback.svg')}
+                        className="w-10 h-10 rounded-full object-cover"
+                      />
                       <span>
                         <span className="block text-xs font-black text-[color:var(--nd-ink)]">{testimonials[0].clientName} — {testimonials[0].company}</span>
                         <span className="block text-[11px] font-bold text-[color:var(--nd-faint)]">{testimonials[0].clientRole}</span>

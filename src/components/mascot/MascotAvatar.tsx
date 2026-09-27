@@ -5,6 +5,8 @@ import { soulJourney } from './soul';
 import { MascotCue } from './useMascotEvents';
 import { VIDEO_SCENES, MascotVisualStep, videoSrc } from './mascotVideos';
 import { useMascotLookAt } from './useMascotLookAt';
+import { useStaticMediaMode } from './useStaticMediaMode';
+import { useKeyboardOpen } from '../../utils/useKeyboardOpen';
 import sprites from './sprites.json';
 
 /** `play()` returns a Promise in modern browsers but `undefined` in old WebViews/jsdom — never let that throw. */
@@ -85,14 +87,18 @@ function LayerView({
   };
   if (layer.step.img || staticMode) {
     const imageName = layer.step.img || layer.step.poster;
-    const imageSrc = imageName && META[imageName]?.src;
+    const meta = imageName ? META[imageName] : undefined;
+    const imageSrc = meta?.src;
     if (!imageSrc) return null;
     return (
       <img
         src={imageSrc}
         alt=""
         draggable={false}
+        loading="lazy"
         decoding="async"
+        width={meta.w}
+        height={meta.h}
         onLoad={onReady}
         className="mascot-layer mascot-layer--img"
         style={style}
@@ -239,21 +245,8 @@ export function MascotFigure({
   corner?: boolean;
   lookAtOptions?: Parameters<typeof useMascotLookAt>[3];
 }) {
-  const [staticMode, setStaticMode] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  });
-  useEffect(() => {
-    const coarse = window.matchMedia('(pointer: coarse)');
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const update = () => setStaticMode(coarse.matches || reduced.matches);
-    coarse.addEventListener?.('change', update);
-    reduced.addEventListener?.('change', update);
-    return () => {
-      coarse.removeEventListener?.('change', update);
-      reduced.removeEventListener?.('change', update);
-    };
-  }, []);
+  // Static media mode (touch / reduced-motion / Save-Data / 2G) → WebP frames only.
+  const staticMode = useStaticMediaMode();
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -477,6 +470,9 @@ export function MascotFigure({
 export function MascotAvatar() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const compactTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Soft keyboard open (and focus NOT inside the card's own name input) →
+  // tuck the card away so mobile keyboards never half-bury it.
+  const keyboardOpen = useKeyboardOpen('.mascot-root');
 
   const [bubble, setBubble] = useState<{ id: number; text: string; shown: string; askName?: boolean } | null>(null);
   const bubbleId = useRef(0);
@@ -565,7 +561,12 @@ export function MascotAvatar() {
   const askVisible = !!bubble?.askName;
 
   return (
-    <div ref={rootRef} className="mascot-root fixed bottom-2 right-2 z-[50] sm:bottom-4 sm:right-5">
+    <div
+      ref={rootRef}
+      className={`mascot-root fixed bottom-2 start-2 z-[50] sm:bottom-4 sm:start-5 ${
+        keyboardOpen ? 'mascot-kbd-away' : ''
+      }`}
+    >
       <div
         className="mascot-card"
         onClick={() => window.dispatchEvent(new CustomEvent('nd:open-chat'))}

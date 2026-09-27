@@ -60,7 +60,7 @@ export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label =
         <div className="flex-1 relative">
           <AInput dir="ltr" placeholder="https://… یا از کتابخانه انتخاب کنید" value={value || ''} onChange={(e) => onChange(e.target.value)} className="pr-10 text-left" />
           {value ? (
-            <img src={value} alt="" className="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg object-cover border border-[color:var(--nd-line)]" referrerPolicy="no-referrer" />
+            <img src={value} alt="" loading="lazy" decoding="async" width={28} height={28} className="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg object-cover border border-[color:var(--nd-line)]" referrerPolicy="no-referrer" />
           ) : (
             <ImagePlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[color:var(--nd-faint)]" />
           )}
@@ -93,7 +93,7 @@ export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label =
             {merged.map((m) => (
               <div key={m.id + m.url.slice(0, 30)} className={`group relative rounded-2xl overflow-hidden border cursor-pointer transition-all ${value === m.url ? 'border-[color:var(--nd-accent)] ring-2 ring-[color:var(--nd-accent-soft)]' : 'border-[color:var(--nd-line)] hover:border-[color:var(--nd-accent)]'}`}>
                 <button type="button" className="block w-full" onClick={() => { onChange(m.url); setPickerOpen(false); }} title={m.title}>
-                  <img src={m.url} alt={m.alt || m.title} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                  <img src={m.url} alt={m.alt || m.title} loading="lazy" decoding="async" className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
                   <span className="block px-2 py-1.5 text-[10px] font-bold truncate text-right text-[color:var(--nd-ink-2)]">{m.title || m.url.slice(0, 30)}</span>
                 </button>
                 {isAdmin && (

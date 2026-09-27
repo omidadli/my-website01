@@ -48,7 +48,7 @@ export const SectionEditHeader: React.FC<SectionEditHeaderProps> = ({
               type="text"
               value={titleInput}
               onChange={(e) => setTitleInput(e.target.value)}
-              className="bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg px-2 py-1 text-xs text-white focus:outline-none"
+              className="bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg px-2 py-1 text-base text-white focus:outline-none"
               autoFocus
             />
             <button

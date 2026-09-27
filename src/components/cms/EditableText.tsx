@@ -53,7 +53,7 @@ export const EditableText: React.FC<EditableTextProps> = ({
             <textarea
               value={tempValue}
               onChange={(e) => setTempValue(e.target.value)}
-              className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg p-2 text-sm text-[color:var(--nd-ink)] focus:outline-none focus:border-[color:var(--nd-accent)] min-h-[100px] dir-rtl font-sans"
+              className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg p-2 text-base text-[color:var(--nd-ink)] focus:outline-none focus:border-[color:var(--nd-accent)] min-h-[100px] dir-rtl font-sans"
               autoFocus
             />
           ) : (
@@ -61,7 +61,7 @@ export const EditableText: React.FC<EditableTextProps> = ({
               type="text"
               value={tempValue}
               onChange={(e) => setTempValue(e.target.value)}
-              className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg px-3 py-1.5 text-sm text-[color:var(--nd-ink)] focus:outline-none focus:border-[color:var(--nd-accent)] dir-rtl font-sans"
+              className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-lg px-3 py-1.5 text-base text-[color:var(--nd-ink)] focus:outline-none focus:border-[color:var(--nd-accent)] dir-rtl font-sans"
               autoFocus
             />
           )}

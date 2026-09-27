@@ -13,7 +13,7 @@ export const ResumeModal: React.FC<ResumeModalProps> = ({ theme, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-xl overflow-y-auto">
-      <div className={`relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-[40px] p-6 sm:p-10 border shadow-2xl ${
+      <div className={`relative w-full max-w-4xl max-h-[90dvh] overflow-y-auto rounded-[40px] p-6 sm:p-10 border shadow-2xl ${
         isDark ? 'bg-[#1a1240] border-white/20 text-white' : 'bg-white border-slate-200 text-slate-900'
       }`}>
         {/* Close Button */}

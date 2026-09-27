@@ -100,7 +100,7 @@ export const EditableButton: React.FC<EditableButtonProps> = ({
                     type="text"
                     value={tempLabel}
                     onChange={(e) => setTempLabel(e.target.value)}
-                    className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-3 py-2 text-xs dir-rtl text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
+                    className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-3 py-2 text-base dir-rtl text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
                   />
                 </div>
               )}
@@ -115,7 +115,7 @@ export const EditableButton: React.FC<EditableButtonProps> = ({
                     value={tempLink}
                     onChange={(e) => setTempLink(e.target.value)}
                     placeholder="https://... یا contact / services"
-                    className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-3 py-2 text-xs dir-ltr text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
+                    className="w-full bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] rounded-xl px-3 py-2 text-base dir-ltr text-white focus:outline-none focus:border-[color:var(--nd-accent)]"
                   />
                 </div>
               )}
