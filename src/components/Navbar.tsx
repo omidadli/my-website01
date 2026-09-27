@@ -5,6 +5,12 @@ import { Menu, X, ArrowUpLeft, Sun, Moon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { linkProps, pathForPage } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { Logo } from './Logo';
+
+// Header-only exclusion: these items stay in NAVIGATION_MENU (and in the
+// Footer, and their pages remain fully live) — they're just not shown as
+// links in the top header nav, per an explicit request to trim the header.
+const HEADER_HIDDEN_SLUGS = ['projects', 'portfolio'];
 
 interface NavbarProps {
   theme: Theme;
@@ -62,7 +68,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navItems = safeRecordArray<NonNullable<typeof data.NAVIGATION_MENU[number]>>(data.NAVIGATION_MENU)
     .filter((item) => typeof item.pageSlug === 'string' && typeof item.label === 'string')
     .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
-    .filter((item) => !item.isHidden);
+    .filter((item) => !item.isHidden)
+    .filter((item) => !HEADER_HIDDEN_SLUGS.includes(item.pageSlug));
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -90,9 +97,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center gap-2 ps-2 pe-2 sm:ps-3 sm:pe-2.5 py-2">
           {/* Brand */}
           <a {...linkProps(pathForPage('home'), () => go('home'))} aria-label="صفحه اصلی" className="flex items-center gap-2.5 shrink-0 cursor-pointer me-1 sm:me-3">
-            <span className="w-9 h-9 rounded-xl nd-grad grid place-items-center text-white font-black text-sm shadow-sm">
-              ع
-            </span>
+            <Logo className="w-9 h-9" />
             <span className="hidden md:block text-right leading-tight">
               <span className="block text-[13px] font-black text-[color:var(--nd-ink)]">امید عدلی</span>
               <span className="block text-[9.5px] font-bold text-[color:var(--nd-faint)]">Performance Marketing & CRO</span>
