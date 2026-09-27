@@ -260,6 +260,63 @@ export interface AiSettings {
   apiKey: string;
 }
 
+export interface ToolApiKeyEntry {
+  id: string; // 'key-1' | 'key-2' | 'key-3'
+  label?: string;
+  provider: 'gemini' | 'openai';
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  enabled?: boolean;
+}
+
+export interface ToolKeyPublic {
+  id: string;
+  label: string;
+  provider: 'gemini' | 'openai';
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+  keyMask: string;
+  enabled: boolean;
+}
+
+export const maskKey = (k: string): string => {
+  const s = (k || '').trim();
+  if (!s) return '';
+  return s.length <= 8 ? '••••••••' : `${s.slice(0, 4)}••••${s.slice(-4)}`;
+};
+
+export const createDefaultProductKeys = (legacySettings?: Partial<AiSettings>): ToolApiKeyEntry[] => [
+  {
+    id: 'key-1',
+    label: 'کلید اصلی (Primary)',
+    provider: legacySettings?.provider || 'gemini',
+    baseUrl: legacySettings?.baseUrl || '',
+    model: legacySettings?.model || (legacySettings?.provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash'),
+    apiKey: legacySettings?.apiKey || '',
+    enabled: true,
+  },
+  {
+    id: 'key-2',
+    label: 'کلید پشتیبان اول (Backup 1)',
+    provider: 'gemini',
+    baseUrl: '',
+    model: 'gemini-flash-latest',
+    apiKey: '',
+    enabled: true,
+  },
+  {
+    id: 'key-3',
+    label: 'کلید پشتیبان دوم (Backup 2)',
+    provider: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    apiKey: '',
+    enabled: true,
+  },
+];
+
 export const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
 
 interface AiCallArgs {
@@ -341,6 +398,175 @@ export const callAiProvider = async (args: AiCallArgs): Promise<string | null> =
     }
   }
   return null;
+};
+
+export interface FailoverCallResult {
+  text: string | null;
+  usedKeyId?: string;
+  usedKeyLabel?: string;
+  usedProvider?: string;
+}
+
+/**
+ * Executes a call using the 3 configured product API keys in priority order.
+ * If Key 1 fails or is rate limited, falls back seamlessly to Key 2, then Key 3.
+ * If all fail, optionally attempts the global GEMINI_API_KEY environment fallback.
+ */
+export const callAiProviderWithFailover = async (args: {
+  systemPrompt: string;
+  history: { role: 'user' | 'model'; content: string }[];
+  question: string;
+  temperature: number;
+  keys: ToolApiKeyEntry[];
+  preferredModel?: string;
+  envFallbackKey?: string;
+}): Promise<FailoverCallResult> => {
+  const { systemPrompt, history, question, temperature, keys, preferredModel, envFallbackKey } = args;
+
+  const validKeys = (keys || []).filter((k) => k.enabled !== false && (k.apiKey || '').trim());
+
+  for (let i = 0; i < validKeys.length; i++) {
+    const k = validKeys[i];
+    const key = (k.apiKey || '').trim();
+    if (!key) continue;
+
+    try {
+      const text = await callAiProvider({
+        systemPrompt,
+        history,
+        question,
+        temperature,
+        preferredModel: k.model || preferredModel,
+        settings: {
+          provider: k.provider || 'gemini',
+          baseUrl: k.baseUrl || '',
+          model: k.model || '',
+          apiKey: key,
+        },
+      });
+      if (text) {
+        return {
+          text,
+          usedKeyId: k.id,
+          usedKeyLabel: k.label || `کلید ${i + 1}`,
+          usedProvider: k.provider,
+        };
+      }
+      console.warn(`[AI Failover] Key ${k.id} (${k.label || i + 1}) returned empty/failed, trying next key...`);
+    } catch (err: any) {
+      console.warn(`[AI Failover] Key ${k.id} (${k.label || i + 1}) failed:`, err?.message || err);
+    }
+  }
+
+  // Fallback to global environment key if configured
+  if (envFallbackKey && envFallbackKey.trim()) {
+    try {
+      const text = await callAiProvider({
+        systemPrompt,
+        history,
+        question,
+        temperature,
+        preferredModel,
+        settings: {
+          provider: 'gemini',
+          baseUrl: '',
+          model: '',
+          apiKey: envFallbackKey.trim(),
+        },
+      });
+      if (text) {
+        return {
+          text,
+          usedKeyId: 'env-fallback',
+          usedKeyLabel: 'کلید پیش‌فرض محیطی',
+          usedProvider: 'gemini',
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return { text: null };
+};
+
+export interface KeyTestResult {
+  ok: boolean;
+  latencyMs: number;
+  model: string;
+  reply?: string;
+  error?: string;
+}
+
+/**
+ * Performs a live test of an API key against Google Gemini or OpenAI.
+ * Measures roundtrip latency and returns a status payload suitable for the admin UI.
+ */
+export const testSingleKey = async (config: {
+  provider: 'gemini' | 'openai';
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+}): Promise<KeyTestResult> => {
+  const start = Date.now();
+  const provider = config.provider === 'openai' ? 'openai' : 'gemini';
+  const key = (config.apiKey || '').trim();
+  if (!key) {
+    return { ok: false, latencyMs: 0, model: '', error: 'کلید API وارد نشده است.' };
+  }
+
+  if (provider === 'openai') {
+    const base = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const model = (config.model || 'gpt-4o-mini').trim();
+    try {
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          max_tokens: 25,
+          messages: [{ role: 'user', content: 'Reply with the word "OK"' }],
+        }),
+      });
+      const latencyMs = Date.now() - start;
+      if (res.ok) {
+        const j: any = await res.json();
+        const text = String(j?.choices?.[0]?.message?.content || '').trim();
+        return { ok: true, latencyMs, model, reply: text || 'OK' };
+      }
+      const errText = await res.text().catch(() => '');
+      return { ok: false, latencyMs, model, error: `خطای سرور OpenAI (${res.status}): ${errText.slice(0, 150) || res.statusText}` };
+    } catch (err: any) {
+      return { ok: false, latencyMs: Date.now() - start, model, error: `عدم پاسخ سرور OpenAI: ${err?.message || 'تایم‌اوت یا خطای شبکه'}` };
+    }
+  } else {
+    // Gemini
+    const model = (config.model || 'gemini-2.5-flash').trim();
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'پاسخ بده: تست اتصال موفق.' }] }],
+          generationConfig: { maxOutputTokens: 25 },
+        }),
+      });
+      const latencyMs = Date.now() - start;
+      if (res.ok) {
+        const j: any = await res.json();
+        const parts = j?.candidates?.[0]?.content?.parts || [];
+        const text = String(parts[0]?.text || '').trim();
+        return { ok: true, latencyMs, model, reply: text || 'اتصال موفق' };
+      }
+      const errText = await res.text().catch(() => '');
+      return { ok: false, latencyMs, model, error: `خطای Google Gemini (${res.status}): ${errText.slice(0, 150) || res.statusText}` };
+    } catch (err: any) {
+      return { ok: false, latencyMs: Date.now() - start, model, error: `عدم پاسخ سرور Gemini: ${err?.message || 'تایم‌اوت یا خطای شبکه'}` };
+    }
+  }
 };
 
 // ---------------------------------------------------------------------------

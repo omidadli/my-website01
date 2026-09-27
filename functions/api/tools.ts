@@ -5,6 +5,8 @@ import {
   buildToolSystemPrompt,
   resolveBehavior,
   callAiProvider,
+  callAiProviderWithFailover,
+  testSingleKey,
   localToolAnswer,
   normalizePhone,
   isValidIranMobile,
@@ -13,9 +15,11 @@ import {
   signAccessToken,
   verifyAccessToken,
   scopeCovers,
+  maskKey,
   type AiSettings,
+  type ToolApiKeyEntry,
 } from '../../lib/tools';
-import { getPlan, resolveFreeTrial } from '../../lib/toolPlans';
+import { getPlan, resolveFreeTrial, INITIAL_FREE_COINS, COINS_PER_MESSAGE, calculateRemainingCoins } from '../../lib/toolPlans';
 
 /**
  * Paid AI TOOLS backend (محصولات هوشمند).
@@ -114,6 +118,7 @@ const TOOL_TABLE_MIGRATIONS = [
   `ALTER TABLE tool_access ADD COLUMN message_quota INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE tool_messages ADD COLUMN ip TEXT DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS idx_tool_messages_ip_time ON tool_messages (ip, created_at)`,
+  `ALTER TABLE tool_settings ADD COLUMN keys_json TEXT DEFAULT ''`,
 ];
 
 let toolTablesReady: Promise<void> | null = null;
@@ -138,13 +143,67 @@ const ensureTables = (env: Env): Promise<void> => {
   return toolTablesReady;
 };
 
-interface SettingsRow { product_id: string; provider: string; base_url: string; model: string; api_key: string; updated_at: string }
+interface SettingsRow {
+  product_id: string;
+  provider: string;
+  base_url: string;
+  model: string;
+  api_key: string;
+  updated_at: string;
+  keys_json?: string;
+}
 
-const maskKey = (k: string): string => {
-  const s = (k || '').trim();
-  if (!s) return '';
-  if (s.length <= 8) return '••••';
-  return `${s.slice(0, 4)}••••${s.slice(-4)}`;
+/** Retrieve the 3 configured API keys for a product, with graceful fallback. */
+const getProductKeys = async (env: Env, productId: string): Promise<ToolApiKeyEntry[]> => {
+  let row: SettingsRow | null = null;
+  try {
+    row = await env.DB.prepare(`SELECT * FROM tool_settings WHERE product_id = ?1`).bind(productId).first<SettingsRow>();
+  } catch { /* ignore */ }
+
+  const defaults: ToolApiKeyEntry[] = [
+    { id: 'key-1', label: 'کلید اصلی (Primary)', provider: 'gemini', model: 'gemini-2.5-flash', baseUrl: '', apiKey: '', enabled: true },
+    { id: 'key-2', label: 'کلید پشتیبان اول (Backup 1)', provider: 'gemini', model: 'gemini-flash-latest', baseUrl: '', apiKey: '', enabled: true },
+    { id: 'key-3', label: 'کلید پشتیبان دوم (Backup 2)', provider: 'openai', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', apiKey: '', enabled: true },
+  ];
+
+  if (row?.keys_json) {
+    try {
+      const parsed = JSON.parse(row.keys_json);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const res: ToolApiKeyEntry[] = [];
+        for (let i = 0; i < 3; i++) {
+          const item = parsed.find((k: any) => k.id === `key-${i + 1}`) || parsed[i];
+          res.push({
+            id: `key-${i + 1}`,
+            label: item?.label || defaults[i].label,
+            provider: item?.provider === 'openai' ? 'openai' : 'gemini',
+            baseUrl: String(item?.baseUrl || defaults[i].baseUrl || '').trim(),
+            model: String(item?.model || defaults[i].model || '').trim(),
+            apiKey: String(item?.apiKey || '').trim(),
+            enabled: item?.enabled !== false,
+          });
+        }
+        return res;
+      }
+    } catch { /* parse failure — fallback to legacy columns */ }
+  }
+
+  if (row && (row.api_key || row.provider || row.model)) {
+    return [
+      {
+        id: 'key-1',
+        label: 'کلید اصلی (Primary)',
+        provider: row.provider === 'openai' ? 'openai' : 'gemini',
+        baseUrl: row.base_url || '',
+        model: row.model || (row.provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash'),
+        apiKey: row.api_key || '',
+        enabled: true,
+      },
+      defaults[1],
+      defaults[2],
+    ];
+  }
+  return defaults;
 };
 
 /** Resolve the effective AI settings for a tool: per-tool row, else env fallback. */
@@ -213,19 +272,32 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       rows = r.results || [];
     } catch { /* ignore */ }
     const envKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
-    const items = TOOLS.map((t) => {
+    const items = await Promise.all(TOOLS.map(async (t) => {
       const row = rows.find((x) => x.product_id === t.id);
+      const keys = await getProductKeys(env, t.id);
+      const publicKeys = keys.map((k) => ({
+        id: k.id,
+        label: k.label || '',
+        provider: k.provider,
+        baseUrl: k.baseUrl || '',
+        model: k.model || '',
+        hasKey: !!(k.apiKey || '').trim(),
+        keyMask: maskKey(k.apiKey || ''),
+        enabled: k.enabled !== false,
+      }));
+      const hasAnyKey = publicKeys.some((k) => k.hasKey && k.enabled);
       return {
         productId: t.id,
         name: t.name,
-        provider: row?.provider || 'gemini',
-        baseUrl: row?.base_url || '',
-        model: row?.model || '',
-        hasKey: !!(row?.api_key || '').trim(),
-        keyMask: maskKey(row?.api_key || ''),
-        usingEnvFallback: !(row?.api_key || '').trim() && !!envKey,
+        provider: keys[0]?.provider || 'gemini',
+        baseUrl: keys[0]?.baseUrl || '',
+        model: keys[0]?.model || '',
+        hasKey: hasAnyKey,
+        keyMask: publicKeys[0]?.keyMask || '',
+        usingEnvFallback: !hasAnyKey && !!envKey,
+        keys: publicKeys,
       };
-    });
+    }));
     return json({ ok: true, items, envKeyPresent: !!envKey });
   }
 
@@ -265,29 +337,115 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const secret = env.AUTH_SECRET || '';
 
   // ---- ADMIN actions ----
-  if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'clearKey') {
+  if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'setProductKeys' || action === 'testKey' || action === 'clearKey') {
     const user = await requireAuth(request, env);
     if (!user) return json({ ok: false, error: 'فقط ادمین.' }, { status: 401 });
+
+    if (action === 'testKey') {
+      const productId = String(body.productId || '');
+      const keyIndex = parseInt(String(body.keyIndex ?? '0'), 10);
+      const existingKeys = await getProductKeys(env, productId);
+      const currentKey = existingKeys[keyIndex] || existingKeys[0];
+      const provider = body.provider === 'openai' ? 'openai' : (body.provider === 'gemini' ? 'gemini' : (currentKey?.provider || 'gemini'));
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : currentKey?.baseUrl;
+      const model = typeof body.model === 'string' ? body.model.trim() : currentKey?.model;
+      const apiKey = (typeof body.apiKey === 'string' && body.apiKey.trim()) ? body.apiKey.trim() : (currentKey?.apiKey || '');
+
+      if (!apiKey) {
+        return json({ ok: false, error: 'کلید API برای این اسلات تنظیم نشده است.' }, { status: 400 });
+      }
+      const result = await testSingleKey({ provider, apiKey, baseUrl, model });
+      return json(result);
+    }
+
+    if (action === 'setProductKeys') {
+      const productId = String(body.productId || '');
+      if (!getTool(productId)) return json({ ok: false, error: 'محصول نامعتبر است.' }, { status: 400 });
+      const incomingKeys: any[] = Array.isArray(body.keys) ? body.keys : [];
+      const existingKeys = await getProductKeys(env, productId);
+      const nextKeys: ToolApiKeyEntry[] = [];
+      for (let i = 0; i < 3; i++) {
+        const inc: any = incomingKeys.find((k: any) => k.id === `key-${i + 1}`) || incomingKeys[i] || {};
+        const ext: Partial<ToolApiKeyEntry> = existingKeys[i] || {};
+        const newKey = typeof inc.apiKey === 'string' ? inc.apiKey.trim() : '';
+        const apiKey = inc.clearKey ? '' : (newKey || ext.apiKey || '');
+        nextKeys.push({
+          id: `key-${i + 1}`,
+          label: String(inc.label || ext.label || (i === 0 ? 'کلید اصلی (Primary)' : `کلید پشتیبان ${i}`)),
+          provider: inc.provider === 'openai' ? 'openai' : 'gemini',
+          baseUrl: String(inc.baseUrl ?? ext.baseUrl ?? '').trim().slice(0, 200),
+          model: String(inc.model ?? ext.model ?? '').trim().slice(0, 80),
+          apiKey,
+          enabled: inc.enabled !== false,
+        });
+      }
+      const keysJson = JSON.stringify(nextKeys);
+      await env.DB.prepare(
+        `INSERT INTO tool_settings (product_id, provider, base_url, model, api_key, updated_at, keys_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(product_id) DO UPDATE SET
+           provider=?2, base_url=?3, model=?4, api_key=?5, updated_at=?6, keys_json=?7`
+      ).bind(productId, nextKeys[0].provider, nextKeys[0].baseUrl, nextKeys[0].model, nextKeys[0].apiKey, nowIso(), keysJson).run();
+
+      return json({
+        ok: true,
+        keys: nextKeys.map((k) => ({
+          id: k.id,
+          label: k.label || '',
+          provider: k.provider,
+          baseUrl: k.baseUrl || '',
+          model: k.model || '',
+          hasKey: !!k.apiKey,
+          keyMask: maskKey(k.apiKey || ''),
+          enabled: k.enabled,
+        })),
+      });
+    }
 
     if (action === 'setKey') {
       const productId = String(body.productId || '');
       if (!getTool(productId)) return json({ ok: false, error: 'محصول نامعتبر است.' }, { status: 400 });
+      const keyIndex = Math.max(0, Math.min(2, parseInt(String(body.keyIndex ?? '0'), 10)));
+      const existingKeys = await getProductKeys(env, productId);
       const provider = body.provider === 'openai' ? 'openai' : 'gemini';
       const baseUrl = String(body.baseUrl || '').trim().slice(0, 200);
       const model = String(body.model || '').trim().slice(0, 80);
       const newKey = String(body.apiKey || '').trim();
-      const existing = await env.DB.prepare(`SELECT * FROM tool_settings WHERE product_id = ?1`).bind(productId).first<SettingsRow>();
-      // Keep the existing key when the admin leaves the field blank (i.e. only editing model/provider).
-      const apiKey = newKey || existing?.api_key || '';
+      const target = existingKeys[keyIndex];
+      const apiKey = newKey || target.apiKey || '';
+      target.provider = provider;
+      target.baseUrl = baseUrl;
+      target.model = model;
+      target.apiKey = apiKey;
+      if (typeof body.enabled === 'boolean') target.enabled = body.enabled;
+      if (body.label) target.label = String(body.label);
+
+      const keysJson = JSON.stringify(existingKeys);
       await env.DB.prepare(
-        `INSERT INTO tool_settings (product_id, provider, base_url, model, api_key, updated_at) VALUES (?1,?2,?3,?4,?5,?6)
-         ON CONFLICT(product_id) DO UPDATE SET provider=?2, base_url=?3, model=?4, api_key=?5, updated_at=?6`
-      ).bind(productId, provider, baseUrl, model, apiKey, nowIso()).run();
+        `INSERT INTO tool_settings (product_id, provider, base_url, model, api_key, updated_at, keys_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(product_id) DO UPDATE SET
+           provider=?2, base_url=?3, model=?4, api_key=?5, updated_at=?6, keys_json=?7`
+      ).bind(productId, existingKeys[0].provider, existingKeys[0].baseUrl, existingKeys[0].model, existingKeys[0].apiKey, nowIso(), keysJson).run();
+
       return json({ ok: true, hasKey: !!apiKey, keyMask: maskKey(apiKey) });
     }
 
     if (action === 'clearKey') {
       const productId = String(body.productId || '');
+      const keyIndex = body.keyIndex !== undefined ? parseInt(String(body.keyIndex), 10) : -1;
+      if (keyIndex >= 0 && keyIndex < 3) {
+        const existingKeys = await getProductKeys(env, productId);
+        existingKeys[keyIndex].apiKey = '';
+        const keysJson = JSON.stringify(existingKeys);
+        await env.DB.prepare(
+          `INSERT INTO tool_settings (product_id, provider, base_url, model, api_key, updated_at, keys_json)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT(product_id) DO UPDATE SET
+             provider=?2, base_url=?3, model=?4, api_key=?5, updated_at=?6, keys_json=?7`
+        ).bind(productId, existingKeys[0].provider, existingKeys[0].baseUrl, existingKeys[0].model, existingKeys[0].apiKey, nowIso(), keysJson).run();
+        return json({ ok: true });
+      }
       await env.DB.prepare(`DELETE FROM tool_settings WHERE product_id = ?1`).bind(productId).run();
       return json({ ok: true });
     }
@@ -441,9 +599,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     // ---- Trial gate (no valid paid token) ----
     const ip = getClientIp(request);
     let trialInfo: { used: number; remaining: number; limit: number } | undefined;
+    let coinInfo: { balance: number; cost: number; initial: number } | undefined;
     if (!paid) {
-      const limit = resolveFreeTrial(data);
-      if (limit <= 0 || !deviceId) {
+      if (!deviceId) {
         return json({ ok: false, error: 'برای استفاده از این ابزار، یکی از پلن‌ها را فعال کن.', code: 'locked' }, { status: 401 });
       }
       // Device ids are client-generated, so also cap free messages per IP per hour —
@@ -452,7 +610,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         const since = new Date(Date.now() - 3600_000).toISOString();
         const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM tool_messages WHERE ip = ?1 AND phone LIKE 'trial:%' AND created_at > ?2`).bind(ip, since).first<{ c: number }>();
         if ((row?.c || 0) >= 30) {
-          return json({ ok: false, error: 'سقف پیام‌های رایگان این ساعت پر شد. برای ادامه‌ی بدون محدودیت، یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used: limit, remaining: 0, limit } }, { status: 429 });
+          return json({ ok: false, error: 'سقف پیام‌های رایگان این ساعت پر شد. برای ادامه‌ی بدون محدودیت، یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used: 3, remaining: 0, limit: 3 }, coins: { balance: 0, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS } }, { status: 429 });
         }
       } catch { /* column missing — continue */ }
       let used = 0;
@@ -460,10 +618,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         const row = await env.DB.prepare(`SELECT count FROM tool_trials WHERE device_id = ?1 AND product_id = ?2`).bind(deviceId, productId).first<{ count: number }>();
         used = row?.count || 0;
       } catch { /* table missing */ }
-      if (used >= limit) {
-        return json({ ok: false, error: 'پیام‌های رایگان تمام شد. برای ادامه یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used, remaining: 0, limit } }, { status: 402 });
+
+      const currentCoins = calculateRemainingCoins(used);
+      if (currentCoins < COINS_PER_MESSAGE) {
+        return json({
+          ok: false,
+          error: `سکه طلایی هدیه شما (${currentCoins} سکه) برای این پیام کافی نیست (هزینه هر تحلیل هوشمند: ${COINS_PER_MESSAGE} سکه). برای ادامه مشاوره و باز کردن تمام ظرفیت، پلن پیشنهادی را فعال کنید.`,
+          code: 'trial_ended',
+          trial: { used, remaining: 0, limit: 3 },
+          coins: { balance: currentCoins, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS },
+        }, { status: 402 });
       }
-      trialInfo = { used: used + 1, remaining: Math.max(0, limit - (used + 1)), limit };
+
+      const nextCoins = Math.max(0, currentCoins - COINS_PER_MESSAGE);
+      coinInfo = { balance: nextCoins, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS };
+      trialInfo = { used: used + 1, remaining: Math.floor(nextCoins / COINS_PER_MESSAGE), limit: Math.floor(INITIAL_FREE_COINS / COINS_PER_MESSAGE) };
     } else {
       // ---- Paid: validate grant + quota ----
       const grant = await env.DB.prepare(`SELECT * FROM tool_access WHERE id = ?1`).bind(payload!.gid).first<GrantRow>();
@@ -490,15 +659,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
     const behavior = resolveBehavior(tool, data);
     const systemPrompt = buildToolSystemPrompt(tool, data);
-    const settings = await resolveSettings(env, productId);
+    const productKeys = await getProductKeys(env, productId);
+    const envKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
     const history = messages.slice(0, -1)
       .filter((m) => m.role === 'user' || m.role === 'model')
       .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
 
     let answer = '';
     let mode: 'ai' | 'local' = 'local';
-    const aiText = await callAiProvider({ systemPrompt, history, question, temperature: behavior.temperature, settings, preferredModel: behavior.model });
-    if (aiText) { answer = aiText; mode = 'ai'; }
+    const aiResult = await callAiProviderWithFailover({
+      systemPrompt,
+      history,
+      question,
+      temperature: behavior.temperature,
+      keys: productKeys,
+      preferredModel: behavior.model,
+      envFallbackKey: envKey,
+    });
+    if (aiResult.text) { answer = aiResult.text; mode = 'ai'; }
     if (!answer) answer = localToolAnswer(tool, question);
 
     // Persist: trial counter + message log.
@@ -533,7 +711,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       }
     }
 
-    return json({ ok: true, answer, mode, trial: trialInfo, quota: quotaInfo });
+    return json({ ok: true, answer, mode, trial: trialInfo, coins: coinInfo, quota: quotaInfo });
   }
 
   return json({ ok: false, error: 'اکشن نامعتبر است.' }, { status: 400 });

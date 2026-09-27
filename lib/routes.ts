@@ -14,6 +14,8 @@ export interface Route {
   page: string;
   /** id or slug of the open blog post (page === 'blog' only) */
   postId: string | null;
+  /** id of the open product (page === 'products' only) */
+  productId?: string | null;
 }
 
 const decode = (s: string): string => {
@@ -28,12 +30,17 @@ export const pathForPage = (page: string): string => (page === 'home' ? '/' : `/
 
 export const pathForPost = (idOrSlug: string): string => (idOrSlug ? `/blog/${encodeURIComponent(idOrSlug)}` : '/blog');
 
+export const pathForProduct = (productId: string): string => (productId ? `/products/${encodeURIComponent(productId)}` : '/products');
+
 /** Preferred public URL of a post: slug when it has one, id otherwise. */
 export const postPath = (post: { id: string; slug?: string } | null | undefined): string =>
   post ? pathForPost(post.slug || post.id) : '/blog';
 
-export const routeToPath = (route: Route): string =>
-  route.page === 'blog' && route.postId ? pathForPost(route.postId) : pathForPage(route.page);
+export const routeToPath = (route: Route): string => {
+  if (route.page === 'blog' && route.postId) return pathForPost(route.postId);
+  if (route.page === 'products' && route.productId) return pathForProduct(route.productId);
+  return pathForPage(route.page);
+};
 
 /**
  * Parse a pathname into a route; `null` for unknown paths (the SPA shows the
@@ -48,6 +55,11 @@ export const parsePath = (pathname: string, customSlugs: readonly string[] = [])
   if (head === 'blog') {
     if (parts.length === 1) return { page: 'blog', postId: null };
     if (parts.length === 2 && second) return { page: 'blog', postId: second };
+    return null;
+  }
+  if (head === 'products' || head === 'product') {
+    if (parts.length === 1) return { page: 'products', postId: null };
+    if (parts.length === 2 && second) return { page: 'products', postId: null, productId: second };
     return null;
   }
   if (parts.length !== 1) return null;
