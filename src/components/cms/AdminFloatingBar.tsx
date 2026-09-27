@@ -67,7 +67,7 @@ export const AdminFloatingBar: React.FC = () => {
   };
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[10000] w-[95%] max-w-4xl dir-rtl">
+    <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-[10000] w-[95%] max-w-4xl dir-rtl">
       {/* Toast Notification */}
       {toastMessage && (
         <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-extrabold px-4 py-1.5 rounded-full shadow-2xl flex items-center gap-2 text-xs animate-bounce border border-emerald-300">

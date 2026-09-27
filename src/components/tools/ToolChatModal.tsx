@@ -254,7 +254,7 @@ export const ToolChatModal: React.FC<Props> = ({ tool, theme, data, channels, pu
     <div className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-6 bg-black/70 backdrop-blur-md" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-2xl h-[92dvh] sm:h-[86dvh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
+        className={`relative w-full max-w-2xl h-[92vh] supports-[height:92dvh]:h-[92dvh] sm:h-[86vh] sm:supports-[height:86dvh]:h-[86dvh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
       >
         {/* Header */}
         <div className={`flex items-center justify-between gap-3 px-5 py-4 border-b ${isDark ? 'border-white/10' : 'border-slate-100'}`}>

@@ -216,7 +216,7 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: 20 }}
               transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-              className={`relative w-full max-w-4xl max-h-[90dvh] overflow-y-auto rounded-[var(--nd-radius-panel)] p-6 sm:p-10 border shadow-2xl my-auto no-scrollbar ${
+              className={`relative w-full max-w-4xl max-h-[90vh] supports-[max-height:90dvh]:max-h-[90dvh] overflow-y-auto rounded-[var(--nd-radius-panel)] p-6 sm:p-10 border shadow-2xl my-auto no-scrollbar ${
                 isDark ? 'bg-[#12121d] border-white/12 text-white' : 'nd-surface-bg border-[color:var(--nd-line)] text-[color:var(--nd-ink)]'
               }`}
             >

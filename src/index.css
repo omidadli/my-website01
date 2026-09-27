@@ -940,14 +940,6 @@ body.chat-open .mascot-root {
   pointer-events: none;
 }
 
-/* mobile soft-keyboard is open (focus outside the card) → slide the card
-   below the viewport so the keyboard never half-buries it */
-.mascot-root.mascot-kbd-away {
-  opacity: 0;
-  transform: translateY(140%);
-  pointer-events: none;
-}
-
 /* user is scrolling → step back so content stays readable */
 .mascot-root.mascot-compact {
   opacity: 0.45;
@@ -1079,11 +1071,19 @@ body.chat-open .mascot-root {
    ========================================================================== */
 
 .mascot-chat {
-  /* % of the initial containing block = scrollbar-safe viewport width;
-     dvh tracks the visible viewport on mobile (URL bar / keyboard). */
   width: min(94%, 390px);
-  height: min(72dvh, 600px);
+  /* vh as the universal baseline; the @supports block below upgrades to dvh
+     (URL-bar / keyboard aware) only where the engine knows it — iOS 15.4+ /
+     Chrome 108+. Kept as @supports so the fallback survives minification. */
+  height: min(72vh, 600px);
+  -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
+}
+
+@supports (height: 1dvh) {
+  .mascot-chat {
+    height: min(72dvh, 600px);
+  }
 }
 
 .mascot-chat-stage {
@@ -1118,12 +1118,10 @@ body.chat-open .mascot-root {
 .mascot-chat-said {
   position: absolute;
   top: 14px;
-  inset-inline-start: 14px;
+  left: 14px;
   max-width: 58%;
   padding: 0.45rem 0.75rem;
-  /* tail sits on the bottom-inline-start corner in both directions */
-  border-radius: 12px 12px 12px 12px;
-  border-end-start-radius: 4px;
+  border-radius: 12px 12px 12px 4px;
   background: rgba(255, 255, 255, 0.92);
   color: #17171c;
   font-size: 11px;
@@ -1250,27 +1248,6 @@ body.chat-open .mascot-root {
   100% {
     transform: scaleY(0);
     opacity: 0;
-  }
-}
-
-/* Isometric 3D icon badge — base pose + hover lift. The transform must live
-   here (not inline) so the hover state can actually change it. */
-.nd-icon-badge-3d {
-  transform: perspective(600px) rotateX(10deg) rotateY(-8deg) rotateZ(3deg);
-}
-
-.nd-icon-badge-3d:hover {
-  transform: perspective(600px) rotateX(6deg) rotateY(-4deg) rotateZ(1deg) translateY(-8px);
-}
-
-/* Touch / reduced-motion: keep the static pose — a tap must not leave the
-   badge stuck in its hover state. */
-@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
-  .nd-icon-badge-3d:hover {
-    transform: perspective(600px) rotateX(10deg) rotateY(-8deg) rotateZ(3deg);
-  }
-  .nd-icon-badge-shadow {
-    transition: none;
   }
 }
 

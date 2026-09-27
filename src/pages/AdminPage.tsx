@@ -370,7 +370,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   /* ------------------------- LOGIN GATE ------------------------- */
   if (!isAdmin) {
     return (
-      <div className="min-h-[85dvh] flex items-center justify-center py-12 px-4 dir-rtl">
+      <div className="min-h-[85vh] supports-[min-height:85dvh]:min-h-[85dvh] flex items-center justify-center py-12 px-4 dir-rtl">
         <div className="nd-card max-w-md w-full p-8 sm:p-10 space-y-6">
           <div className="text-center space-y-3">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[color:var(--nd-accent)] text-white flex items-center justify-center shadow-md">
@@ -541,7 +541,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       </AModal>
 
       <div className="flex gap-6 items-start max-w-[1500px] mx-auto">
-        <div className="hidden lg:block sticky top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto">{sidebar}</div>
+        <div className="hidden lg:block sticky top-24 max-h-[calc(100vh-7rem)] supports-[height:1dvh]:max-h-[calc(100dvh-7rem)] overflow-y-auto">{sidebar}</div>
 
         <main className="flex-1 min-w-0 space-y-6 pb-24">
           {/* ---------------- DASHBOARD ---------------- */}
