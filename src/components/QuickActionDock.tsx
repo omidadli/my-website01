@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import { Page, Theme } from '../types';
 import { Briefcase, Package, Home, GraduationCap, PhoneCall } from 'lucide-react';
-import { useKeyboardOpen } from '../utils/useKeyboardOpen';
 
 interface QuickActionDockProps {
   theme: Theme;
@@ -218,10 +217,6 @@ export const QuickActionDock: React.FC<QuickActionDockProps> = ({
 
   const ActiveIcon = activeTab.icon;
 
-  // Soft keyboard open (mobile) → slide the dock out of the way instead of
-  // letting iOS overlay the keyboard on top of it (stuck/jumped chrome).
-  const keyboardOpen = useKeyboardOpen();
-
   // Framer Motion spring physics config for synchronized morphing & translation
   const springTransition = {
     type: 'spring' as const,
@@ -233,9 +228,7 @@ export const QuickActionDock: React.FC<QuickActionDockProps> = ({
   return (
     <nav
       aria-label="منوی ناوبری شناور"
-      className={`fixed bottom-3 sm:bottom-6 inset-x-0 z-40 flex justify-center px-3 pointer-events-none select-none transition-transform duration-300 ${
-        keyboardOpen ? 'translate-y-[140%]' : 'translate-y-0'
-      }`}
+      className="fixed bottom-3 sm:bottom-6 inset-x-0 z-40 flex justify-center px-3 pointer-events-none select-none"
     >
       <div
         ref={containerRef}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { motion, useReducedMotion, Variants } from 'motion/react';
+import { motion, Variants } from 'motion/react';
 
 export type CinematicVariant = 'fade-up' | 'fade-in' | 'slide-left' | 'slide-right' | 'scale-up' | 'cinematic-zoom';
 
@@ -134,16 +134,7 @@ export const CinematicSection: React.FC<CinematicSectionProps> = ({
   glowColor = 'purple',
   viewportMargin = '-40px'
 }) => {
-  const reducedMotion = useReducedMotion();
   const selectedVariant = variantsMap[variant];
-
-  // MotionConfig's reducedMotion="user" strips transforms but NOT filter/blur
-  // tweens — drop them (and keep a plain opacity fade) for reduced-motion users.
-  const sanitize = (v: any): any => {
-    if (!reducedMotion) return v;
-    const { filter: _filter, x: _x, y: _y, scale: _scale, ...rest } = v || {};
-    return { ...rest, opacity: v?.opacity ?? 0 };
-  };
 
   return (
     <motion.div
@@ -152,9 +143,9 @@ export const CinematicSection: React.FC<CinematicSectionProps> = ({
       whileInView="visible"
       viewport={{ once: true, margin: viewportMargin }}
       variants={{
-        hidden: sanitize(selectedVariant.hidden),
+        hidden: selectedVariant.hidden,
         visible: {
-          ...sanitize(selectedVariant.visible),
+          ...selectedVariant.visible,
           transition: {
             ...((selectedVariant.visible as any)?.transition || {}),
             delay

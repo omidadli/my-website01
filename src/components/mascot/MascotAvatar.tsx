@@ -5,8 +5,6 @@ import { soulJourney } from './soul';
 import { MascotCue } from './useMascotEvents';
 import { VIDEO_SCENES, MascotVisualStep, videoSrc } from './mascotVideos';
 import { useMascotLookAt } from './useMascotLookAt';
-import { useStaticMediaMode } from './useStaticMediaMode';
-import { useKeyboardOpen } from '../../utils/useKeyboardOpen';
 import sprites from './sprites.json';
 
 /** `play()` returns a Promise in modern browsers but `undefined` in old WebViews/jsdom — never let that throw. */
@@ -72,20 +70,18 @@ function LayerView({
   onReady,
   onEnded,
   onVideoEl,
-  staticMode,
 }: {
   layer: Layer;
   visible: boolean;
   onReady: () => void;
   onEnded: () => void;
   onVideoEl: (el: HTMLVideoElement | null) => void;
-  staticMode: boolean;
 }) {
   const style: React.CSSProperties = {
     opacity: visible ? 1 : 0,
     transition: `opacity ${FADE_MS}ms ease`,
   };
-  if (layer.step.img || staticMode) {
+  if (layer.step.img) {
     const imageName = layer.step.img || layer.step.poster;
     const meta = imageName ? META[imageName] : undefined;
     const imageSrc = meta?.src;
@@ -245,9 +241,6 @@ export function MascotFigure({
   corner?: boolean;
   lookAtOptions?: Parameters<typeof useMascotLookAt>[3];
 }) {
-  // Static media mode (touch / reduced-motion / Save-Data / 2G) → WebP frames only.
-  const staticMode = useStaticMediaMode();
-
   const rootRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
@@ -438,7 +431,6 @@ export function MascotFigure({
             onReady={() => undefined}
             onEnded={() => handleEnded(front.key)}
             onVideoEl={attachVideo(front.key)}
-            staticMode={staticMode}
           />
           {back && (
             <LayerView
@@ -448,12 +440,10 @@ export function MascotFigure({
               onReady={() => handleReady(back.key)}
               onEnded={() => handleEnded(back.key)}
               onVideoEl={attachVideo(back.key)}
-              staticMode={staticMode}
             />
           )}
 
-          {/* Skip the blink timer along with video motion on touch/reduced-motion devices. */}
-          {!staticMode && <MascotEyelids scene={scene} activeStep={backIn && back ? back.step : front.step} />}
+          <MascotEyelids scene={scene} activeStep={backIn && back ? back.step : front.step} />
         </div>
       </div>
     </div>
@@ -470,9 +460,6 @@ export function MascotFigure({
 export function MascotAvatar() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const compactTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Soft keyboard open (and focus NOT inside the card's own name input) →
-  // tuck the card away so mobile keyboards never half-bury it.
-  const keyboardOpen = useKeyboardOpen('.mascot-root');
 
   const [bubble, setBubble] = useState<{ id: number; text: string; shown: string; askName?: boolean } | null>(null);
   const bubbleId = useRef(0);
@@ -561,12 +548,7 @@ export function MascotAvatar() {
   const askVisible = !!bubble?.askName;
 
   return (
-    <div
-      ref={rootRef}
-      className={`mascot-root fixed bottom-2 start-2 z-[50] sm:bottom-4 sm:start-5 ${
-        keyboardOpen ? 'mascot-kbd-away' : ''
-      }`}
-    >
+    <div ref={rootRef} className="mascot-root fixed bottom-2 start-2 z-[50] sm:bottom-4 sm:start-5">
       <div
         className="mascot-card"
         onClick={() => window.dispatchEvent(new CustomEvent('nd:open-chat'))}

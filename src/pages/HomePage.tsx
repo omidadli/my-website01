@@ -31,8 +31,7 @@ import {
   Send,
   Search,
 } from 'lucide-react';
-import { motion, AnimatePresence, useMotionValue, useSpring, useTransform, useReducedMotion } from 'motion/react';
-import { useHoverCapable } from '../utils/useHoverCapable';
+import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'motion/react';
 import { MaskLines, Magnetic } from '../components/motion/Cinematic';
 import { linkProps, postPath } from '../utils/router';
 import { normalizeCaseStudies } from '../utils/caseStudies';
@@ -109,11 +108,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const [auditPrompt, setAuditPrompt] = usePreservedState<string>('homepage_audit_prompt', '');
   const [openFaq, setOpenFaq] = usePreservedState<number>('homepage_open_faq', -1);
 
-  // Cinematic pointer parallax for the hero stage — desktop-fine-pointer only
-  // (touch and reduced-motion visitors get a still stage, zero rAF work).
-  const hoverCapable = useHoverCapable();
-  const reducedMotion = useReducedMotion();
-  const parallaxEnabled = hoverCapable && !reducedMotion;
+  // Cinematic pointer parallax for the hero stage
   const px = useMotionValue(0);
   const py = useMotionValue(0);
   const sx = useSpring(px, { stiffness: 90, damping: 20 });
@@ -125,7 +120,6 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const spotY = useTransform(sy, (v) => `${42 + v * 34}%`);
 
   const handleStageMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!parallaxEnabled) return;
     const r = e.currentTarget.getBoundingClientRect();
     px.set(((e.clientX - r.left) / r.width - 0.5) * 2);
     py.set(((e.clientY - r.top) / r.height - 0.5) * 2);
