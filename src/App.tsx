@@ -23,6 +23,7 @@ const BlogPostDetailPage = lazy(() => import('./pages/BlogPostDetailPage').then(
 const ContactPage = lazy(() => import('./pages/ContactPage').then((m) => ({ default: m.ContactPage })));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage').then((m) => ({ default: m.ProjectsPage })));
 const ProductsPage = lazy(() => import('./pages/ProductsPage').then((m) => ({ default: m.ProductsPage })));
+const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
 const CustomPageView = lazy(() => import('./pages/CustomPageView').then((m) => ({ default: m.CustomPageView })));
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -49,6 +50,9 @@ function MainLayout({
   const [selectedCaseStudy, setSelectedCaseStudy] = useState<CaseStudy | null>(null);
   const [selectedBlogPostId, setSelectedBlogPostId] = useState<string | null>(() =>
     initialRoute?.page === 'blog' ? initialRoute.postId : null,
+  );
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(() =>
+    initialRoute?.page === 'products' ? initialRoute.productId || null : null,
   );
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
   const [isThemeTransitioning, setIsThemeTransitioning] = useState<boolean>(false);
@@ -108,6 +112,7 @@ function MainLayout({
       // bare /blog = the article LIST — always drop the selected post so
       // clicking the "آموزش" nav while reading a post goes back to the list.
       setSelectedBlogPostId(route.page === 'blog' ? route.postId : null);
+      setSelectedProductId(route.page === 'products' ? route.productId || null : null);
     };
 
     syncFromUrl();
@@ -139,7 +144,15 @@ function MainLayout({
     // Navigating to 'blog' always means the article LIST — drop the selected
     // post even when coming from a post detail page.
     setSelectedBlogPostId(null);
+    setSelectedProductId(null);
     navigate(pathForPage(page));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSelectProduct = (productId: string | null) => {
+    setSelectedProductId(productId);
+    setCurrentPage('products');
+    navigate(productId ? `/products/${encodeURIComponent(productId)}` : '/products');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -306,10 +319,25 @@ function MainLayout({
             )}
 
             {currentPage === 'products' && (
-              <ProductsPage
-                theme={theme}
-                onNavigate={handleNavigate}
-              />
+              selectedProductId ? (
+                <ProductDetailPage
+                  productId={selectedProductId}
+                  theme={theme}
+                  onNavigate={(p) => {
+                    if (p === 'products') {
+                      handleSelectProduct(null);
+                    } else {
+                      handleNavigate(p);
+                    }
+                  }}
+                />
+              ) : (
+                <ProductsPage
+                  theme={theme}
+                  onNavigate={handleNavigate}
+                  onSelectProduct={handleSelectProduct}
+                />
+              )
             )}
 
             {currentPage === 'admin' && (

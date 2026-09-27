@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { CollectionEditor } from '../components/admin/CollectionEditor';
 import { FieldsForm, FieldDef } from '../components/admin/FieldsForm';
 import { SeoBox } from '../components/admin/SeoBox';
+import { ProductSyncManager } from '../components/admin/ProductSyncManager';
 import { ACard, ASectionTitle, AInput, ATextarea, ASelect, ALabel, ABadge, AConfirm, AModal } from '../components/admin/ui';
 import {
   LayoutDashboard, BookOpen, MessageSquare, Sparkles, Briefcase, ShoppingBag,
@@ -716,16 +717,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           {/* ---------------- PRODUCTS ---------------- */}
           {activeTab === 'products' && (
             <div className="space-y-8">
-              <CollectionEditor
-                title="محصولات و ابزارها"
-                arrayPath="PRODUCTS"
-                fields={PRODUCT_FIELDS}
-                defaults={() => ({ id: 'product-' + Date.now(), title: 'محصول جدید', description: '', targetAudience: '', iconName: 'target', badge: '', price: '', actionText: 'دریافت', status: 'draft', slug: '', seo: {} })}
-                addLabel="افزودن محصول"
-                preview={(p) => ({ title: p.title, subtitle: `${p.price || ''} · ${p.badge || ''}`, badges: [p.status === 'draft' ? { text: 'پیش‌نویس', tone: 'warn' as const } : { text: 'منتشرشده', tone: 'ok' as const }] })}
+              <ProductSyncManager
+                products={data.PRODUCTS || []}
+                data={data}
+                updateField={updateField}
+                onToast={showToast}
               />
+
               <ACard>
-                <ASectionTitle title="تنظیمات صفحه محصولات" />
+                <ASectionTitle title="تنظیمات صفحه ویترین محصولات" desc="نشان، تیتر و زیرتیتر صفحه /products در سایت" />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <FieldsForm basePath="PRODUCTS_PAGE_DATA" item={data.PRODUCTS_PAGE_DATA} fields={[
                     { key: 'badge', label: 'نشان هدر' },
@@ -1279,9 +1279,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   <p className="text-xs font-black flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-[color:var(--nd-accent)]" /> بازی‌وارسازی و تشویق به خرید</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                     <div className="space-y-1.5">
-                      <ALabel>تعداد پیام رایگان (هر ابزار / هر دستگاه)</ALabel>
+                      <ALabel>پیام‌های رایگان (اقتصاد ۵۰۰ سکه هدیه / کسر ۱۵۰ سکه)</ALabel>
                       <AInput dir="ltr" type="number" min={0} value={String(data.AI_TOOLS_CONFIG.freeTrialCount ?? 3)} onChange={(e) => updateField('AI_TOOLS_CONFIG.freeTrialCount', parseInt(e.target.value, 10) || 0)} />
-                      <p className="text-[10px] nd-faint">۰ = بدون تست رایگان (کاملاً قفل)</p>
+                      <p className="text-[10px] nd-faint">۳ پیام = ۵۰۰ سکه شروع (۱۵۰ کسر در هر پیام، ۵۰ سکه باقی‌مانده جهت تبدیل)</p>
                     </div>
                     <div className="space-y-1.5 sm:col-span-2">
                       <ALabel>جمله‌ی اعتمادساز (Social Proof)</ALabel>

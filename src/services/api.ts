@@ -336,13 +336,13 @@ export const api = {
   },
 
   /** Public: send a message to a tool. With a token → paid; without → free trial (device-based). */
-  async toolChat(payload: { token?: string; productId: string; deviceId: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; quota?: { limit: number; used: number; remaining: number } }> {
+  async toolChat(payload: { token?: string; productId: string; deviceId: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; coins?: { balance: number; cost: number; initial: number }; quota?: { limit: number; used: number; remaining: number } }> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'chat', ...payload }) });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok
-        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, quota: j.quota }
-        : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, quota: j?.quota };
+        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, coins: j.coins, quota: j.quota }
+        : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, coins: j?.coins, quota: j?.quota };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
     }
@@ -361,7 +361,29 @@ export const api = {
   },
 
   /** Admin: per-tool AI connection settings (API key is MASKED, never raw). */
-  async listToolSettings(): Promise<{ items: Array<{ productId: string; name: string; provider: string; baseUrl: string; model: string; hasKey: boolean; keyMask: string; usingEnvFallback: boolean }>; envKeyPresent: boolean }> {
+  async listToolSettings(): Promise<{
+    items: Array<{
+      productId: string;
+      name: string;
+      provider: string;
+      baseUrl: string;
+      model: string;
+      hasKey: boolean;
+      keyMask: string;
+      usingEnvFallback: boolean;
+      keys?: Array<{
+        id: string;
+        label: string;
+        provider: 'gemini' | 'openai';
+        baseUrl: string;
+        model: string;
+        hasKey: boolean;
+        keyMask: string;
+        enabled: boolean;
+      }>;
+    }>;
+    envKeyPresent: boolean;
+  }> {
     try {
       const r = await fetch('/api/tools?view=settings', { headers: headers() });
       if (!r.ok) return { items: [], envKeyPresent: false };
@@ -372,8 +394,57 @@ export const api = {
     }
   },
 
+  /** Admin: set the 3 AI connection keys for one tool/product. */
+  async setProductKeys(payload: {
+    productId: string;
+    keys: Array<{
+      id: string;
+      label?: string;
+      provider: string;
+      baseUrl?: string;
+      model?: string;
+      apiKey?: string;
+      enabled?: boolean;
+      clearKey?: boolean;
+    }>;
+  }): Promise<{ ok: boolean; keys?: any[]; error?: string }> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'setProductKeys', ...payload }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? { ok: true, keys: j.keys } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  /** Admin: test an AI connection key live. */
+  async testToolKey(payload: {
+    productId: string;
+    keyIndex?: number;
+    provider?: string;
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+  }): Promise<{ ok: boolean; latencyMs?: number; model?: string; reply?: string; error?: string }> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'testKey', ...payload }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return j;
+    } catch {
+      return { ok: false, error: 'اتصال به سرور جهت تست کلید برقرار نشد.' };
+    }
+  },
+
   /** Admin: set the AI connection (provider/model/key) for one tool. */
-  async setToolKey(payload: { productId: string; provider: string; baseUrl?: string; model?: string; apiKey?: string }): Promise<{ ok: boolean; error?: string }> {
+  async setToolKey(payload: { productId: string; provider: string; baseUrl?: string; model?: string; apiKey?: string; keyIndex?: number }): Promise<{ ok: boolean; error?: string }> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'setKey', ...payload }) });
       const j = await r.json().catch(() => ({}));
@@ -384,9 +455,9 @@ export const api = {
   },
 
   /** Admin: clear the AI connection (falls back to the shared GEMINI_API_KEY). */
-  async clearToolKey(productId: string): Promise<boolean> {
+  async clearToolKey(productId: string, keyIndex?: number): Promise<boolean> {
     try {
-      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'clearKey', productId }) });
+      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'clearKey', productId, keyIndex }) });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok;
     } catch {

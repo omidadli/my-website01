@@ -31,17 +31,62 @@ export interface CustomPage {
   blocks: CustomBlock[];
 }
 
+export interface ProductApiKey {
+  id: string;
+  label?: string;
+  provider: 'gemini' | 'openai';
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  hasKey?: boolean;
+  keyMask?: string;
+  enabled?: boolean;
+}
+
+export interface ProductPlan {
+  id: 'basic' | 'pro' | 'vip' | string;
+  name: string;
+  price: string;
+  durationDays: number;
+  messageQuota: number;
+  maxDevices: number;
+  tagline: string;
+  perks: string[];
+  popular?: boolean;
+  badge?: string;
+}
+
+export interface ProductBehavior {
+  persona?: string;
+  welcome?: string;
+  suggestions?: string[];
+  temperature?: number;
+  useDigest?: boolean;
+  model?: string;
+}
+
 export interface ProductItem {
   id: string;
   title: string;
+  tagline?: string;
   description: string;
   targetAudience: string;
+  problemSolved?: string;
+  whyBuy?: string;
   iconName: string;
+  glow?: 'magenta' | 'blue' | 'purple' | 'emerald';
   badge?: string;
   actionText?: string;
   price?: string;
   slug?: string;
   status?: 'published' | 'draft';
+  features?: string[];
+  howItWorks?: string[];
+  sample?: { role: 'user' | 'assistant'; text: string }[];
+  placeholder?: string;
+  plans?: ProductPlan[];
+  behavior?: ProductBehavior;
+  keys?: ProductApiKey[];
   seo?: PageSeoConfig;
 }
 
