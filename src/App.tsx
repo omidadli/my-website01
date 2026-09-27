@@ -7,8 +7,11 @@ import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { BackgroundBlobs } from './components/BackgroundBlobs';
 import { CustomCursor } from './components/CustomCursor';
-import { AdminFloatingBar } from './components/cms/AdminFloatingBar';
-import { AdminLoginModal } from './components/cms/AdminLoginModal';
+// Admin chrome (TreeEditor/MediaPickerModal are already behind the lazy
+// AdminPage chunk) — these two stay out of the public visitor's bundle too
+// and only load when an admin session is active.
+const AdminFloatingBar = lazy(() => import('./components/cms/AdminFloatingBar').then((m) => ({ default: m.AdminFloatingBar })));
+const AdminLoginModal = lazy(() => import('./components/cms/AdminLoginModal').then((m) => ({ default: m.AdminLoginModal })));
 import { ScrollProgress, Grain } from './components/motion/Cinematic';
 import { HomePage } from './pages/HomePage';
 // Keep the first paint lean: only the active route's page chunk is loaded.
@@ -175,7 +178,7 @@ function MainLayout({
         duration: 0.46,
         ease: [0.22, 1, 0.36, 1],
       }}
-      className="min-h-screen relative flex flex-col transition-colors duration-500 font-['Vazirmatn',sans-serif] nd-bg overflow-x-hidden origin-center"
+      className="min-h-screen relative flex flex-col transition-colors duration-500 font-['Vazirmatn',sans-serif] nd-bg overflow-x-clip origin-center"
     >
       {/* Subtle Premium Ambient Theme Wash Overlay */}
       <AnimatePresence>
@@ -329,8 +332,12 @@ function MainLayout({
         </AnimatePresence>
       </main>
 
-      {/* Admin Floating Toolbar */}
-      <ErrorBoundary name="AdminFloatingBar" fallback={null}><AdminFloatingBar /></ErrorBoundary>
+      {/* Admin Floating Toolbar — chunk + render only for signed-in admins */}
+      {isAdmin && (
+        <ErrorBoundary name="AdminFloatingBar" fallback={null}>
+          <Suspense fallback={null}><AdminFloatingBar /></Suspense>
+        </ErrorBoundary>
+      )}
       {currentPage !== 'admin' && (
         <ErrorBoundary name="ChatWidget" fallback={null}>
           <Suspense fallback={null}><ChatWidget theme={theme} /></Suspense>
@@ -351,11 +358,17 @@ function MainLayout({
         </ErrorBoundary>
       )}
 
-      {/* Admin PIN Login Modal */}
-      <AdminLoginModal
-        isOpen={isAdminModalOpen}
-        onClose={() => setIsAdminModalOpen(false)}
-      />
+      {/* Admin PIN Login Modal — chunk loaded only when the modal is opened */}
+      {isAdminModalOpen && (
+        <ErrorBoundary name="AdminLoginModal" fallback={null}>
+          <Suspense fallback={null}>
+            <AdminLoginModal
+              isOpen={isAdminModalOpen}
+              onClose={() => setIsAdminModalOpen(false)}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* Footer */}
       <Footer

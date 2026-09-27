@@ -1,6 +1,7 @@
 import React from 'react';
 import { Rocket, Target, TrendingUp, Laptop, Megaphone, Settings, Award, Layers, Search, Sparkles, BarChart2, Zap, DollarSign, Code2 } from 'lucide-react';
 import { Theme } from '../../types';
+import { useHoverCapable } from '../../utils/useHoverCapable';
 
 interface IconBadgeProps {
   iconName: string;
@@ -18,6 +19,8 @@ export const IconBadge3D: React.FC<IconBadgeProps> = ({
   floating = true
 }) => {
   const isDark = theme === 'dark';
+  // Touch devices keep the static isometric pose — hover lift would stick after a tap.
+  const hoverCapable = useHoverCapable();
 
   const renderIcon = () => {
     const iconProps = { className: size === 'sm' ? 'w-5 h-5' : size === 'lg' ? 'w-8 h-8' : size === 'xl' ? 'w-10 h-10' : 'w-6 h-6' };
@@ -109,18 +112,19 @@ export const IconBadge3D: React.FC<IconBadgeProps> = ({
   return (
     <div className={`relative group ${floating ? 'animate-float' : ''}`}>
       {/* Soft isometric 3D floor shadow */}
-      <div 
-        className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-3/4 h-3 rounded-full blur-md opacity-60 transition-all group-hover:scale-125 group-hover:opacity-90"
+      <div
+        className={`nd-icon-badge-shadow absolute -bottom-2 left-1/2 -translate-x-1/2 w-3/4 h-3 rounded-full blur-md opacity-60 transition-all ${hoverCapable ? 'group-hover:scale-125 group-hover:opacity-90' : ''}`}
         style={{ backgroundColor: colorStyles.glow }}
       />
 
-      {/* Main 3D isometric rotated panel */}
-      <div 
-        className={`relative flex items-center justify-center bg-gradient-to-br ${colorStyles.bg} backdrop-blur-xl border transition-all duration-300 transform group-hover:-translate-y-2 group-hover:rotate-3 ${sizeClasses}`}
+      {/* Main 3D isometric rotated panel — hover lift lives in CSS
+          (.nd-icon-badge-3d) because an inline transform would override the
+          Tailwind group-hover utilities and silently disable the effect. */}
+      <div
+        className={`nd-icon-badge-3d relative flex items-center justify-center bg-gradient-to-br ${colorStyles.bg} backdrop-blur-xl border transition-all duration-300 ${sizeClasses}`}
         style={{
           borderColor: colorStyles.border,
           boxShadow: `0 12px 30px ${colorStyles.glow}, inset 0 2px 4px rgba(255,255,255,0.3)`,
-          transform: 'perspective(600px) rotateX(10deg) rotateY(-8deg) rotateZ(3deg)'
         }}
       >
         {/* Top glossy shine reflection */}

@@ -124,6 +124,10 @@ export const FieldInspectorModal: React.FC<FieldInspectorModalProps> = ({
                   <img
                     src={val}
                     alt="Preview"
+                    loading="lazy"
+                    decoding="async"
+                    width={80}
+                    height={80}
                     className="w-20 h-20 object-cover rounded-xl border border-white/20 bg-black/40"
                   />
                   <div className="space-y-2 flex-1">
@@ -141,7 +145,7 @@ export const FieldInspectorModal: React.FC<FieldInspectorModalProps> = ({
                       value={val}
                       onChange={(e) => setVal(e.target.value)}
                       placeholder="آدرس URL مستقیم تصویر..."
-                      className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-2 text-xs font-mono text-slate-300 dir-ltr"
+                      className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-2 text-base font-mono text-slate-300 dir-ltr"
                     />
                   </div>
                 </div>
@@ -252,7 +256,7 @@ export const FieldInspectorModal: React.FC<FieldInspectorModalProps> = ({
                     type="number"
                     value={val}
                     onChange={(e) => setVal(Number(e.target.value))}
-                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl px-4 py-3 text-sm font-bold text-white dir-ltr focus:border-amber-400 focus:outline-none"
+                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl px-4 py-3 text-base font-bold text-white dir-ltr focus:border-amber-400 focus:outline-none"
                   />
                   <Hash className="w-4 h-4 text-slate-400 absolute top-3.5 left-3" />
                 </div>
@@ -316,14 +320,14 @@ export const FieldInspectorModal: React.FC<FieldInspectorModalProps> = ({
                     value={val || ''}
                     onChange={(e) => setVal(e.target.value)}
                     rows={5}
-                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-3 text-xs text-white focus:border-amber-400 focus:outline-none leading-relaxed"
+                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-3 text-base text-white focus:border-amber-400 focus:outline-none leading-relaxed"
                   />
                 ) : (
                   <input
                     type="text"
                     value={val || ''}
                     onChange={(e) => setVal(e.target.value)}
-                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-3 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+                    className="w-full bg-[#0a0520] border border-white/20 rounded-xl p-3 text-base font-bold text-white focus:border-amber-400 focus:outline-none"
                   />
                 )}
               </div>

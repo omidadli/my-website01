@@ -94,7 +94,7 @@ export const CollectionEditor: React.FC<CollectionEditorProps> = ({
               {/* Row header */}
               <div className="flex items-center gap-3 p-4">
                 {p.image && (
-                  <img src={p.image} alt="" className="w-12 h-12 rounded-xl object-cover border border-[color:var(--nd-line)] shrink-0" referrerPolicy="no-referrer" />
+                  <img src={p.image} alt="" loading="lazy" decoding="async" width={48} height={48} className="w-12 h-12 rounded-xl object-cover border border-[color:var(--nd-line)] shrink-0" referrerPolicy="no-referrer" />
                 )}
                 <button type="button" onClick={() => setOpenIdx(isOpen ? null : idx)} className="flex-1 min-w-0 text-right cursor-pointer group">
                   <span className="block text-xs sm:text-sm font-extrabold text-[color:var(--nd-ink)] truncate group-hover:text-[color:var(--nd-accent)] transition-colors">

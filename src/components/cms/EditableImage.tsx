@@ -3,6 +3,7 @@ import { Pencil } from 'lucide-react';
 import { useContent, getByPath } from '../../context/ContentContext';
 import { MediaPickerModal } from './MediaPickerModal';
 import { imageFallback } from '../../utils/imageFallback';
+import { responsiveImageProps } from '../../utils/responsiveImage';
 
 interface EditableImageProps {
   path: string;
@@ -30,7 +31,7 @@ export const EditableImage: React.FC<EditableImageProps> = ({
   const currentValue = getByPath(data, path) || defaultSrc || src || fallbackSrc;
 
   if (!isAdmin) {
-    return <img src={currentValue} alt={alt} className={className} referrerPolicy="no-referrer" onError={imageFallback()} />;
+    return <img alt={alt} {...responsiveImageProps(currentValue, { sizes: '100vw' })} className={className} referrerPolicy="no-referrer" onError={imageFallback()} />;
   }
 
   const handleSelectImage = (newUrl: string) => {
@@ -39,7 +40,7 @@ export const EditableImage: React.FC<EditableImageProps> = ({
 
   return (
     <div className="relative group/img inline-block overflow-visible">
-      <img src={currentValue} alt={alt} className={className} referrerPolicy="no-referrer" onError={imageFallback()} />
+      <img alt={alt} {...responsiveImageProps(currentValue, { sizes: '100vw' })} className={className} referrerPolicy="no-referrer" onError={imageFallback()} />
 
       <button
         type="button"

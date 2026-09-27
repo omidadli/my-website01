@@ -284,7 +284,7 @@ export const TreeEditor: React.FC = () => {
                   </div>
                 ) : typeof val === 'string' && (val.startsWith('http') || val.startsWith('data:image')) ? (
                   <div className="flex items-center gap-1.5">
-                    <img src={val} alt="thumb" className="w-6 h-6 rounded object-cover border border-white/20" />
+                    <img src={val} alt="thumb" loading="lazy" decoding="async" width={24} height={24} className="w-6 h-6 rounded object-cover border border-white/20" />
                     <span className="text-slate-400 font-mono text-[10px] truncate max-w-[150px]">{val}</span>
                   </div>
                 ) : Array.isArray(val) ? (

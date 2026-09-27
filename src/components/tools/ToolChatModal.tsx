@@ -254,7 +254,7 @@ export const ToolChatModal: React.FC<Props> = ({ tool, theme, data, channels, pu
     <div className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-6 bg-black/70 backdrop-blur-md" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-2xl h-[92vh] sm:h-[86vh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
+        className={`relative w-full max-w-2xl h-[92dvh] sm:h-[86dvh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
       >
         {/* Header */}
         <div className={`flex items-center justify-between gap-3 px-5 py-4 border-b ${isDark ? 'border-white/10' : 'border-slate-100'}`}>
@@ -355,7 +355,7 @@ export const ToolChatModal: React.FC<Props> = ({ tool, theme, data, channels, pu
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                 rows={1}
                 placeholder={tool.placeholder || 'پیامت را بنویس…'}
-                className={`flex-1 resize-none rounded-2xl border px-4 py-3 text-[13px] outline-none max-h-32 ${inputCls}`}
+                className={`flex-1 resize-none rounded-2xl border px-4 py-3 text-base outline-none max-h-32 ${inputCls}`}
               />
               <button
                 type="submit"
@@ -422,7 +422,7 @@ export const ToolChatModal: React.FC<Props> = ({ tool, theme, data, channels, pu
                     } ${p.popular ? 'sm:scale-[1.04] sm:z-10' : ''} ${p.popular && isDark ? 'bg-white/[0.06]' : ''} ${p.popular && !isDark ? 'bg-white' : ''}`}
                   >
                     {p.badge && (
-                      <span className={`absolute -top-2.5 right-3 text-[9.5px] font-black px-2 py-0.5 rounded-full shadow ${p.popular ? 'bg-[color:var(--nd-accent)] text-white' : (isDark ? 'bg-white/15 text-white' : 'bg-slate-800 text-white')}`}>
+                      <span className={`absolute -top-2.5 start-3 text-[9.5px] font-black px-2 py-0.5 rounded-full shadow ${p.popular ? 'bg-[color:var(--nd-accent)] text-white' : (isDark ? 'bg-white/15 text-white' : 'bg-slate-800 text-white')}`}>
                         {p.badge}
                       </span>
                     )}
@@ -481,14 +481,14 @@ export const ToolChatModal: React.FC<Props> = ({ tool, theme, data, channels, pu
                 dir="ltr"
                 inputMode="tel"
                 placeholder="09xxxxxxxxx"
-                className={`w-full rounded-xl border px-4 py-3 text-[13px] outline-none text-center ${inputCls}`}
+                className={`w-full rounded-xl border px-4 py-3 text-base outline-none text-center ${inputCls}`}
               />
               <input
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
                 dir="ltr"
                 placeholder="کد دسترسی (مثلاً M4K-7Q2X)"
-                className={`w-full rounded-xl border px-4 py-3 text-[13px] outline-none text-center tracking-widest ${inputCls}`}
+                className={`w-full rounded-xl border px-4 py-3 text-base outline-none text-center tracking-widest ${inputCls}`}
               />
               {gateError && paywallReason !== 'locked' && <p className="text-[12px] text-red-500 font-bold text-center">{gateError}</p>}
               <button

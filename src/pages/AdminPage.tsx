@@ -370,7 +370,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   /* ------------------------- LOGIN GATE ------------------------- */
   if (!isAdmin) {
     return (
-      <div className="min-h-[85vh] flex items-center justify-center py-12 px-4 dir-rtl">
+      <div className="min-h-[85dvh] flex items-center justify-center py-12 px-4 dir-rtl">
         <div className="nd-card max-w-md w-full p-8 sm:p-10 space-y-6">
           <div className="text-center space-y-3">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[color:var(--nd-accent)] text-white flex items-center justify-center shadow-md">
@@ -541,7 +541,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       </AModal>
 
       <div className="flex gap-6 items-start max-w-[1500px] mx-auto">
-        <div className="hidden lg:block sticky top-24 max-h-[calc(100vh-7rem)] overflow-y-auto">{sidebar}</div>
+        <div className="hidden lg:block sticky top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto">{sidebar}</div>
 
         <main className="flex-1 min-w-0 space-y-6 pb-24">
           {/* ---------------- DASHBOARD ---------------- */}
@@ -1087,7 +1087,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   {(data.MEDIA_LIBRARY || []).map((m, i) => (
                     <ACard key={m.id} className="p-3! space-y-2">
                       <div className="aspect-square rounded-xl overflow-hidden bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)]">
-                        <img src={m.url} alt={m.alt || m.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        <img src={m.url} alt={m.alt || m.title} loading="lazy" decoding="async" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       </div>
                       <span className="block text-[10px] font-extrabold truncate">{m.title}</span>
                       <AInput placeholder="متن جایگزین (alt)…" value={m.alt || ''} onChange={(e) => updateField(`MEDIA_LIBRARY.${i}.alt`, e.target.value)} className="py-1.5! text-[10px]!" />

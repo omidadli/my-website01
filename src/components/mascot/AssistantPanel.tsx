@@ -261,7 +261,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
           transition={{ type: 'spring', stiffness: 320, damping: 28 }}
           role="dialog"
           aria-label="دستیار هوشمند"
-          className={`mascot-chat fixed bottom-24 right-2 z-[70] flex flex-col overflow-hidden rounded-[26px] shadow-2xl sm:bottom-28 sm:right-5 ${
+          className={`mascot-chat fixed bottom-24 start-2 z-[70] flex flex-col overflow-hidden rounded-[26px] shadow-2xl sm:bottom-28 sm:start-5 ${
             isDark ? 'border border-b-0 border-white/12 bg-[#12121d]' : 'border border-b-0 border-[color:var(--nd-line)] bg-[color:var(--nd-surface)]'
           }`}
         >
@@ -287,14 +287,14 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
               <MascotFigure />
             </div>
             <span
-              className={`mascot-chat-status absolute right-3 top-3 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-extrabold ${
+              className={`mascot-chat-status absolute start-3 top-3 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-extrabold ${
                 isDark ? 'bg-black/35 text-emerald-300' : 'bg-white/75 text-emerald-600'
               }`}
             >
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
               {busy ? 'دارم جواب رو می‌نویسم...' : 'آنلاین'}
             </span>
-            <div className="absolute left-2.5 top-2.5 flex items-center gap-1">
+            <div className="absolute end-2.5 top-2.5 flex items-center gap-1">
               <button
                 type="button"
                 onClick={toggleSoundMute}
@@ -344,14 +344,14 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-start' : 'justify-end'}`}>
                 <div
-                  className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
+                  className={`max-w-[85%] break-words whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
                     m.role === 'user'
                       ? isDark
-                        ? 'rounded-bl-sm bg-white/10 text-slate-100'
-                        : 'rounded-bl-sm bg-white text-[color:var(--nd-ink)] shadow-sm'
+                        ? 'rounded-es-sm bg-white/10 text-slate-100'
+                        : 'rounded-es-sm bg-white text-[color:var(--nd-ink)] shadow-sm'
                       : isDark
-                        ? 'rounded-br-sm bg-indigo-500/90 text-white'
-                        : 'rounded-br-sm bg-[color:var(--nd-accent)] text-white shadow-sm'
+                        ? 'rounded-ee-sm bg-indigo-500/90 text-white'
+                        : 'rounded-ee-sm bg-[color:var(--nd-accent)] text-white shadow-sm'
                   }`}
                 >
                   {m.role === 'model' ? renderAnswer(m.content) : m.content}
@@ -360,7 +360,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
             ))}
             {busy && (
               <div className="flex justify-end">
-                <div className={`flex items-center gap-1.5 rounded-2xl rounded-br-sm px-4 py-3 ${isDark ? 'bg-white/10' : 'bg-white shadow-sm'}`}>
+                <div className={`flex items-center gap-1.5 rounded-2xl rounded-ee-sm px-4 py-3 ${isDark ? 'bg-white/10' : 'bg-white shadow-sm'}`}>
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '0ms' }} />
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '150ms' }} />
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '300ms' }} />
@@ -445,7 +445,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
                   listenTimer.current = setTimeout(() => mascotAct('listen', 2600), 500);
                 }}
                 placeholder={isListening ? 'در حال تبدیل گفتار به متن...' : 'سوالت رو بنویس یا با میکروفون بگو...'}
-                className={`h-10 flex-1 rounded-xl px-3.5 text-xs font-bold outline-none transition-colors ${
+                className={`h-10 flex-1 rounded-xl px-3.5 text-base font-bold outline-none transition-colors ${
                   isDark
                     ? 'bg-white/8 text-slate-100 placeholder:text-slate-500 focus:bg-white/12'
                     : 'bg-[color:var(--nd-bg)] text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] focus:bg-white'

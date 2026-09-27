@@ -1,7 +1,7 @@
 import React from 'react';
 import { Theme, Page } from '../types';
 import { ChevronLeft, Home, Sparkles } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 
 interface PageHeaderProps {
   theme: Theme;
@@ -21,6 +21,9 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
   onNavigate,
 }) => {
   const isDark = theme === 'dark';
+  // Filter/blur transitions are NOT covered by MotionConfig's reducedMotion —
+  // gate them manually (blur paints are also costly on low-end phones).
+  const reducedMotion = useReducedMotion();
 
   const pageNames: Record<Page, string> = {
     home: 'صفحه اصلی',
@@ -35,10 +38,10 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
   };
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: -15, filter: 'blur(8px)' }}
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-      transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+    <motion.div
+      initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -15, filter: 'blur(8px)' }}
+      animate={reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, filter: 'blur(0px)' }}
+      transition={{ duration: reducedMotion ? 0.2 : 0.7, ease: [0.22, 1, 0.36, 1] }}
       className="space-y-4 pt-4 pb-8 border-b border-white/10 mb-8 relative"
     >
       {/* Subtle top light ray */}

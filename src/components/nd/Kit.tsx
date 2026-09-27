@@ -3,9 +3,11 @@ import { motion } from 'motion/react';
 import { Home, ChevronLeft } from 'lucide-react';
 import { Page, Theme } from '../../types';
 
-/* Shared input skin for both themes */
+/* Shared input skin for both themes.
+   `text-base` (16px) is mandatory: iOS Safari zooms the viewport on any
+   focusable field whose computed font-size is smaller. */
 export const inputCls = (isDark: boolean) =>
-  `w-full rounded-2xl px-4 py-3.5 text-xs font-bold border focus:outline-none transition-colors ${
+  `w-full rounded-2xl px-4 py-3.5 text-base font-bold border focus:outline-none transition-colors ${
     isDark
       ? 'bg-white/5 border-white/15 text-white placeholder:text-slate-500 focus:border-indigo-400/60'
       : 'bg-white border-[color:var(--nd-line-strong)] text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] focus:border-[color:var(--nd-accent)]'
