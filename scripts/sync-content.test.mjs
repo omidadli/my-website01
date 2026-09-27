@@ -53,6 +53,39 @@ test('section added in Git (absent from base and live) is taken', () => {
   assert.equal(r.merged.NEW, 'n');
 });
 
+test('collections: new items in Git + item edited on live → both survive, no conflict', () => {
+  const b = { POSTS: [{ id: 'a', t: 1 }, { id: 'b', t: 1 }] };
+  const g = { POSTS: [{ id: 'n1', t: 1 }, { id: 'n2', t: 1 }, { id: 'a', t: 1 }, { id: 'b', t: 1 }] };
+  const l = { POSTS: [{ id: 'a', t: 1, status: 'draft' }, { id: 'b', t: 2 }], THEME: 'x' };
+  const r = mergeContent({ git: g, live: l, base: b });
+  assert.deepEqual(r.conflicts, []);
+  assert.deepEqual(r.taken, ['POSTS']);
+  assert.deepEqual(r.merges, ['POSTS']);
+  assert.deepEqual(r.merged.POSTS, [{ id: 'n1', t: 1 }, { id: 'n2', t: 1 }, { id: 'a', t: 1, status: 'draft' }, { id: 'b', t: 2 }]);
+  assert.equal(r.merged.THEME, 'x');
+});
+
+test('collections: deletion on live is kept, live-only additions keep their position', () => {
+  const b = { P: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] };
+  const g = { P: [{ id: 'new' }, { id: 'a' }, { id: 'b' }, { id: 'c' }] };
+  const l = { P: [{ id: 'a' }, { id: 'live1' }, { id: 'c' }] };
+  const r = mergeContent({ git: g, live: l, base: b });
+  assert.deepEqual(r.conflicts, []);
+  assert.deepEqual(r.merged.P.map((x) => x.id), ['new', 'a', 'live1', 'c']);
+});
+
+test('collections: same item changed differently on both sides → item-level conflict', () => {
+  const b = { P: [{ id: 'a', t: 0 }] };
+  const r = mergeContent({ git: { P: [{ id: 'a', t: 1 }] }, live: { P: [{ id: 'a', t: 2 }] }, base: b });
+  assert.deepEqual(r.conflicts, ['P[a]']);
+  assert.deepEqual(r.merged.P, [{ id: 'a', t: 1 }]);
+});
+
+test('arrays without unique ids still conflict as a whole section', () => {
+  const r = mergeContent({ git: { C: [{ x: 1 }] }, live: { C: [{ x: 2 }] }, base: { C: [{ x: 0 }] } });
+  assert.deepEqual(r.conflicts, ['C']);
+});
+
 console.log(`\nsync-content merge: ${n} tests passed`);
 
 // ---- setByPath hardening (used by the MCP set_field tool) ----
