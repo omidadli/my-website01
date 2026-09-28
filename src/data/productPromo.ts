@@ -30,6 +30,10 @@ export type ProductId = 'business-therapist' | 'growth-path' | 'problem-solver' 
 /** Display order used as a stable tie-breaker (matches AI_TOOLS / PRODUCTS). */
 export const PRODUCT_IDS: ProductId[] = ['business-therapist', 'growth-path', 'problem-solver', 'mock-customer'];
 
+const CURRENT_PRODUCT_ID_SET = new Set<string>(PRODUCT_IDS);
+/** Runtime guard for CMS snapshots or old caller code that still names retired products. */
+export const isCurrentProductId = (id: string): id is ProductId => CURRENT_PRODUCT_ID_SET.has(id);
+
 /* ------------------------------------------------------------------ */
 /*  Topics                                                             */
 /* ------------------------------------------------------------------ */

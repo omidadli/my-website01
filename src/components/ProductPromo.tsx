@@ -8,7 +8,7 @@ import { linkProps, navigate, pathForProduct } from '../utils/router';
 import { AI_TOOLS } from '../data/tools';
 import { getProductDetail } from '../data/productDetails';
 import { INITIAL_FREE_COINS, startingPrice } from '../../lib/toolPlans';
-import { angleFor, type ProductAngle, type ProductId, type PromoTopic } from '../data/productPromo';
+import { angleFor, isCurrentProductId, type ProductAngle, type ProductId, type PromoTopic } from '../data/productPromo';
 
 /**
  * Native product placements.
@@ -56,6 +56,8 @@ export const resolveProduct = (data: any, id: string): ResolvedProduct => {
 
 /** A product is promotable when it exists, is published and the admin kept it on. */
 export const isProductPromotable = (data: any, id: string): boolean => {
+  // A stale CMS row must never make a retired product eligible for a promo.
+  if (!isCurrentProductId(id)) return false;
   if (data?.AI_TOOLS_CONFIG?.enabled === false) return false;
   if (data?.AI_TOOLS_CONFIG?.tools?.[id]?.enabled === false) return false;
   const cms = (Array.isArray(data?.PRODUCTS) ? data.PRODUCTS : []).find((p: any) => p && p.id === id);
@@ -64,14 +66,14 @@ export const isProductPromotable = (data: any, id: string): boolean => {
 };
 
 /** Filter a ranked list down to the products that are actually promotable. */
-export const usePromotable = (ids: string[]): string[] => {
+export const usePromotable = (ids: ProductId[]): ProductId[] => {
   const { data } = useContent();
   const list = Array.isArray(ids) ? ids : [];
   return list.filter((id) => isProductPromotable(data, id));
 };
 
 export interface ProductPromoProps {
-  productId: string;
+  productId: ProductId;
   theme: Theme;
   onNavigate: (page: Page) => void;
   /** Context that picks the copy (article cluster, service, page…). */
@@ -325,7 +327,7 @@ export const ProductPromo: React.FC<ProductPromoProps> = ({
 /* ------------------------------------------------------------------ */
 
 export interface ProductPromoStripProps {
-  productIds: string[];
+  productIds: ProductId[];
   theme: Theme;
   onNavigate: (page: Page) => void;
   topic?: PromoTopic;

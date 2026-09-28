@@ -19,7 +19,7 @@ import {
   BlogPost
 } from '../types';
 import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
-import { mergeContentDefaults } from '../utils/contentDefaults';
+import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
 
 const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
@@ -330,6 +330,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Restore SERVICES, STATS, TIMELINE, HOW_I_WORK_STEPS to default initialData
         return { 
           ...mergeContentDefaults(defaultContentState, parsed),
+          // Older browser caches can hold a product collection from a previous
+          // catalog. Reconcile it before first render, not only after cloud sync.
+          PRODUCTS: reconcileProductCatalog(initialData.PRODUCTS, parsed.PRODUCTS),
           SERVICES: initialData.SERVICES,
           STATS: initialData.STATS,
           TIMELINE: initialData.TIMELINE,
@@ -407,6 +410,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const merged = mergeContentDefaults(defaultContentState, r);
     return {
       ...merged,
+      // The cloud snapshot is authoritative for editable content, but an old
+      // product catalog must not resurrect products unsupported by this build.
+      PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, merged.PRODUCTS),
       PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO },
       GLOBAL_SEO: { ...defaultGlobalSeo, ...merged.GLOBAL_SEO },
       AI_TOOLS_CONFIG: {
@@ -642,7 +648,10 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       const parsed = JSON.parse(jsonStr);
       if (parsed && typeof parsed === 'object') {
-        const merged = { ...defaultContentState, ...parsed };
+        const merged = {
+          ...mergeContentDefaults(defaultContentState, parsed),
+          PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, parsed.PRODUCTS),
+        };
         setData(merged);
         persistLocal(merged);
         setHasUnsavedChanges(false);
