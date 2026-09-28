@@ -304,25 +304,17 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
                   className={`${isDark ? 'nd-glass-dark' : 'nd-glass'} inline-flex items-center gap-3 rounded-full ps-2 pe-4 py-1.5`}
                 >
-                  <span className="flex">
-                    <img
-                      alt={personal.name}
-                      {...responsiveImageProps(personal.avatar, {
-                        sizes: '28px',
-                        displayWidth: 28,
-                        displayHeight: 28,
-                        priority: true,
-                      })}
-                      referrerPolicy="no-referrer"
-                      onError={imageFallback('/avatar-fallback.svg')}
-                      className={`w-7 h-7 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
-                    />
-                    <span className={`-ms-2 w-7 h-7 rounded-full ring-2 grid place-items-center text-[10px] font-black text-white nd-grad ${isDark ? 'ring-white/30' : 'ring-white'}`}>
-                      ۵+
-                    </span>
-                  </span>
+                  <img
+                    alt={personal.name}
+                    src="/profile-photo-64.webp"
+                    srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                    sizes="28px"
+                    referrerPolicy="no-referrer"
+                    onError={imageFallback('/profile-photo-web.jpg')}
+                    className={`w-8 h-8 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
+                  />
                   <span className={`text-xs font-extrabold ${isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink-2)]'}`}>
-                    همراه برندهای فروش‌محور · {personal.experienceYears} تجربه
+                    همراه برندهای فروش‌محور
                   </span>
                   <span className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-bold ${isDark ? 'text-emerald-300' : 'text-[color:var(--nd-success)]'}`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -444,8 +436,12 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
             >
               <img
                 alt={personal.name}
-                {...responsiveImageProps(personal.avatar, { sizes: '64px', displayWidth: 64, displayHeight: 64 })}
-                onError={imageFallback('/avatar-fallback.svg')}
+                src="/profile-photo-160.webp"
+                srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                sizes="64px"
+                loading="eager"
+                referrerPolicy="no-referrer"
+                onError={imageFallback('/profile-photo-web.jpg')}
                 className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0"
               />
               <p className="text-sm sm:text-base leading-relaxed text-[color:var(--nd-ink-2)]">
@@ -915,32 +911,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                 ))}
               </div>
 
-              {/* Testimonial */}
-              {testimonials[0] && (
-                <div className="nd-card p-7 sm:p-9 flex flex-col sm:flex-row gap-6 items-start max-w-4xl mx-auto">
-                  <Quote className="w-8 h-8 text-[color:var(--nd-accent)] opacity-40 shrink-0 rotate-180" />
-                  <div className="space-y-4">
-                    <p className="text-sm sm:text-base leading-relaxed font-medium text-[color:var(--nd-ink-2)]">{testimonials[0].quote}</p>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <img
-                        alt={testimonials[0].clientName}
-                        {...responsiveImageProps(testimonials[0].avatarUrl, { sizes: '40px', displayWidth: 40, displayHeight: 40 })}
-                        onError={imageFallback('/avatar-fallback.svg')}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                      <span>
-                        <span className="block text-xs font-black text-[color:var(--nd-ink)]">{testimonials[0].clientName} — {testimonials[0].company}</span>
-                        <span className="block text-[11px] font-bold text-[color:var(--nd-faint)]">{testimonials[0].clientRole}</span>
-                      </span>
-                      <span className="ms-auto flex items-center gap-1 text-[color:#f59e0b]">
-                        {Array.from({ length: testimonials[0].rating || 5 }).map((_, i) => (
-                          <Star key={i} className="w-3.5 h-3.5 fill-current" />
-                        ))}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* Testimonial block intentionally removed per request */}
             </div>
           </section>
         );
@@ -1025,42 +996,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
 
         return (
           <section className="py-14 sm:py-20 space-y-8">
-            {/* Lead magnet — free mini audit */}
-            <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, margin: '-60px' }}
-              transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <div
-                className={`${isDark ? 'nd-stage nd-hairline-top' : 'nd-card'} rounded-[var(--nd-radius-panel)] p-7 sm:p-9 flex flex-col md:flex-row items-center gap-6 md:gap-10`}
-                style={isDark ? undefined : { background: 'linear-gradient(150deg, var(--nd-accent-soft), var(--nd-sky-soft) 60%, var(--nd-mint-soft))' }}
-              >
-                <div className="flex-1 space-y-3 text-right">
-                  <span className={`${isDark ? 'nd-glass-dark text-indigo-200' : 'nd-eyebrow'} inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-extrabold w-fit`}>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>بدون هزینه، بدون تعهد</span>
-                  </span>
-                  <h3 className={`nd-h2 ${isDark ? 'text-white' : ''} text-xl sm:text-2xl leading-snug`}>آنالیز سریع و رایگان سایتت</h3>
-                  <p className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-xs sm:text-sm leading-relaxed max-w-2xl`}>
-                    آدرس سایتت رو بنویس؛ تا ۴۸ ساعت یه بررسی اولیه از مسیر خرید، سرعت و نقاط ریزشت برات می‌فرستم — همین‌طوری، برای آشنایی.
-                  </p>
-                </div>
-                <form onSubmit={(e) => handlePromptSubmit(e, auditPrompt)} className="w-full md:w-[21rem] shrink-0 space-y-3">
-                  <input
-                    value={auditPrompt}
-                    onChange={(e) => setAuditPrompt(e.target.value)}
-                    placeholder="example.com"
-                    className={`w-full rounded-2xl px-4 py-3.5 text-sm focus:outline-none dir-ltr text-left ${isDark ? 'nd-glass-dark text-white placeholder:text-slate-500 focus:border-indigo-400/60' : 'bg-white border border-[color:var(--nd-line)] text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] focus:border-[color:var(--nd-accent)]'}`}
-                  />
-                  <button type="submit" className={`nd-btn ${isDark ? 'bg-white text-[#17171c] hover:bg-slate-200' : 'nd-btn-accent'} w-full py-3.5 text-sm`}>
-                    <span>درخواست آنالیز رایگان</span>
-                    <Send className="w-4 h-4" />
-                  </button>
-                  <p className={`text-[10px] font-bold text-center ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>بدون اسپم؛ فقط یه نقشه‌ی راه قابل اجرا.</p>
-                </form>
-              </div>
-            </motion.div>
+            {/* Free-audit box removed per request — section now opens directly on articles */}
 
             {/* نوشت‌های تازه — دسته‌بندی‌شده بر اساس موضوعات اصلی */}
             <div className="space-y-6">

@@ -76,19 +76,19 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
       {/* Identity + story */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
         <div className="lg:col-span-5">
-          <div className="nd-card rounded-[var(--nd-radius-panel)] p-7 space-y-6 relative overflow-hidden">
-            <div className="relative w-fit mx-auto">
+          <div className="nd-card rounded-[var(--nd-radius-panel)] p-5 sm:p-7 space-y-5 relative overflow-hidden">
+            <div className="relative w-full aspect-square rounded-[var(--nd-radius-card)] overflow-hidden shadow-md">
               <img
                 alt={personal.name}
-                {...responsiveImageProps(personal.avatar, {
-                  sizes: '(max-width: 640px) 160px, 160px',
-                  displayWidth: 160,
-                  displayHeight: 160,
-                })}
-                onError={imageFallback('/avatar-fallback.svg')}
-                className="w-40 h-40 rounded-[var(--nd-radius-card)] object-cover shadow-md"
+                src="/profile-photo-hero.png"
+                srcSet="/profile-photo-400.webp 400w, /profile-photo-800.webp 800w, /profile-photo-hero.png 1254w"
+                sizes="(max-width: 640px) 90vw, 480px"
+                loading="eager"
+                decoding="async"
+                onError={imageFallback('/profile-photo-web.jpg')}
+                className="w-full h-full object-cover"
               />
-              <div className="absolute -bottom-4 -right-4">
+              <div className="absolute -bottom-4 -right-4 z-10">
                 <IconBadge3D iconName="award" theme={theme} size="lg" glowColor="magenta" />
               </div>
             </div>
@@ -118,20 +118,6 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
               {personal.shortBio || 'بیش از ۵ ساله که کنار فروشگاه‌ها و کسب‌وکارهای آنلاین هستم؛ از طراحی سایت و راه‌اندازی پیج گرفته تا تبلیغات، تحلیل رفتار مشتری و افزایش فروش. کاری که می‌کنم اینه که دقیق می‌بینم مشکل کجاست، و به‌جای حدس، با داده‌ی واقعی تصمیم می‌گیرم.'}
             </EditableText>
           </p>
-          <div className={`grid grid-cols-2 gap-4 pt-4 border-t ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
-            <div>
-              <span className={`text-3xl font-black dir-ltr block ${isDark ? 'nd-text-glow' : 'text-[color:var(--nd-accent)]'}`}>
-                <EditableText path="PERSONAL_INFO.experienceYears">{personal.experienceYears}</EditableText>
-              </span>
-              <span className={`text-xs font-bold ${isDark ? 'text-slate-400' : 'nd-muted'}`}>سال تجربه کاری</span>
-            </div>
-            <div>
-              <span className={`text-3xl font-black dir-ltr block ${isDark ? 'nd-text-glow' : 'text-[color:var(--nd-accent)]'}`}>
-                <EditableText path="PERSONAL_INFO.campaignsCount">{personal.campaignsCount}</EditableText>
-              </span>
-              <span className={`text-xs font-bold ${isDark ? 'text-slate-400' : 'nd-muted'}`}>پروژه و کمپین اجراشده</span>
-            </div>
-          </div>
         </div>
       </section>
 

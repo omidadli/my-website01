@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { usePreservedState } from '../utils/statePreserver';
 import { api } from '../services/api';
 import { whatsappFallbackUrl } from '../utils/leadFallback';
@@ -20,6 +21,7 @@ interface ContactPageProps {
 export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) => {
   const isDark = theme === 'dark';
   const { data } = useContent();
+  const { isLoggedIn, addConsultation } = useUser();
   const personalInfo = data.PERSONAL_INFO;
 
   const [activeTab, setActiveTab] = usePreservedState<'form' | 'calendar'>('contact_active_tab', 'form');
@@ -85,6 +87,14 @@ export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) =
     if (!res.ok) {
       setSendError(res.error || 'ارسال پیام ناموفق بود.');
       return;
+    }
+    // If the user is already logged in, also save the consultation in their profile dashboard
+    if (isLoggedIn) {
+      addConsultation({
+        subject: formData.serviceNeeded,
+        message: formData.details.trim() || 'درخواست مشاوره از فرم تماس',
+        serviceName: formData.serviceNeeded,
+      });
     }
     setSubmitted(true);
     window.dispatchEvent(new CustomEvent('nd:form-success'));

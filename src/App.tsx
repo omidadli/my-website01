@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page, CaseStudy } from './types';
 import { ContentProvider, useContent } from './context/ContentContext';
+import { UserProvider } from './context/UserContext';
 import { StatePreserverProvider } from './utils/statePreserver';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -25,8 +26,10 @@ const ProjectsPage = lazy(() => import('./pages/ProjectsPage').then((m) => ({ de
 const ProductsPage = lazy(() => import('./pages/ProductsPage').then((m) => ({ default: m.ProductsPage })));
 const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
+const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const CustomPageView = lazy(() => import('./pages/CustomPageView').then((m) => ({ default: m.CustomPageView })));
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { PageLoader } from './components/PageLoader';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { SEOHead } from './components/SEOHead';
 const ChatWidget = lazy(() => import('./components/ChatWidget').then((m) => ({ default: m.ChatWidget })));
@@ -251,7 +254,7 @@ function MainLayout({
             transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
           >
             <ErrorBoundary name="page" resetKeys={[currentPage, selectedBlogPostId, showNotFound]}>
-              <Suspense fallback={<div role="status" aria-live="polite" className="mx-auto my-20 flex min-h-40 items-center justify-center text-sm text-[color:var(--nd-muted)]">در حال بارگذاری صفحه…</div>}>
+              <Suspense fallback={<PageLoader />}>
             {showNotFound && (
               <NotFoundPage theme={theme} onNavigate={handleNavigate} onSelectPost={handleSelectBlogPost} />
             )}
@@ -346,6 +349,14 @@ function MainLayout({
               />
             )}
 
+            {currentPage === 'profile' && (
+              <ProfilePage
+                theme={theme}
+                onNavigate={handleNavigate}
+                onSelectPost={handleSelectBlogPost}
+              />
+            )}
+
             {currentPage !== 'admin' &&
               (data.CUSTOM_PAGES || []).some((cp) => cp.slug === (currentPage as string)) && (
                 <CustomPageView
@@ -411,7 +422,9 @@ function MainLayout({
 export default function App() {
   return (
     <ContentProvider>
-      <StatePreserverWrapper />
+      <UserProvider>
+        <StatePreserverWrapper />
+      </UserProvider>
     </ContentProvider>
   );
 }
