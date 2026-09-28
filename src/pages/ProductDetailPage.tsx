@@ -23,6 +23,12 @@ import { getProductDetail } from '../data/productDetails';
 import { AI_TOOLS, AiToolMeta } from '../data/tools';
 import { getPlans, resolvePlanPrice, ToolPlan, INITIAL_FREE_COINS } from '../../lib/toolPlans';
 import { PERSONAL_INFO } from '../data/content';
+import { IconBadge3D } from '../components/3D/3DIconBadge';
+import { ProductPromoStrip } from '../components/ProductPromo';
+import { complementaryProducts, relatedPostsForProduct } from '../data/productPromo';
+import { linkProps, navigate, postPath } from '../utils/router';
+import { safeRecordArray } from '../utils/contentDefaults';
+import { mdToPlainText } from '../utils/plainText';
 
 interface Props {
   productId: string;
@@ -40,6 +46,13 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
   const spec = getProductDetail(productId) || getProductDetail('business-therapist')!;
   const toolMeta: AiToolMeta = AI_TOOLS.find((t) => t.id === productId) || AI_TOOLS[0];
   const plans = getPlans(toolMeta.id);
+
+  // Articles that naturally lead to this tool — the way back from product to content.
+  const relatedPosts = relatedPostsForProduct(
+    safeRecordArray<any>(data.BLOG_POSTS).filter((p) => p && typeof p.id === 'string' && p.status !== 'draft'),
+    productId,
+    3,
+  );
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [openFaqIdx, setOpenFaqIdx] = useState<number | null>(0);
@@ -387,6 +400,53 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
           })}
         </div>
       </section>
+
+      {/* 7. مقالاتی که دقیقاً به همین ابزار می‌رسند — مسیر برگشت به محتوا */}
+      {relatedPosts.length > 0 && (
+        <section className="space-y-6">
+          <Head
+            theme={theme}
+            eyebrow="ادامه‌ی یادگیری"
+            title="مقالاتی که همین ابزار را کامل می‌کنند"
+            desc={`این نوشته‌ها همان چارچوب‌هایی را آموزش می‌دهند که «${spec.shortTitle}» بر اساس آن‌ها با تو کار می‌کند.`}
+          />
+          <div className="grid grid-cols-1 gap-3">
+            {relatedPosts.map((post) => (
+              <a
+                key={post.id}
+                {...linkProps(postPath(post), () => navigate(postPath(post)))}
+                className="nd-card nd-card-hover p-5 flex items-center gap-4 text-right cursor-pointer group"
+              >
+                <IconBadge3D iconName={post.imageIcon || 'sparkles'} theme={theme} size="sm" glowColor="purple" floating={false} />
+                <span className="flex-1 min-w-0 space-y-1">
+                  <span className={`block text-sm font-extrabold leading-snug line-clamp-1 group-hover:text-[color:var(--nd-accent)] transition-colors ${isDark ? 'text-white' : ''}`}>
+                    {post.title}
+                  </span>
+                  <span className={`block text-[11px] leading-relaxed line-clamp-1 ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
+                    {mdToPlainText(post.excerpt)}
+                  </span>
+                </span>
+                <span className="hidden sm:flex flex-col items-end gap-1 shrink-0">
+                  <span className="nd-chip">{post.categoryFa}</span>
+                  <span className={`text-[10px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>{post.readTime}</span>
+                </span>
+                <ChevronLeft className="w-4 h-4 shrink-0 text-[color:var(--nd-faint)] group-hover:text-[color:var(--nd-accent)] transition-colors" />
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 8. فروش متقابل — بقیه ابزارها */}
+      <ProductPromoStrip
+        productIds={complementaryProducts(toolMeta.id, 3)}
+        theme={theme}
+        onNavigate={onNavigate}
+        eyebrow="ابزارهای مکمل"
+        title="سه ابزار دیگر برای گره‌های دیگر"
+        desc="هرکدام روی یک بن‌بست مشخص کار می‌کنند؛ می‌توانی جداگانه یا کنار هم داشته باشی‌شان."
+        gridClassName="grid grid-cols-1 md:grid-cols-3 gap-5"
+      />
 
       {/* Chat Modal for Instant Testing */}
       {isChatOpen && (

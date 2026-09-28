@@ -8,6 +8,8 @@ import { PageHero } from '../components/nd/Kit';
 import { ArrowUpLeft, ChevronLeft, X, AlertTriangle, Lightbulb, TrendingUp, Globe, ExternalLink, Sparkles, Target, Rocket, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { normalizeCaseStudies, safeExternalUrl } from '../utils/caseStudies';
+import { ProductPromo, ProductPromoStrip } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 
 interface PortfolioPageProps {
   theme: Theme;
@@ -179,21 +181,8 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
                   </span>
                 )}
                 <p className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-xs leading-relaxed line-clamp-3`}>{study.summary}</p>
-                <div className={`grid grid-cols-3 gap-2 p-3 rounded-2xl border mt-auto ${isDark ? 'bg-white/5 border-white/10' : 'bg-[color:var(--nd-bg)] border-[color:var(--nd-line)]'}`}>
-                  <div className="text-center">
-                    <span className={`text-[9px] block mb-1 leading-tight line-clamp-1 ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>بازگشت سرمایه</span>
-                    <span className="text-[11px] font-black text-[color:var(--nd-accent)] dir-ltr">{study.metrics.roas}</span>
-                  </div>
-                  <div className={`text-center border-x ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
-                    <span className={`text-[9px] block mb-1 leading-tight line-clamp-1 ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>نرخ تبدیل</span>
-                    <span className="text-[11px] font-black text-[color:var(--nd-success)] dir-ltr">{study.metrics.conversionRate}</span>
-                  </div>
-                  <div className="text-center">
-                    <span className={`text-[9px] block mb-1 leading-tight line-clamp-1 ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>هزینه جذب</span>
-                    <span className={`text-[11px] font-black dir-ltr ${isDark ? 'text-indigo-300' : 'text-[color:var(--nd-accent)]'}`}>{study.metrics.cacReduction}</span>
-                  </div>
-                </div>
-                <span className={`flex items-center justify-between pt-3 border-t text-xs font-extrabold text-[color:var(--nd-accent)] ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
+                {/* آمار و ارقام (ROAS / نرخ تبدیل / CAC) به درخواستِ صاحب سایت از کارت‌ها حذف شد. */}
+                <span className={`mt-auto flex items-center justify-between pt-3 border-t text-xs font-extrabold text-[color:var(--nd-accent)] ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
                   <span>بررسی کامل نمونه‌کار</span>
                   <ChevronLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
                 </span>
@@ -202,6 +191,16 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
           </div>
         )}
       </section>
+
+      {/* ابزار مرتبط: داده‌های این نمونه‌کارها را روی بیزینس خودت پیاده کن */}
+      <ProductPromo
+        productId="business-therapist"
+        theme={theme}
+        onNavigate={onNavigate}
+        topic="ads-performance"
+        variant="banner"
+        eyebrow="از نتیجه‌ی دیگران تا نتیجه‌ی خودت"
+      />
 
       {/* Detail modal */}
       <AnimatePresence>
@@ -286,31 +285,22 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
                 ))}
               </div>
 
-              <div className="space-y-4 my-8">
-                <h3 className={`nd-h2 text-base flex items-center gap-3 ${isDark ? 'text-white' : ''}`}>
-                  <span className="w-1.5 h-6 rounded-full" style={{ background: 'var(--nd-accent)' }} aria-hidden />
-                  مقایسه دقیق شاخص‌ها (قبل و بعد از پروژه)
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  {detailStudy.metricsComparison.map((metric, idx) => (
-                    <div key={idx} className={`p-5 rounded-2xl border space-y-2 ${isDark ? 'bg-white/5 border-white/10' : 'bg-[color:var(--nd-bg-soft)] border-[color:var(--nd-line)]'}`}>
-                      <span className={`text-xs font-bold block ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{metric.label}</span>
-                      <div className="flex items-center justify-between pt-1">
-                        <div>
-                          <span className={`text-[10px] block ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>قبل</span>
-                          <span className="text-sm font-bold text-[#dc2626] dir-ltr">{metric.before}</span>
-                        </div>
-                        <div className={isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}>←</div>
-                        <div>
-                          <span className={`text-[10px] block ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>بعد</span>
-                          <span className="text-sm font-extrabold text-[color:var(--nd-success)] dir-ltr">{metric.after}</span>
-                        </div>
-                      </div>
-                      <div className="pt-2 text-center text-xs font-black text-[color:var(--nd-accent)]">رشد: {metric.growth}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              {/* جدولِ «مقایسه دقیق شاخص‌ها (قبل و بعد)» به درخواستِ صاحب سایت حذف شد —
+                  روایتِ پروژه (چالش / راهکار / نتیجه) بدون عدد باقی می‌ماند.
+                  داده‌ها همچنان در CMS هستند و با حذف این کامنت برمی‌گردند. */}
+
+              {/* همان متدولوژی، روی کسب‌وکار خودت — پیشنهاد در لحظه‌ی بیشترین علاقه */}
+              <ProductPromoStrip
+                productIds={productsForPage('portfolio')}
+                theme={theme}
+                onNavigate={onNavigate}
+                topic="ads-performance"
+                variant="compact"
+                eyebrow="همین متدولوژی، روی بیزینس خودت"
+                title="این اعداد با همین روش به دست آمده‌اند"
+                desc="همین رویکردِ داده‌محور را می‌توانی روی کمپین و قیف فروش خودت امتحان کنی — بدون انتظار برای جلسه."
+                gridClassName="grid grid-cols-1 md:grid-cols-2 gap-4"
+              />
 
               <div className={`pt-6 border-t flex flex-col sm:flex-row items-center justify-between gap-4 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
                 <button
