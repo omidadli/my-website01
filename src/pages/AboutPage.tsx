@@ -80,8 +80,8 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
             <div className="relative w-full aspect-square rounded-[var(--nd-radius-card)] overflow-hidden shadow-md">
               <img
                 alt={personal.name}
-                src="/profile-photo-hero.png"
-                srcSet="/profile-photo-400.webp 400w, /profile-photo-800.webp 800w, /profile-photo-hero.png 1254w"
+                src="/profile-photo-hero.webp"
+                srcSet="/profile-photo-400.webp 400w, /profile-photo-800.webp 800w, /profile-photo-hero.webp 1254w"
                 sizes="(max-width: 640px) 90vw, 480px"
                 loading="eager"
                 decoding="async"
