@@ -9,6 +9,8 @@ import { FAQSection } from '../components/FAQSection';
 import { CheckCircle2, ArrowUpLeft, Sparkles, Target, Rocket, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
+import { PRODUCT_BY_PATH_TAB, TOPIC_BY_PATH_TAB, productForService, topicForService } from '../data/productPromo';
 
 interface ServicesPageProps {
   theme: Theme;
@@ -145,6 +147,17 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ theme, onNavigate })
                     ))}
                   </div>
                 )}
+                {/* ابزار مکمل این خدمت — دقیقاً همان گره‌ای که این سرویس باز می‌کند */}
+                {isProductPromotable(data, productForService(service.id)) && (
+                  <ProductPromo
+                    productId={productForService(service.id)}
+                    theme={theme}
+                    onNavigate={onNavigate}
+                    topic={topicForService(service.id)}
+                    variant="row"
+                    eyebrow="ابزار مکمل این خدمت"
+                  />
+                )}
                 <button
                   onClick={() => onNavigate('contact')}
                   className={`nd-btn mt-auto w-full py-4 text-xs ${isDark ? 'bg-white text-[#17171c] hover:bg-slate-200' : 'nd-btn-accent'}`}
@@ -156,6 +169,18 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ theme, onNavigate })
             ))}
           </motion.div>
         </AnimatePresence>
+
+        {/* ابزار متناسب با مرحله‌ای که کاربر انتخاب کرده */}
+        {isProductPromotable(data, PRODUCT_BY_PATH_TAB[activeTab]) && (
+          <ProductPromo
+            productId={PRODUCT_BY_PATH_TAB[activeTab]}
+            theme={theme}
+            onNavigate={onNavigate}
+            topic={TOPIC_BY_PATH_TAB[activeTab]}
+            variant="banner"
+            eyebrow={`اگر در مرحله‌ی «${tabs.find((t) => t.id === activeTab)?.label || ''}» هستی`}
+          />
+        )}
       </section>
 
       {/* Mid CTA */}

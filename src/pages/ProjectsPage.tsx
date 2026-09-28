@@ -4,6 +4,8 @@ import { useContent } from '../context/ContentContext';
 import { EditableText } from '../components/cms/EditableText';
 import { SectionEditHeader } from '../components/cms/SectionEditHeader';
 import { PageHero } from '../components/nd/Kit';
+import { ProductPromoStrip } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 import { Page, Theme } from '../types';
 
 interface ProjectsPageProps {
@@ -84,6 +86,18 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ theme = 'dark', onNa
           <ArrowRight className="w-4 h-4 rotate-180" />
         </button>
       </section>
+
+      {/* ظرفیت من محدود است؛ این ابزارها همان روش تحلیل را ۲۴ ساعته در اختیار دارند */}
+      <ProductPromoStrip
+        productIds={productsForPage('projects')}
+        theme={theme}
+        onNavigate={onNavigate}
+        topic="strategy-decision"
+        eyebrow="ظرفیت پروژه محدود است"
+        title="تا نوبتِ همکاری برسد، تصمیم‌هایت را معطل نگذار"
+        desc="اگر الان ظرفیت پروژه‌ی جدید ندارم، این ابزارها همان چارچوب تحلیل و اولویت‌بندی را شبانه‌روزی در اختیارت می‌گذارند — با ۵۰۰ سکه هدیه."
+        gridClassName="grid grid-cols-1 md:grid-cols-2 gap-5"
+      />
     </div>
   );
 };

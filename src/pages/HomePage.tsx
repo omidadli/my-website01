@@ -36,6 +36,8 @@ import { MaskLines, Magnetic } from '../components/motion/Cinematic';
 import { linkProps, postPath } from '../utils/router';
 import { normalizeCaseStudies } from '../utils/caseStudies';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps } from '../utils/responsiveImage';
 
@@ -1066,6 +1068,38 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   </motion.a>
                 ))}
               </div>
+            </div>
+          </section>
+        );
+      }
+
+      /* ============ 8.6 AI_TOOLS — native showcase of the paid assistants ============ */
+      case 'AI_TOOLS': {
+        const toolsCfg = data.AI_TOOLS_CONFIG;
+        if (toolsCfg?.enabled === false) return null;
+        const toolIds = productsForPage('home');
+        if (!toolIds.some((id) => isProductPromotable(data, id))) return null;
+        return (
+          <section id="ai-tools" className="py-14 sm:py-20 space-y-10">
+            <SectionHead
+              eyebrow="دستیارهای هوشمند"
+              icon={<Sparkles className="w-3.5 h-3.5" />}
+              title="چهار هم‌فکرِ همیشه‌بیدار برای تصمیم‌های مارکتینگ"
+              desc="مشاوره، برنامه‌ریزی، حل مسئله و تمرین فروش — هرکدام روی یک گره مشخص. با ۵۰۰ سکه هدیه، همین‌جا امتحانشان کن."
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {toolIds.map((id) => (
+                <ProductPromo key={id} productId={id} theme={theme} onNavigate={onNavigate} variant="card" />
+              ))}
+            </div>
+            <div className="text-center">
+              <a
+                {...linkProps('/products', () => onNavigate('products'))}
+                className="nd-btn nd-btn-ghost px-6 py-3 text-xs font-extrabold"
+              >
+                <span>مشاهده همه ابزارها و تعرفه‌ها</span>
+                <ChevronLeft className="w-4 h-4" />
+              </a>
             </div>
           </section>
         );

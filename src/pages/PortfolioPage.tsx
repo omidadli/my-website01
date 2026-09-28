@@ -8,6 +8,8 @@ import { PageHero } from '../components/nd/Kit';
 import { ArrowUpLeft, ChevronLeft, X, AlertTriangle, Lightbulb, TrendingUp, Globe, ExternalLink, Sparkles, Target, Rocket, Layers } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { normalizeCaseStudies, safeExternalUrl } from '../utils/caseStudies';
+import { ProductPromo, ProductPromoStrip } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 
 interface PortfolioPageProps {
   theme: Theme;
@@ -203,6 +205,16 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
         )}
       </section>
 
+      {/* ابزار مرتبط: داده‌های این نمونه‌کارها را روی بیزینس خودت پیاده کن */}
+      <ProductPromo
+        productId="business-therapist"
+        theme={theme}
+        onNavigate={onNavigate}
+        topic="ads-performance"
+        variant="banner"
+        eyebrow="از نتیجه‌ی دیگران تا نتیجه‌ی خودت"
+      />
+
       {/* Detail modal */}
       <AnimatePresence>
         {detailStudy && (
@@ -311,6 +323,19 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
                   ))}
                 </div>
               </div>
+
+              {/* همان متدولوژی، روی کسب‌وکار خودت — پیشنهاد در لحظه‌ی بیشترین علاقه */}
+              <ProductPromoStrip
+                productIds={productsForPage('portfolio')}
+                theme={theme}
+                onNavigate={onNavigate}
+                topic="ads-performance"
+                variant="compact"
+                eyebrow="همین متدولوژی، روی بیزینس خودت"
+                title="این اعداد با همین روش به دست آمده‌اند"
+                desc="همین رویکردِ داده‌محور را می‌توانی روی کمپین و قیف فروش خودت امتحان کنی — بدون انتظار برای جلسه."
+                gridClassName="grid grid-cols-1 md:grid-cols-2 gap-4"
+              />
 
               <div className={`pt-6 border-t flex flex-col sm:flex-row items-center justify-between gap-4 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
                 <button

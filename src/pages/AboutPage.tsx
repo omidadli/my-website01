@@ -10,6 +10,8 @@ import { motion } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps } from '../utils/responsiveImage';
+import { ProductPromoStrip } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 
 interface AboutPageProps {
   theme: Theme;
@@ -223,6 +225,18 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
           </div>
         </div>
       </section>
+
+      {/* ابزار مرتبط: مسیر حرفه‌ای من را خواندی، مسیر خودت را بساز */}
+      <ProductPromoStrip
+        productIds={productsForPage('about')}
+        theme={theme}
+        onNavigate={onNavigate}
+        topic="career-growth"
+        eyebrow="مسیر خودت را بساز"
+        title="همین مسیر را برای خودت هم می‌توانی کوتاه‌تر کنی"
+        desc="بخش بزرگی از این مسیر، آزمون و خطای بی‌هدف بود. این دو ابزار همان چیزی را که سال‌ها طول کشید در چند دقیقه برای تو خلاصه می‌کنند — با ۵۰۰ سکه هدیه."
+        gridClassName="grid grid-cols-1 md:grid-cols-2 gap-5"
+      />
 
       {/* Other collaborations */}
       <section className="space-y-8">

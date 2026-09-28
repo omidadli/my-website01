@@ -58,6 +58,7 @@ export const defaultPageSections: Record<string, PageSectionItem[]> = {
     { id: 'sec-how-i-work', name: 'HOW_I_WORK', label: 'فرآیند همکاری (How I Work)', isHidden: false },
     { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + نقل‌قول مشتری', isHidden: false },
     { id: 'sec-insights', name: 'INSIGHTS', label: 'آنالیز رایگان + نوشت‌های تازه', isHidden: false },
+    { id: 'sec-ai-tools', name: 'AI_TOOLS', label: 'دستیارهای هوشمند (معرفی محصولات)', isHidden: false },
     { id: 'sec-faq', name: 'FAQ', label: 'پرسش‌های پرتکرار', isHidden: false },
     { id: 'sec-final-cta', name: 'FINAL_CTA', label: 'فراخوان نهایی اقدام', isHidden: false },
   ],
