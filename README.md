@@ -6,6 +6,7 @@ Live: https://omidadli01.site
 
 | Doc | What it covers |
 |-----|----------------|
+| [AISTUDIO-GITHUB.md](./AISTUDIO-GITHUB.md) | رفع خطای Import/Push بین AI Studio و گیت‌هاب — Persian |
 | [DEPLOY-CHECKLIST.md](./DEPLOY-CHECKLIST.md) | One-time Cloudflare setup (D1, bindings, secrets) — Persian |
 | [CMS-DEPLOY.md](./CMS-DEPLOY.md) | The CMS API, media storage, local development — Persian |
 | [INTEGRATIONS.md](./INTEGRATIONS.md) | HTTP API, GitHub → site workflows, content-as-code round-trip |
