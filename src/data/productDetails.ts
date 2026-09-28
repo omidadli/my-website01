@@ -317,9 +317,9 @@ export const PRODUCT_DETAILS: Record<string, ProductDetailSpec> = {
 
   'mock-customer': {
     id: 'mock-customer',
-    title: 'شبیه‌ساز هوشمند مشتری و اتاق تمرین فروش',
+    title: 'شبیه‌ساز مشتری فرضی و کوچ فروش',
     shortTitle: 'شبیه‌ساز فروش',
-    tagline: 'تمرین سناریوهای سخت مذاکره و پاسخ به اعتراضات قبل از تماس با مشتری واقعی',
+    tagline: 'اتاق تمرین فروش: سناریوهای سخت مذاکره و پاسخ به اعتراضات را قبل از تماس با مشتری واقعی تمرین کن',
     categoryBadge: 'تکنیک‌های فروش و مذاکره',
     heroImage: '/products/mock-customer-hero.png',
     heroHook: 'روی هوش مصنوعی اشتباه کن، نه روی مشتری واقعی چند میلیونی!',

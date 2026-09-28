@@ -6242,6 +6242,12 @@
         "isHidden": false
       },
       {
+        "id": "sec-ai-tools",
+        "name": "AI_TOOLS",
+        "label": "دستیارهای هوشمند (معرفی محصولات)",
+        "isHidden": false
+      },
+      {
         "id": "sec-faq",
         "name": "FAQ",
         "label": "پرسش‌های پرتکرار",

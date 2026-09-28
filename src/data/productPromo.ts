@@ -60,7 +60,8 @@ export const TOPIC_PRODUCTS: Record<PromoTopic, ProductId[]> = {
   'ads-performance': ['business-therapist', 'mock-customer', 'problem-solver', 'growth-path'],
   'cro-conversion': ['business-therapist', 'mock-customer', 'problem-solver', 'growth-path'],
   'analytics-data': ['business-therapist', 'problem-solver', 'growth-path', 'mock-customer'],
-  'ai-automation': ['problem-solver', 'business-therapist', 'growth-path', 'mock-customer'],
+  // اتوماسیون: اول «کدام فرآیند؟» (راه‌حل‌یاب)، بعد «نقش/مهارت جدید من چیست؟» (مسیرساز).
+  'ai-automation': ['problem-solver', 'growth-path', 'business-therapist', 'mock-customer'],
   'content-search': ['problem-solver', 'business-therapist', 'growth-path', 'mock-customer'],
   'strategy-decision': ['problem-solver', 'growth-path', 'business-therapist', 'mock-customer'],
   'career-growth': ['growth-path', 'problem-solver', 'business-therapist', 'mock-customer'],
@@ -494,6 +495,8 @@ const KEYWORD_RULES: { re: RegExp; id: ProductId; weight: number }[] = [
   // مسیرساز — هدف، مهارت، مسیر شغلی
   { re: /هدف|مسیر|یادگیری|مهارت|شغل|فریلنس|عادت|توسعه فردی|رزومه|مهاجرت|برنامه/i, id: 'growth-path', weight: 10 },
   { re: /جایگزین|آینده|منتور|راه‌اندازی|side project|درآمد دلاری/i, id: 'growth-path', weight: 4 },
+  // تغییر نقش شغلی در عصر AI («نقش تیم عوض شده»، «چه چیزی یاد بگیرم»)
+  { re: /نقش|آپ‌اسکیل|upskill|بازار کار|مسیر شغلی|آینده شغلی|توسعه مهارت|حرفه‌ای شدن/i, id: 'growth-path', weight: 6 },
 ];
 
 /**
@@ -508,6 +511,9 @@ const KEYWORD_RULES: { re: RegExp; id: ProductId; weight: number }[] = [
 export const POST_PRODUCT_OVERRIDES: Record<string, ProductId[]> = {
   'will-ai-replace-marketers': ['growth-path', 'problem-solver'],
   'ai-content-strategy': ['problem-solver', 'growth-path'],
+  // مقاله‌های «نقشِ تیم عوض شده»: پیشنهاد صادقانه بعد از تحلیل، ساختن مسیر یادگیری نقش جدید است.
+  'performance-marketing-ai-era': ['business-therapist', 'growth-path'],
+  'ai-media-buying': ['business-therapist', 'growth-path'],
 };
 
 /* ------------------------------------------------------------------ */
