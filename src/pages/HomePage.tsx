@@ -304,25 +304,17 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
                   className={`${isDark ? 'nd-glass-dark' : 'nd-glass'} inline-flex items-center gap-3 rounded-full ps-2 pe-4 py-1.5`}
                 >
-                  <span className="flex">
-                    <img
-                      alt={personal.name}
-                      {...responsiveImageProps(personal.avatar, {
-                        sizes: '28px',
-                        displayWidth: 28,
-                        displayHeight: 28,
-                        priority: true,
-                      })}
-                      referrerPolicy="no-referrer"
-                      onError={imageFallback('/avatar-fallback.svg')}
-                      className={`w-7 h-7 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
-                    />
-                    <span className={`-ms-2 w-7 h-7 rounded-full ring-2 grid place-items-center text-[10px] font-black text-white nd-grad ${isDark ? 'ring-white/30' : 'ring-white'}`}>
-                      ۵+
-                    </span>
-                  </span>
+                  <img
+                    alt={personal.name}
+                    src="/profile-photo-64.webp"
+                    srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                    sizes="28px"
+                    referrerPolicy="no-referrer"
+                    onError={imageFallback('/profile-photo-web.jpg')}
+                    className={`w-8 h-8 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
+                  />
                   <span className={`text-xs font-extrabold ${isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink-2)]'}`}>
-                    همراه برندهای فروش‌محور · {personal.experienceYears} تجربه
+                    همراه برندهای فروش‌محور
                   </span>
                   <span className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-bold ${isDark ? 'text-emerald-300' : 'text-[color:var(--nd-success)]'}`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -444,8 +436,12 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
             >
               <img
                 alt={personal.name}
-                {...responsiveImageProps(personal.avatar, { sizes: '64px', displayWidth: 64, displayHeight: 64 })}
-                onError={imageFallback('/avatar-fallback.svg')}
+                src="/profile-photo-160.webp"
+                srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                sizes="64px"
+                loading="eager"
+                referrerPolicy="no-referrer"
+                onError={imageFallback('/profile-photo-web.jpg')}
                 className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0"
               />
               <p className="text-sm sm:text-base leading-relaxed text-[color:var(--nd-ink-2)]">
