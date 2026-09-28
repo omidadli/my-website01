@@ -12,8 +12,13 @@
 import assert from 'node:assert/strict';
 import {
   PRODUCT_IDS,
+  PRODUCTS_BY_PAGE,
+  POST_PRODUCT_OVERRIDES,
+  PRODUCT_BY_PATH_TAB,
   SERVICE_PRODUCT_MAP,
+  TOPIC_PRODUCTS,
   angleFor,
+  isCurrentProductId,
   complementaryProducts,
   pickProductsForPost,
   productForService,
@@ -32,6 +37,24 @@ for (const id of PRODUCT_IDS) {
 for (const [serviceId, productId] of Object.entries(SERVICE_PRODUCT_MAP)) {
   assert.ok(knownIds.has(productId), `service "${serviceId}" maps to a real product`);
 }
+for (const [page, ids] of Object.entries(PRODUCTS_BY_PAGE)) {
+  for (const id of ids) assert.ok(knownIds.has(id), `page "${page}" promotes a current product`);
+}
+for (const [topic, ids] of Object.entries(TOPIC_PRODUCTS)) {
+  for (const id of ids) assert.ok(knownIds.has(id), `topic "${topic}" promotes a current product`);
+}
+for (const [slug, ids] of Object.entries(POST_PRODUCT_OVERRIDES)) {
+  for (const id of ids) assert.ok(knownIds.has(id), `post override "${slug}" promotes a current product`);
+}
+for (const [path, id] of Object.entries(PRODUCT_BY_PATH_TAB)) {
+  assert.ok(knownIds.has(id), `homepage path "${path}" promotes a current product`);
+}
+const retiredProductIds = ['campaign-audit-checklist', 'reporting-template', 'short-cro-course', 'one-on-one-consultation'];
+for (const id of retiredProductIds) {
+  assert.ok(!PRODUCT_IDS.includes(id as any), `retired product "${id}" is not in the active catalog`);
+  assert.equal(isCurrentProductId(id), false, `retired product "${id}" is rejected by the runtime guard`);
+}
+assert.deepEqual(new Set(PRODUCT_IDS), knownIds, 'promo IDs and actual AI tools contain exactly the same products');
 
 // ---- topics ----
 assert.equal(topicOfCategory('cro'), 'cro-conversion');

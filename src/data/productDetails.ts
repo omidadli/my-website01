@@ -227,8 +227,8 @@ export const PRODUCT_DETAILS: Record<string, ProductDetailSpec> = {
 
   'problem-solver': {
     id: 'problem-solver',
-    title: 'گره‌گشای استراتژیک و اتاق فکر تصمیم‌گیری',
-    shortTitle: 'اتاق فکر تصمیم‌گیری',
+    title: 'راه‌حل‌یاب استراتژیک و رفع بن‌بست',
+    shortTitle: 'راه‌حل‌یاب استراتژیک',
     tagline: 'تصمیم‌گیری شفاف در دوراهی‌های حساس کاری با مدل‌های ذهنی چارلی مانگر',
     categoryBadge: 'استراتژی و تصمیم‌گیری سازمانی',
     heroImage: '/products/problem-solver-hero.png',
