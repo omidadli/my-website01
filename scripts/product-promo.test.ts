@@ -10,6 +10,7 @@
  * Run: npx tsx scripts/product-promo.test.ts
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   PRODUCT_IDS,
   PRODUCTS_BY_PAGE,
@@ -28,6 +29,7 @@ import {
 import { AI_TOOLS } from '../src/data/tools';
 import { BLOG_POSTS } from '../src/data/content';
 import { SERVICES } from '../src/data/contentCore';
+import { defaultPageSections } from '../src/context/ContentContext';
 
 // ---- every product id in the placement tables really exists ----
 const knownIds = new Set(AI_TOOLS.map((t) => t.id));
@@ -121,19 +123,52 @@ const replacePost = published.find((p) => p.id === 'will-ai-replace-marketers');
 if (replacePost) {
   assert.equal(pickProductsForPost(replacePost, 2)[0], 'growth-path', 'career question → مسیرساز (override)');
 }
+// «نقشِ تیم عوض شده» articles honestly end with the career-path tool.
+for (const slug of ['performance-marketing-ai-era', 'ai-media-buying']) {
+  const post = published.find((p) => p.id === slug);
+  if (post) {
+    assert.deepEqual(
+      pickProductsForPost(post, 2),
+      ['business-therapist', 'growth-path'],
+      `${slug} → تراپیست + مسیرساز (override)`,
+    );
+  }
+}
+
+// ---- the home-page product showcase exists in every source of truth ----
+const homeNames = defaultPageSections.home.map((s) => s.name);
+assert.ok(homeNames.includes('AI_TOOLS'), 'home page renders the product showcase (AI_TOOLS section)');
+assert.ok(
+  homeNames.indexOf('AI_TOOLS') > homeNames.indexOf('INSIGHTS') &&
+    homeNames.indexOf('AI_TOOLS') < homeNames.indexOf('FAQ'),
+  'the showcase sits right after the fresh-writing block, before FAQ',
+);
+const siteContent: any = JSON.parse(
+  readFileSync(new URL('../content/site-content.json', import.meta.url), 'utf8'),
+);
+const jsonHomeNames = ((siteContent.PAGE_SECTIONS && siteContent.PAGE_SECTIONS.home) || []).map(
+  (s: any) => s.name,
+);
+assert.ok(jsonHomeNames.includes('AI_TOOLS'), 'content/site-content.json export carries the AI_TOOLS home section');
 
 // ---- coverage: across the real corpus every product is promoted ----
 
 assert.ok(published.length >= 20, `corpus has enough posts to check coverage (${published.length})`);
 
 // Every tool is promoted inside at least two articles (as the in-article pick
-// or as the second recommendation right after it).
+// or as the second recommendation right after it). The two narrower tools —
+// مسیرساز (career/roadmap) and شبیه‌ساز مشتری (sales practice) — are deliberately
+// kept at five-plus so a future scoring tweak cannot silently demote them.
 const appearances = new Map<string, number>();
 for (const post of published) {
   for (const id of pickProductsForPost(post, 2)) appearances.set(id, (appearances.get(id) || 0) + 1);
 }
 for (const id of PRODUCT_IDS) {
-  assert.ok((appearances.get(id) || 0) >= 2, `product "${id}" is promoted inside at least two articles`);
+  const min = id === 'growth-path' || id === 'mock-customer' ? 5 : 2;
+  assert.ok(
+    (appearances.get(id) || 0) >= min,
+    `product "${id}" is promoted inside at least ${min} articles (got ${appearances.get(id) || 0})`,
+  );
 }
 
 // Three of the four tools are the single best answer for at least one article.
