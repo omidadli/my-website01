@@ -8,7 +8,7 @@
  *   /<custom-slug>   → CMS custom page /admin           → CMS dashboard
  */
 
-export const STATIC_PAGES = ['home', 'services', 'portfolio', 'about', 'blog', 'contact', 'projects', 'products', 'admin'] as const;
+export const STATIC_PAGES = ['home', 'services', 'portfolio', 'about', 'blog', 'contact', 'projects', 'products', 'profile', 'admin'] as const;
 
 export interface Route {
   page: string;

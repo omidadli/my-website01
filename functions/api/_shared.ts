@@ -85,6 +85,97 @@ export const safeEqual = async (a: string, b: string, secret: string): Promise<b
   return diff === 0;
 };
 
+/* ---------------- User account helpers (public site auth) ---------------- */
+
+const USER_SESSION_COOKIE = 'nd_session';
+const USER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export const hashPassword = async (password: string, salt: string, secret: string): Promise<string> => {
+  // PBKDF2-SHA256 with 120k iterations + site HMAC-secret peppering; output hex.
+  const enc = new TextEncoder();
+  const saltBuf = enc.encode(salt + ':' + secret);
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBuf, iterations: 120000, hash: 'SHA-256' },
+    keyMaterial,
+    256
+  );
+  return Array.from(new Uint8Array(derived)).map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+export const randomHex = (bytes = 32): string => {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+export const normalizeLoginId = (raw: string): { id: string; type: 'email' | 'phone' } => {
+  const v = String(raw || '').trim();
+  // Looks like an Iran mobile (09xx… or +989xx…)
+  const digits = v.replace(/[^\d+]/g, '');
+  if (/^(\+98|0)?9\d{9}$/.test(digits)) {
+    const normalized = digits.replace(/^\+98/, '0');
+    return { id: normalized, type: 'phone' };
+  }
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) {
+    return { id: v.toLowerCase(), type: 'email' };
+  }
+  return { id: v.toLowerCase(), type: /@/.test(v) ? 'email' : 'phone' };
+};
+
+export const newId = (): string => `${Date.now().toString(36)}-${randomHex(6)}`;
+
+/** Read the session cookie and return the user row or null. Cleans up expired sessions best-effort. */
+export const requireUser = async (request: Request, env: Env): Promise<Record<string, any> | null> => {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const match = cookieHeader.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${USER_SESSION_COOKIE}=`));
+  const token = match ? decodeURIComponent(match.split('=').slice(1).join('=')) : '';
+  if (!token) return null;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT u.*, s.expires_at AS sess_expires FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.token = ?1`
+    ).bind(token).first<Record<string, any>>();
+    if (!row) return null;
+    if (new Date(String(row.sess_expires)).getTime() < Date.now()) {
+      await env.DB.prepare(`DELETE FROM user_sessions WHERE token = ?1`).bind(token).run().catch(() => {});
+      return null;
+    }
+    return row;
+  } catch {
+    return null;
+  }
+};
+
+export interface SessionCookieOptions {
+  token: string;
+  expiresAt: number;
+  /** Omit to delete the cookie. */
+  delete?: boolean;
+}
+
+export const sessionCookie = ({ token, expiresAt, delete: del }: SessionCookieOptions): string => {
+  const name = USER_SESSION_COOKIE;
+  const val = encodeURIComponent(token);
+  const expires = new Date(del ? 0 : expiresAt).toUTCString();
+  const maxAge = del ? 0 : Math.floor(USER_SESSION_TTL_MS / 1000);
+  // SameSite=Lax so it works across top-level navigations; Secure auto-enabled on https in production.
+  return `${name}=${val}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}; Max-Age=${maxAge}`;
+};
+
+export const publicUserShape = (row: Record<string, any>) => ({
+  id: row.id,
+  fullName: row.full_name,
+  email: row.email || '',
+  phone: row.phone || '',
+  avatarUrl: row.avatar_url || '',
+  bio: row.bio || '',
+  joinedAt: row.created_at,
+});
+
+export { USER_SESSION_COOKIE, USER_SESSION_TTL_MS };
+
 export const json = (body: unknown, init: ResponseInit = {}): Response =>
   new Response(JSON.stringify(body), {
     ...init,
@@ -176,6 +267,81 @@ const CORE_TABLE_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_chat_ip_time ON chat_messages (ip, created_at)`,
+  `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    login_id TEXT NOT NULL UNIQUE,
+    login_type TEXT NOT NULL DEFAULT 'email',
+    email TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    avatar_url TEXT DEFAULT '',
+    bio TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_login_at TEXT DEFAULT ''
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_users_login ON users (login_id)`,
+  `CREATE TABLE IF NOT EXISTS user_sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    ip TEXT DEFAULT '',
+    user_agent TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions (expires_at)`,
+  `CREATE TABLE IF NOT EXISTS user_saved_articles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    is_read INTEGER NOT NULL DEFAULT 0,
+    saved_at TEXT NOT NULL,
+    read_at TEXT DEFAULT '',
+    UNIQUE(user_id, post_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_saved_user ON user_saved_articles (user_id, saved_at)`,
+  `CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    product_id TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL DEFAULT '',
+    plan_id TEXT NOT NULL DEFAULT '',
+    plan_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    price TEXT DEFAULT '',
+    features TEXT NOT NULL DEFAULT '[]',
+    auto_renew INTEGER NOT NULL DEFAULT 0,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_subs_user ON user_subscriptions (user_id, start_date)`,
+  `CREATE TABLE IF NOT EXISTS user_consultations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    message TEXT NOT NULL,
+    service_id TEXT DEFAULT '',
+    service_name TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_notes TEXT DEFAULT '',
+    scheduled_date TEXT DEFAULT '',
+    scheduled_time TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_cons_user ON user_consultations (user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS user_activities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    related_id TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_act_user_time ON user_activities (user_id, created_at)`,
 ];
 
 let coreTablesReady: Promise<void> | null = null;

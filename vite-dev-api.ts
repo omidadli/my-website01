@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
+import { createHmac, randomBytes } from 'node:crypto';
 import {
   buildDigest,
   buildSoulPrompt,
@@ -69,9 +70,14 @@ const TOOL_ACCESS_FILE = path.resolve(process.cwd(), '.dev-tool-access.json');
 const TOOL_MSGS_FILE = path.resolve(process.cwd(), '.dev-tool-msgs.json');
 const TOOL_SETTINGS_FILE = path.resolve(process.cwd(), '.dev-tool-settings.json');
 const TOOL_TRIALS_FILE = path.resolve(process.cwd(), '.dev-tool-trials.json');
+const USERS_FILE = path.resolve(process.cwd(), '.dev-users.json');
+const USER_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-user-sessions.json');
 // Dev-only signing secret for AI-tool access tokens (prod uses env.AUTH_SECRET).
 const DEV_TOOL_SECRET = process.env.AUTH_SECRET || 'dev-tool-secret-v1';
+const DEV_USER_SECRET = process.env.AUTH_SECRET || 'dev-user-secret-v1';
 const devAdminTokens = new Map<string, number>();
+const USER_SESSION_COOKIE = 'nd_session';
+const USER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isDevAdminRequest = (req: import('http').IncomingMessage): boolean => {
   const authorization = String(req.headers['authorization'] || '');
@@ -92,6 +98,82 @@ const issueDevAdminToken = (): { token: string; expiresAt: number } => {
   const token = `dev-${crypto.randomUUID()}`;
   devAdminTokens.set(token, expiresAt);
   return { token, expiresAt };
+};
+
+/* ---------------------- Dev user auth helpers ---------------------- */
+interface DevUser {
+  id: string;
+  fullName: string;
+  loginId: string;
+  loginType: 'email' | 'phone';
+  email: string;
+  phone: string;
+  passwordHash: string;
+  passwordSalt: string;
+  avatarUrl: string;
+  bio: string;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+interface DevSession {
+  token: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: number;
+}
+
+const randomHex = (bytes = 32): string => randomBytes(bytes).toString('hex');
+
+const normalizeLoginId = (raw: string): { id: string; type: 'email' | 'phone' } => {
+  const v = String(raw || '').trim();
+  const digits = v.replace(/[^\d+]/g, '');
+  if (/^(\+98|0)?9\d{9}$/.test(digits)) {
+    return { id: digits.replace(/^\+98/, '0'), type: 'phone' };
+  }
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return { id: v.toLowerCase(), type: 'email' };
+  return { id: v.toLowerCase(), type: /@/.test(v) ? 'email' : 'phone' };
+};
+
+const devHashPassword = (password: string, salt: string): string => {
+  // Iterated HMAC-SHA256 — for dev-only persistent storage. Prod uses PBKDF2-SHA256 via WebCrypto.
+  let h = salt + ':' + DEV_USER_SECRET;
+  for (let i = 0; i < 5000; i++) h = createHmac('sha256', DEV_USER_SECRET).update(h + password).digest('hex');
+  return h;
+};
+
+const newDevId = () => `${Date.now().toString(36)}-${randomHex(6)}`;
+
+const loadDevUsers = (): DevUser[] => safeReadJson<DevUser[]>(USERS_FILE, []);
+const saveDevUsers = (u: DevUser[]) => safeWriteJson(USERS_FILE, u);
+const loadDevSessions = (): DevSession[] => {
+  const arr = safeReadJson<DevSession[]>(USER_SESSIONS_FILE, []);
+  // GC expired
+  const now = Date.now();
+  const alive = arr.filter((s) => s.expiresAt > now);
+  if (alive.length !== arr.length) saveDevSessions(alive);
+  return alive;
+};
+const saveDevSessions = (s: DevSession[]) => safeWriteJson(USER_SESSIONS_FILE, s);
+
+const getDevSessionUser = (req: import('http').IncomingMessage): DevUser | null => {
+  const cookie = String(req.headers.cookie || '');
+  const m = cookie.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${USER_SESSION_COOKIE}=`));
+  if (!m) return null;
+  const token = decodeURIComponent(m.split('=').slice(1).join('='));
+  const sessions = loadDevSessions();
+  const s = sessions.find((x) => x.token === token && x.expiresAt > Date.now());
+  if (!s) return null;
+  return loadDevUsers().find((u) => u.id === s.userId) || null;
+};
+
+const setSessionCookie = (res: import('http').ServerResponse, token: string, expiresAt: number) => {
+  const val = encodeURIComponent(token);
+  const expires = new Date(expiresAt).toUTCString();
+  res.setHeader('Set-Cookie', `${USER_SESSION_COOKIE}=${val}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`);
+};
+
+const clearSessionCookie = (res: import('http').ServerResponse) => {
+  res.setHeader('Set-Cookie', `${USER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`);
 };
 
 const safeReadJson = <T>(file: string, fallback: T): T => {
@@ -257,6 +339,173 @@ export function cmsDevApiPlugin(): Plugin {
             if (method === 'GET') {
               if (isDevAdminRequest(req)) return sendJson({ ok: true, username: 'admin' });
               return sendJson({ ok: false, error: 'جلسه نامعتبر است.' }, 401);
+            }
+          }
+
+          // --- 2b. /api/user?action=...  (public site user accounts) ---
+          if (pathname === '/api/user') {
+            if (method === 'GET') {
+              const u = getDevSessionUser(req);
+              if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+              return sendJson({
+                ok: true,
+                profile: { id: u.id, fullName: u.fullName, email: u.email, phone: u.phone, avatarUrl: u.avatarUrl, bio: u.bio, joinedAt: u.createdAt },
+                savedArticles: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === u.id),
+                subscriptions: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []).filter((x) => x.userId === u.id),
+                consultations: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === u.id),
+                activities: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []).filter((x) => x.userId === u.id).slice(0, 50),
+              });
+            }
+            if (method === 'POST') {
+              const body = await readBody();
+              const action = url.searchParams.get('action') || 'login';
+
+              if (action === 'logout') {
+                const cookie = String(req.headers.cookie || '');
+                const m = cookie.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${USER_SESSION_COOKIE}=`));
+                if (m) {
+                  const token = decodeURIComponent(m.split('=').slice(1).join('='));
+                  const sessions = loadDevSessions().filter((s) => s.token !== token);
+                  saveDevSessions(sessions);
+                }
+                clearSessionCookie(res);
+                return sendJson({ ok: true });
+              }
+
+              if (action === 'register') {
+                const fullName = String(body.fullName || '').trim();
+                // Support both separate email/phone fields AND the combined emailOrPhone field.
+                const emailVal = String(body.email || '').trim();
+                const phoneVal = String(body.phone || '').trim();
+                const loginRaw = String(body.emailOrPhone || emailVal || phoneVal || '').trim();
+                const password = String(body.password || '');
+                if (!fullName || fullName.length < 2) return sendJson({ ok: false, error: 'لطفاً نام و نام خانوادگی را وارد کنید.' }, 400);
+                if (!loginRaw) return sendJson({ ok: false, error: 'لطفاً ایمیل یا شماره تلفن را وارد کنید.' }, 400);
+                if (!password || password.length < 6) return sendJson({ ok: false, error: 'رمز ورود باید حداقل ۶ کاراکتر باشد.' }, 400);
+                const { id: loginId, type: loginType } = normalizeLoginId(loginRaw);
+                const users = loadDevUsers();
+                if (users.some((u) => u.loginId === loginId)) {
+                  return sendJson({ ok: false, error: 'این ایمیل یا شماره قبلاً ثبت نام کرده است. لطفاً وارد شوید.' }, 409);
+                }
+                const salt = randomHex(16);
+                const uid = newDevId();
+                const now = new Date().toISOString();
+                const user: DevUser = {
+                  id: uid,
+                  fullName,
+                  loginId,
+                  loginType,
+                  email: loginType === 'email' ? loginId : '',
+                  phone: loginType === 'phone' ? loginId : '',
+                  passwordHash: devHashPassword(password, salt),
+                  passwordSalt: salt,
+                  avatarUrl: '',
+                  bio: '',
+                  createdAt: now,
+                };
+                users.push(user);
+                saveDevUsers(users);
+                // Seed demo sub
+                const subs = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []);
+                subs.unshift({
+                  id: newDevId(),
+                  userId: uid,
+                  productName: 'حساب کاربری امید عدلی',
+                  planName: 'کاربر جدید',
+                  status: 'active',
+                  price: 'رایگان',
+                  startDate: now,
+                  endDate: new Date(Date.now() + 30 * 86400_000).toISOString(),
+                  autoRenew: true,
+                  features: ['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها'],
+                });
+                safeWriteJson(path.resolve(process.cwd(), '.dev-user-subs.json'), subs);
+                const acts = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []);
+                acts.unshift({ id: newDevId(), userId: uid, type: 'subscription_started', description: 'حساب کاربری شما ایجاد شد', timestamp: now });
+                safeWriteJson(path.resolve(process.cwd(), '.dev-user-activities.json'), acts);
+                const expiresAt = Date.now() + USER_SESSION_TTL_MS;
+                const token = randomHex(32);
+                const sessions = loadDevSessions();
+                sessions.push({ token, userId: uid, createdAt: now, expiresAt });
+                saveDevSessions(sessions);
+                setSessionCookie(res, token, expiresAt);
+                const saved = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === uid);
+                const userSubs = subs.filter((x) => x.userId === uid);
+                const userActs = acts.filter((x) => x.userId === uid);
+                const cons = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === uid);
+                return sendJson({
+                  ok: true,
+                  profile: { id: uid, fullName, email: user.email, phone: user.phone, avatarUrl: '', bio: '', joinedAt: now },
+                  savedArticles: saved,
+                  subscriptions: userSubs.map((s) => ({
+                    id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
+                    status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
+                  })),
+                  consultations: cons.map((c) => ({
+                    id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
+                    status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
+                    createdAt: c.createdAt, updatedAt: c.updatedAt,
+                  })),
+                  activities: userActs.map((a) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp })),
+                });
+              }
+
+              if (action === 'login') {
+                const loginRaw = String(body.emailOrPhone || body.email || body.phone || body.username || '').trim();
+                const password = String(body.password || '');
+                if (!loginRaw || !password) return sendJson({ ok: false, error: 'ایمیل/شماره و رمز عبور را وارد کنید.' }, 400);
+                const { id: loginId } = normalizeLoginId(loginRaw);
+                const users = loadDevUsers();
+                const user = users.find((u) => u.loginId === loginId);
+                if (!user) return sendJson({ ok: false, error: 'کاربری با این ایمیل/شماره یافت نشد.' }, 401);
+                const hash = devHashPassword(password, user.passwordSalt);
+                let diff = 0;
+                const a = hash, b = user.passwordHash;
+                if (a.length !== b.length) diff = 1;
+                const len = Math.min(a.length, b.length);
+                for (let i = 0; i < len; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+                if (diff !== 0) return sendJson({ ok: false, error: 'رمز عبور اشتباه است.' }, 401);
+                user.lastLoginAt = new Date().toISOString();
+                saveDevUsers(users);
+                const expiresAt = Date.now() + USER_SESSION_TTL_MS;
+                const token = randomHex(32);
+                const sessions = loadDevSessions();
+                sessions.push({ token, userId: user.id, createdAt: new Date().toISOString(), expiresAt });
+                saveDevSessions(sessions);
+                setSessionCookie(res, token, expiresAt);
+                const saved = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === user.id);
+                const subs = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []).filter((x) => x.userId === user.id);
+                const cons = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === user.id);
+                const acts = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []).filter((x) => x.userId === user.id).slice(0, 50);
+                return sendJson({
+                  ok: true,
+                  profile: { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl, bio: user.bio, joinedAt: user.createdAt },
+                  savedArticles: saved,
+                  subscriptions: subs.map((s) => ({
+                    id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
+                    status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
+                  })),
+                  consultations: cons.map((c) => ({
+                    id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
+                    status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
+                    createdAt: c.createdAt, updatedAt: c.updatedAt,
+                  })),
+                  activities: acts.map((a) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp })),
+                });
+              }
+
+              if (action === 'update') {
+                const u = getDevSessionUser(req);
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const users = loadDevUsers();
+                const idx = users.findIndex((x) => x.id === u.id);
+                if (idx < 0) return sendJson({ ok: false, error: 'user_not_found' }, 404);
+                users[idx].fullName = String(body.fullName ?? u.fullName).trim();
+                users[idx].phone = body.phone !== undefined ? String(body.phone || '').trim() : u.phone;
+                users[idx].bio = body.bio !== undefined ? String(body.bio || '') : u.bio;
+                saveDevUsers(users);
+                return sendJson({ ok: true, profile: { id: users[idx].id, fullName: users[idx].fullName, email: users[idx].email, phone: users[idx].phone, avatarUrl: users[idx].avatarUrl, bio: users[idx].bio, joinedAt: users[idx].createdAt } });
+              }
             }
           }
 

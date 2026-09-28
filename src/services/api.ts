@@ -11,6 +11,8 @@ import { compressImage } from '../utils/image';
 
 const TOKEN_KEY = 'nd_admin_token';
 
+const USER_DATA_CACHE_KEY = 'nd-user-data-cache';
+
 let cloudAvailable: boolean | null = null;
 /** Body of the probe response, handed to the first getContent() so boot needs one round-trip, not two. */
 let primedContent: { data: any; updatedAt: string | null } | null | undefined;
@@ -524,4 +526,137 @@ export const api = {
       return null;
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // User accounts (site visitors) — register / login / logout / sync.
+  // Session lives in an HttpOnly cookie set by the server; the client never sees
+  // the token. We just mirror user data to localStorage for instant hydration.
+  // ---------------------------------------------------------------------------
+
+  async getMe(): Promise<{
+    ok: boolean;
+    profile?: any;
+    savedArticles?: any[];
+    subscriptions?: any[];
+    consultations?: any[];
+    activities?: any[];
+    error?: string;
+  }> {
+    try {
+      const r = await fetch('/api/user', { method: 'GET', cache: 'no-store', credentials: 'same-origin' });
+      const ct = r.headers.get('Content-Type') || '';
+      // If the server returned HTML (e.g. dev server not ready, SPA fallback), treat as "not reachable"
+      // instead of showing a scary error — we'll silently fall back to anonymous state.
+      if (!ct.includes('application/json')) {
+        try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+        return { ok: false, error: 'not_authenticated' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+        return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+      }
+      if (r.status === 401 || !r.ok) {
+        try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+        return { ok: false, error: 'not_authenticated' };
+      }
+      return { ok: false, error: j?.error || 'not_authenticated' };
+    } catch {
+      return { ok: false, error: 'not_authenticated' };
+    }
+  },
+
+  async userRegister(payload: { fullName: string; email?: string; phone?: string; password: string }) {
+    const body: Record<string, string> = { fullName: payload.fullName, password: payload.password };
+    if (payload.email) body.email = payload.email;
+    if (payload.phone) body.phone = payload.phone;
+    const loginValue = payload.email || payload.phone || '';
+    if (loginValue) body.emailOrPhone = loginValue;
+    try {
+      const r = await fetch('/api/user?action=register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const ct = r.headers.get('Content-Type') || '';
+      if (!ct.includes('application/json')) {
+        return { ok: false, error: 'سرور در حال راه‌اندازی است، چند لحظه دیگر دوباره تلاش کنید.' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        if (j.profile && Array.isArray(j.savedArticles)) {
+          try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+          return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+        }
+        return await this.getMe();
+      }
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userLogin(payload: { email?: string; phone?: string; password: string }) {
+    const body: Record<string, string> = { password: payload.password };
+    if (payload.email) body.email = payload.email;
+    if (payload.phone) body.phone = payload.phone;
+    const loginValue = payload.email || payload.phone || '';
+    if (loginValue) body.emailOrPhone = loginValue;
+    try {
+      const r = await fetch('/api/user?action=login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const ct = r.headers.get('Content-Type') || '';
+      if (!ct.includes('application/json')) {
+        return { ok: false, error: 'سرور در حال راه‌اندازی است، چند لحظه دیگر دوباره تلاش کنید.' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        if (j.profile && Array.isArray(j.savedArticles)) {
+          try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+          return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+        }
+        return await this.getMe();
+      }
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userLogout() {
+    try {
+      await fetch('/api/user?action=logout', { method: 'POST', credentials: 'same-origin' });
+    } catch { /* ignore */ }
+    try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+    return { ok: true };
+  },
+
+  async userUpdateProfile(payload: Partial<{ fullName: string; phone: string; bio: string }>) {
+    try {
+      const r = await fetch('/api/user?action=update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true, profile: j.profile };
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  getCachedMe(): any | null {
+    try {
+      const raw = localStorage.getItem(USER_DATA_CACHE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  },
 };
+

@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page, CaseStudy } from './types';
 import { ContentProvider, useContent } from './context/ContentContext';
+import { UserProvider } from './context/UserContext';
 import { StatePreserverProvider } from './utils/statePreserver';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -25,6 +26,7 @@ const ProjectsPage = lazy(() => import('./pages/ProjectsPage').then((m) => ({ de
 const ProductsPage = lazy(() => import('./pages/ProductsPage').then((m) => ({ default: m.ProductsPage })));
 const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
+const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const CustomPageView = lazy(() => import('./pages/CustomPageView').then((m) => ({ default: m.CustomPageView })));
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -346,6 +348,14 @@ function MainLayout({
               />
             )}
 
+            {currentPage === 'profile' && (
+              <ProfilePage
+                theme={theme}
+                onNavigate={handleNavigate}
+                onSelectPost={handleSelectBlogPost}
+              />
+            )}
+
             {currentPage !== 'admin' &&
               (data.CUSTOM_PAGES || []).some((cp) => cp.slug === (currentPage as string)) && (
                 <CustomPageView
@@ -411,7 +421,9 @@ function MainLayout({
 export default function App() {
   return (
     <ContentProvider>
-      <StatePreserverWrapper />
+      <UserProvider>
+        <StatePreserverWrapper />
+      </UserProvider>
     </ContentProvider>
   );
 }

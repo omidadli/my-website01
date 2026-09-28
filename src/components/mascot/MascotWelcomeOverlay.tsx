@@ -138,6 +138,9 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
       setIsOpen(false);
       setIsDissolving(false);
       soulJourney({ pose: 'wave', hold: 3.5, then: 'idle' });
+      // Tell the rest of the app (mascot events, etc.) that the welcome flow
+      // finished and what name the visitor entered — prevents double-asking.
+      window.dispatchEvent(new CustomEvent('nd:welcome-complete', { detail: nameToPass }));
       onComplete?.(nameToPass);
     }, 2600);
   };
@@ -260,6 +263,7 @@ export function MascotWelcomeOverlay({ theme = 'dark', onComplete }: MascotWelco
     <AnimatePresence>
       {isOpen && (
         <div
+          data-mascot-welcome="1"
           className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-5 overflow-hidden cursor-default"
           dir="rtl"
         >

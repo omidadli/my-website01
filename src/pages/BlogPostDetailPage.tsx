@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { inputCls } from '../components/nd/Kit';
-import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays } from 'lucide-react';
+import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays, Bookmark, BookmarkCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
@@ -23,6 +24,7 @@ interface BlogPostDetailPageProps {
 export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, postId, onNavigate, onSelectPost }) => {
   const isDark = theme === 'dark';
   const { data, addBlogComment } = useContent();
+  const { isLoggedIn, isArticleSaved, saveArticle, removeSavedArticle, markArticleAsRead } = useUser();
   const blogPosts = safeRecordArray<NonNullable<typeof data.BLOG_POSTS[number]>>(data.BLOG_POSTS)
     .filter((item) => typeof item.id === 'string' && item.id.length > 0);
   const post = blogPosts.find((p) => p.id === postId || (!!p.slug && p.slug === postId));
@@ -133,6 +135,36 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
           <span className="text-[color:var(--nd-accent)] font-extrabold">{post.categoryFa}</span>
         </nav>
         <div className="flex items-center gap-2">
+          {isLoggedIn && (
+            <button
+              onClick={() => {
+                const postKey = post.slug || post.id;
+                if (isArticleSaved(postKey)) {
+                  removeSavedArticle(postKey);
+                } else {
+                  saveArticle(postKey);
+                }
+              }}
+              className={`nd-btn px-4 py-2 text-[11px] ${
+                isArticleSaved(post.slug || post.id)
+                  ? 'bg-[color:var(--nd-accent)] text-white'
+                  : 'nd-btn-ghost'
+              }`}
+              title={isArticleSaved(post.slug || post.id) ? 'حذف از لیست خواندن بعدا' : 'ذخیره برای خواندن بعدا'}
+            >
+              {isArticleSaved(post.slug || post.id) ? (
+                <>
+                  <BookmarkCheck className="w-3.5 h-3.5" />
+                  <span>ذخیره شده</span>
+                </>
+              ) : (
+                <>
+                  <Bookmark className="w-3.5 h-3.5" />
+                  <span>ذخیره برای بعد</span>
+                </>
+              )}
+            </button>
+          )}
           <button onClick={handleCopyLink} className="nd-btn nd-btn-ghost px-4 py-2 text-[11px]">
             <Link2 className="w-3.5 h-3.5" />
             <span>{copied ? 'کپی شد!' : 'کپی لینک'}</span>
