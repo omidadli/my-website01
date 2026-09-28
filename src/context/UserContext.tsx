@@ -96,6 +96,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState<boolean>(!cached);
   const cloudOk = useRef<boolean | null>(null);
   const [fallback, setFallback] = useState<LocalFallback>(() => loadFallback());
+  // Monotonic auth counter: every successful register/login bumps this so a
+  // stale mount-effect 401 that raced the request doesn't wipe us out.
+  const authGeneration = useRef<number>(0);
 
   // When cloud API is not reachable (offline/dev static), mirror state into localStorage fallback.
   const persistFallback = useCallback((patch: Partial<LocalFallback>) => {
@@ -106,11 +109,18 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // On mount: verify the cookie against the server. If the server is unreachable (no
-  // functions deployed in dev), fall back to locally stored state.
+  // On mount: verify the cookie against the server — but ONLY if a mount-auth
+  // isn't already in flight right after register/login. If the user has just
+  // finished auth via register()/login() their state will be set by that call;
+  // avoid racing them with an in-flight 401 and wiping the freshly-logged-in user.
   useEffect(() => {
     let cancelled = false;
+    let inFlightToken = '';
     (async () => {
+      // Small delay: let any just-sent register/login response settle its cookie
+      // before we probe, otherwise we may fire a GET that sees a not-yet-set cookie.
+      await new Promise((res) => setTimeout(res, 200));
+      if (cancelled) return;
       try {
         const r = await api.getMe();
         if (cancelled) return;
@@ -124,19 +134,19 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           if (r.profile?.fullName) syncMascotName(r.profile.fullName);
         } else if (r.error === 'not_authenticated') {
           cloudOk.current = true;
-          // No active session → try localStorage fallback (legacy dev sessions)
-          const f = loadFallback();
-          if (f.profile) {
-            setProfile(f.profile);
-            setSavedArticles(f.savedArticles);
-            setSubscriptions(f.subscriptions);
-            setConsultations(f.consultations);
-            setActivities(f.activities);
-          } else {
-            setProfile(null);
-          }
+          // Only clear state if no successful auth has happened since this request started.
+          const myGen = authGeneration.current;
+          setProfile((current) => {
+            if (myGen !== authGeneration.current) return current;
+            if (current) return current;
+            const f = loadFallback();
+            return f.profile || null;
+          });
+          setSavedArticles((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().savedArticles || []));
+          setSubscriptions((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().subscriptions || []));
+          setConsultations((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().consultations || []));
+          setActivities((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().activities || []));
         } else {
-          // Network/server error → use fallback if it has a user
           cloudOk.current = false;
           const f = loadFallback();
           if (f.profile) {
@@ -183,10 +193,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const register = useCallback(async ({ fullName, email, phone, password }: { fullName: string; email?: string; phone?: string; password: string }) => {
-    const emailOrPhone = (email || phone || '').trim();
+    const loginValue = (email || phone || '').trim();
+    if (!loginValue) return { ok: false, error: 'ایمیل یا شماره تلفن را وارد کنید.' };
     if (cloudOk.current !== false) {
       const r = await api.userRegister({ fullName, email, phone, password });
       if (r.ok) {
+        cloudOk.current = true;
+        authGeneration.current += 1;
         setProfile(r.profile || null);
         setSavedArticles(r.savedArticles || []);
         setSubscriptions(r.subscriptions || []);
@@ -198,10 +211,11 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: r.error };
     }
     // Local fallback when cloud is unavailable
-    const { id: loginId, type } = normalizeLoginId(emailOrPhone);
+    const { id: loginId, type } = normalizeLoginId(loginValue);
     if (fallback.profile && (fallback.profile.email?.toLowerCase() === loginId || fallback.profile.phone === loginId)) {
       return { ok: false, error: 'این ایمیل/شماره قبلاً ثبت شده است.' };
     }
+    authGeneration.current += 1;
     const newProfile: UserProfile = {
       id: genId(),
       fullName,
@@ -239,10 +253,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, [fallback.profile, persistFallback]);
 
   const login = useCallback(async ({ email, phone, password }: { email?: string; phone?: string; password: string }) => {
-    const emailOrPhone = (email || phone || '').trim();
+    const loginValue = (email || phone || '').trim();
+    if (!loginValue) return { ok: false, error: 'ایمیل یا شماره تلفن را وارد کنید.' };
     if (cloudOk.current !== false) {
       const r = await api.userLogin({ email, phone, password });
       if (r.ok) {
+        cloudOk.current = true;
+        authGeneration.current += 1;
         setProfile(r.profile || null);
         setSavedArticles(r.savedArticles || []);
         setSubscriptions(r.subscriptions || []);
@@ -257,11 +274,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     const f = loadFallback();
     if (!f.profile) return { ok: false, error: 'حسابی یافت نشد. ابتدا ثبت نام کنید.' };
     if (!password || password.length < 6) return { ok: false, error: 'رمز عبور باید حداقل ۶ کاراکتر باشد.' };
+    authGeneration.current += 1;
     setProfile(f.profile);
     setSavedArticles(f.savedArticles);
     setSubscriptions(f.subscriptions);
     setConsultations(f.consultations);
     setActivities(f.activities);
+    syncMascotName(f.profile.fullName);
     return { ok: true };
   }, []);
 
