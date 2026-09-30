@@ -8,12 +8,17 @@
  */
 
 import { compressImage } from '../utils/image';
+import type { Backend } from '../utils/cloudSync';
 
 const TOKEN_KEY = 'nd_admin_token';
 
 const USER_DATA_CACHE_KEY = 'nd-user-data-cache';
 
 let cloudAvailable: boolean | null = null;
+/** Who answered the last successful probe (`dev` = the local Vite emulator, not the live site). */
+let backend: Backend = 'none';
+/** De-duplicates concurrent probes (StrictMode double-mount, AssistantPanel) into one request. */
+let probeInFlight: Promise<boolean> | null = null;
 /** Body of the probe response, handed to the first getContent() so boot needs one round-trip, not two. */
 let primedContent: { data: any; updatedAt: string | null } | null | undefined;
 
@@ -54,26 +59,73 @@ export const setToken = (token?: string | null) => {
   }
 };
 
-/** True when the Cloudflare Functions API responds on /api/content. */
-export const probe = async (): Promise<boolean> => {
-  if (cloudAvailable !== null) return cloudAvailable;
-  try {
-    const r = await fetch('/api/content', { method: 'GET', cache: 'no-store', headers: headers() });
-    // Any real API response (200/401/500) means functions exist; a Vite/SPA 404 HTML page means they don't.
-    const ct = r.headers.get('Content-Type') || '';
-    cloudAvailable = ct.includes('application/json');
-    if (cloudAvailable && r.ok) {
-      const j = await r.json().catch(() => null);
-      primedContent = j?.ok ? { data: j.data, updatedAt: j.updatedAt ?? null } : null;
+/**
+ * Attempts per probe and the pause before each (a transient edge/network error must not demote
+ * the whole session to browser-only mode). Exported so tests can shorten the waits.
+ */
+export const probeConfig = { retryDelaysMs: [0, 800, 2500], timeoutMs: 10_000 };
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const runProbe = async (): Promise<boolean> => {
+  for (const delay of probeConfig.retryDelaysMs) {
+    if (delay) await sleep(delay);
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), probeConfig.timeoutMs) : null;
+    try {
+      const r = await fetch('/api/content', { method: 'GET', cache: 'no-store', headers: headers(), signal: controller?.signal });
+      // Any real API response (200/401/500 JSON) means functions exist.
+      const ct = r.headers.get('Content-Type') || '';
+      if (ct.includes('application/json')) {
+        cloudAvailable = true;
+        backend = r.headers.get('X-CMS-Backend') === 'dev-emulator' ? 'dev' : 'cloudflare';
+        if (r.ok) {
+          const j = await r.json().catch(() => null);
+          primedContent = j?.ok ? { data: j.data, updatedAt: j.updatedAt ?? null } : null;
+        }
+        return true;
+      }
+      // An HTML answer below 500 is the SPA fallback: Functions are really not deployed → stop asking.
+      if (r.status < 500) break;
+      // HTML 5xx = gateway / edge error page → transient, try again.
+    } catch {
+      // Network error or timeout → try again.
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-  } catch {
-    cloudAvailable = false;
   }
-  return cloudAvailable;
+  cloudAvailable = false;
+  backend = 'none';
+  return false;
 };
+
+/**
+ * True when the content API responds on /api/content. The answer is cached for the page
+ * lifetime; pass `force` to ask again (the admin "reconnect" button).
+ */
+export const probe = (force = false): Promise<boolean> => {
+  if (!force && cloudAvailable !== null) return Promise.resolve(cloudAvailable);
+  if (!probeInFlight) probeInFlight = runProbe().finally(() => { probeInFlight = null; });
+  return probeInFlight;
+};
+
+export const getBackend = (): Backend => backend;
+
+export interface SaveContentResult {
+  ok: boolean;
+  updatedAt?: string | null;
+  conflict?: boolean;
+  error?: string;
+  status?: number;
+  /** 401 — the admin token is missing/expired. */
+  unauthorized?: boolean;
+  /** Worth retrying automatically: network failure, timeout or a 5xx. */
+  transient?: boolean;
+}
 
 export const api = {
   probe,
+  getBackend,
   getToken,
   setToken,
 
@@ -102,7 +154,7 @@ export const api = {
   async saveContent(
     data: any,
     baseUpdatedAt?: string | null
-  ): Promise<{ ok: boolean; updatedAt?: string | null; conflict?: boolean; error?: string }> {
+  ): Promise<SaveContentResult> {
     try {
       const body: Record<string, unknown> = { data };
       if (typeof baseUpdatedAt === 'string') body.baseUpdatedAt = baseUpdatedAt;
@@ -112,11 +164,12 @@ export const api = {
         body: JSON.stringify(body),
       });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && j?.ok) return { ok: true, updatedAt: j.updatedAt || null };
-      if (r.status === 409) return { ok: false, conflict: true, updatedAt: j?.updatedAt || null, error: j?.error || 'محتوا در جای دیگری تغییر کرده است.' };
-      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+      if (r.ok && j?.ok) return { ok: true, status: r.status, updatedAt: j.updatedAt || null };
+      if (r.status === 409) return { ok: false, status: 409, conflict: true, updatedAt: j?.updatedAt || null, error: j?.error || 'محتوا در جای دیگری تغییر کرده است.' };
+      if (r.status === 401) return { ok: false, status: 401, unauthorized: true, error: 'نشست مدیریت منقضی شده است؛ دوباره وارد شوید.' };
+      return { ok: false, status: r.status, transient: r.status >= 500 || r.status === 429, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
-      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+      return { ok: false, transient: true, error: 'اتصال به سرور برقرار نشد.' };
     }
   },
 
@@ -140,17 +193,22 @@ export const api = {
 
   async verify(): Promise<boolean> {
     if (!getToken()) return false;
-    try {
-      const r = await fetch('/api/auth', { headers: headers() });
-      if (r.ok) {
-        const j = await r.json().catch(() => ({}));
-        return !!j?.ok;
+    // A network hiccup must not silently sign the admin out; only a real 401 invalidates the token.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch('/api/auth', { headers: headers() });
+        if (r.ok) {
+          const j = await r.json().catch(() => ({}));
+          return !!j?.ok;
+        }
+        if (r.status === 401) setToken(null);
+        if (r.status < 500) return false;
+      } catch {
+        /* network error → try once more */
       }
-      if (r.status === 401) setToken(null);
-      return false;
-    } catch {
-      return false;
+      if (attempt === 0) await sleep(700);
     }
+    return false;
   },
 
   logout() {

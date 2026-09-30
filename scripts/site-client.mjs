@@ -28,11 +28,25 @@ export class SiteClient {
       if (!this._token) await this.login();
       headers.Authorization = `Bearer ${this._token}`;
     }
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      // Node's undici only says "fetch failed"; the useful part (ENOTFOUND, ECONNREFUSED, a TLS
+      // error …) is on `cause`. Surface it — "fetch failed" alone hid an expired domain for days.
+      const cause = e?.cause?.code || e?.cause?.message || e?.message || 'unknown error';
+      const hint = /ENOTFOUND|EAI_AGAIN/.test(String(cause))
+        ? ' — the host name does not resolve: check SITE_URL and that the domain is still registered / its DNS points to Cloudflare Pages'
+        : '';
+      const err = new Error(`${method} ${this.baseUrl}${path} → network error (${cause})${hint}`);
+      err.code = 'network';
+      err.cause = e;
+      throw err;
+    }
     const text = await res.text();
     let data;
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }

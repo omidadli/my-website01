@@ -76,6 +76,12 @@ const USER_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-user-sessions.json'
 const DEV_TOOL_SECRET = process.env.AUTH_SECRET || 'dev-tool-secret-v1';
 const DEV_USER_SECRET = process.env.AUTH_SECRET || 'dev-user-secret-v1';
 const devAdminTokens = new Map<string, number>();
+// Mirror of MAX_CONTENT_BYTES in functions/api/_shared.ts. D1 caps a row at 2 MB, so the live API
+// answers 413 above this. The emulator must refuse the same payloads, otherwise an oversized save
+// "works" in dev and then silently fails on the real site.
+const MAX_CONTENT_BYTES = 1_900_000;
+const CONTENT_TOO_LARGE_MESSAGE =
+  'حجم محتوا بیش از حد مجاز (حدود ۱.۹ مگابایت) است. تصاویر را به‌جای درج مستقیم (base64) از «کتابخانهٔ رسانه» آپلود کنید و متن‌های خیلی بلند را کوتاه کنید.';
 const USER_SESSION_COOKIE = 'nd_session';
 const USER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -245,6 +251,8 @@ export function cmsDevApiPlugin(): Plugin {
           res.statusCode = status;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.setHeader('Cache-Control', 'no-store');
+          // Lets the admin UI say plainly that this is the local emulator, not the live site.
+          res.setHeader('X-CMS-Backend', 'dev-emulator');
           res.end(JSON.stringify(body));
         };
 
@@ -317,6 +325,9 @@ export function cmsDevApiPlugin(): Plugin {
                     ? body.data.BLOG_COMMENTS.filter((comment: any) => !String(comment?.id || '').startsWith('c-'))
                     : [] }
                 : null;
+              if (nextData && Buffer.byteLength(JSON.stringify(nextData), 'utf8') > MAX_CONTENT_BYTES) {
+                return sendJson({ ok: false, error: CONTENT_TOO_LARGE_MESSAGE }, 413);
+              }
               const payload = { data: nextData, updatedAt: now };
               safeWriteJson(CONTENT_FILE, payload);
               return sendJson({ ok: true, updatedAt: now });

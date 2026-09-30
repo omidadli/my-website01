@@ -80,11 +80,13 @@ jobs:
         run: |
           url="${SITE_URL%/}/api/content"
           for i in 1 2 3 4 5 6; do
-            body=$(curl -fsS --max-time 20 "$url" 2>/dev/null) && break
-            echo "attempt $i: not ready yet, retrying in 10s…"; sleep 10
+            body=$(curl -fsS --max-time 20 "$url" 2>/tmp/curl.err) && break
+            reason=$(tr '\n' ' ' < /tmp/curl.err)
+            echo "attempt $i: not ready yet ($reason), retrying in 10s…"; sleep 10
           done
           if [ -z "$body" ]; then
-            echo "::error title=Smoke test failed::$url did not answer after the deploy."
+            # Keep curl's own words (e.g. "Could not resolve host") — they name the real cause.
+            echo "::error title=Smoke test failed::$url did not answer after the deploy — ${reason:-no reason reported}. The deploy itself succeeded; if this says 'Could not resolve host', the domain/DNS is the problem, not the code."
             exit 1
           fi
           echo "$body" | head -c 300; echo

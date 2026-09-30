@@ -7,11 +7,12 @@ import { CollectionEditor } from '../components/admin/CollectionEditor';
 import { FieldsForm, FieldDef } from '../components/admin/FieldsForm';
 import { SeoBox } from '../components/admin/SeoBox';
 import { ProductSyncManager } from '../components/admin/ProductSyncManager';
+import { SaveStatusChip } from '../components/cms/SaveStatus';
 import { ACard, ASectionTitle, AInput, ATextarea, ASelect, ALabel, ABadge, AConfirm, AModal } from '../components/admin/ui';
 import {
   LayoutDashboard, BookOpen, MessageSquare, Sparkles, Briefcase, ShoppingBag,
   FolderKanban, UserRound, Home, FileText, Image as ImageIcon, Search, Palette,
-  Settings, Lock, ShieldCheck, Cloud, HardDrive, ExternalLink, LogOut, Plus, Bot,
+  Settings, Lock, ShieldCheck, HardDrive, ExternalLink, LogOut, Plus, Bot,
   Trash2, ChevronUp, ChevronDown, Download, Copy, CheckCircle2, XCircle, RotateCcw,
   History, Eye, EyeOff, Wand2, Link2, Upload, Reply, Menu, Target,
   KeyRound, Smartphone, ShieldOff,
@@ -167,7 +168,7 @@ const newPost = () => ({
 
 export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   const {
-    data, isAdmin, persistence, pinCode, changePin, loginAdmin, logoutAdmin,
+    data, isAdmin, persistence, backend, saveState, reconnect, pinCode, changePin, loginAdmin, logoutAdmin,
     updateField, addItem, removeItem, moveItem, duplicateItem,
     exportJSON, importJSON, createSnapshot, rollbackSnapshot, deleteSnapshot,
     resetToDefaults, addMediaItem, removeMediaItem, logActivity,
@@ -380,9 +381,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
             <h1 className="nd-h2 text-xl sm:text-2xl">ورود به پیشخوان مدیریت</h1>
             <p className="text-xs leading-relaxed nd-muted">
               {persistence === 'cloud'
-                ? 'نام کاربری و رمز عبوری را وارد کنید که در Secrets پنل Cloudflare تنظیم کرده‌اید.'
-                : 'حالت توسعه (بدون اتصال به Cloudflare): رمز محلی مدیریت را وارد کنید.'}
+                ? backend === 'dev'
+                  ? 'سرور توسعهٔ محلی (شبیه‌ساز): نام کاربری و رمز پیش‌فرض admin / admin است، یا مقدار ADMIN_USERNAME و ADMIN_PASSWORD در فایل .env.'
+                  : 'نام کاربری و رمز عبوری را وارد کنید که در Secrets پنل Cloudflare تنظیم کرده‌اید.'
+                : 'اتصال به سرور برقرار نیست. ورود با رمز محلی فقط برای کار آفلاین است و تغییرات روی سایت اعمال نمی‌شود.'}
             </p>
+            {persistence === 'cloud' && saveState.status === 'error' && saveState.message && (
+              <div className="rounded-xl bg-[#fee2e2] text-[#b91c1c] text-[11px] font-extrabold leading-relaxed p-3" role="alert">
+                {saveState.message} تغییراتی که هنوز ذخیره نشده بودند بعد از ورود دوباره از نسخهٔ سرور جایگزین می‌شوند.
+              </div>
+            )}
+            {persistence !== 'cloud' && (
+              <div className="rounded-xl bg-[#fee2e2] text-[#b91c1c] text-[11px] font-extrabold leading-relaxed p-3 space-y-2" role="alert">
+                <p>اگر می‌خواهی روی سایت اصلی تغییر بدهی، اول اتصال را برقرار کن؛ بعد با نام کاربری و رمز Cloudflare وارد شو.</p>
+                <button type="button" onClick={() => { void reconnect(); }} className="underline underline-offset-2 font-black cursor-pointer">تلاش مجدد برای اتصال</button>
+              </div>
+            )}
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
             {persistence === 'cloud' && (
@@ -468,17 +482,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           <div className="min-w-0">
             <span className="block text-xs font-extrabold truncate">پیشخوان مدیریت</span>
             <span className="block text-[10px] nd-muted truncate">
-              {persistence === 'cloud' ? 'متصل به Cloudflare D1' : 'حالت محلی (توسعه)'}
+              {persistence === 'cloud'
+                ? backend === 'dev' ? 'شبیه‌ساز محلی (سرور توسعه)' : 'متصل به Cloudflare D1'
+                : 'بدون اتصال به سرور'}
             </span>
           </div>
         </div>
-        {persistence === 'cloud' ? (
-          <span className="nd-chip w-full justify-center bg-[color:var(--nd-mint-soft)] text-[color:var(--nd-success)] border-transparent text-[10px]">
-            <Cloud className="w-3 h-3" /> ذخیره‌سازی ابری فعال — تغییرات خودکار ذخیره می‌شوند
-          </span>
-        ) : (
+        <SaveStatusChip />
+        {persistence !== 'cloud' && (
           <span className="nd-chip w-full justify-center bg-[color:var(--nd-peach-soft)] text-[#d97706] border-transparent text-[10px]">
-            <HardDrive className="w-3 h-3" /> ذخیره در مرورگر — برای اتصال، راهنمای CMS-DEPLOY.md را ببینید
+            <HardDrive className="w-3 h-3" /> راهنمای اتصال: CMS-DEPLOY.md
           </span>
         )}
       </div>
@@ -535,7 +548,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           <Menu className="w-4 h-4" />
           <span>منوی مدیریت</span>
         </button>
-        <ABadge tone={persistence === 'cloud' ? 'ok' : 'warn'}>{persistence === 'cloud' ? '☁️ ابری' : 'محلی'}</ABadge>
+        <ABadge tone={persistence === 'cloud' && saveState.status !== 'error' ? 'ok' : 'warn'}>
+          {persistence !== 'cloud' ? 'بدون اتصال' : saveState.status === 'error' ? 'ذخیره نشد' : backend === 'dev' ? 'شبیه‌ساز محلی' : '☁️ ابری'}
+        </ABadge>
       </div>
       <AModal open={sidebarOpen} onClose={() => setSidebarOpen(false)} title="منوی مدیریت">
         <div className="[&>aside]:w-full">{sidebar}</div>

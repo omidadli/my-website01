@@ -22,7 +22,11 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
 }) => {
   const isDark = theme === 'dark';
 
-  const pageNames: Record<Page, string> = {
+  // Keyed by plain string on purpose: `Page` gains a member with every new route
+  // (custom CMS pages are open-ended anyway). The previous exhaustive
+  // `Record<Page, string>` stopped compiling when `profile` was added, which
+  // failed `npm run lint` in CI and silently blocked every deploy after it.
+  const pageNames: Record<string, string> = {
     home: 'صفحه اصلی',
     services: 'خدمات تخصصی',
     portfolio: 'کیس‌استاندی‌ها و نمونه‌کارها',
@@ -31,6 +35,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
     contact: 'تماس و درخواست مشاوره',
     projects: 'پروژه‌های جاری و سابق',
     products: 'محصولات و ابزارها',
+    profile: 'پروفایل کاربری',
     admin: 'پیشخوان مدیریت محتوا (CMS)',
   };
 
@@ -54,7 +59,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
           <span>صفحه اصلی</span>
         </button>
         <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
-        <span className="text-[#8b5cf6] font-black">{pageNames[page]}</span>
+        <span className="text-[#8b5cf6] font-black">{pageNames[page] ?? title}</span>
       </div>
 
       {/* Main Page Title Banner */}
