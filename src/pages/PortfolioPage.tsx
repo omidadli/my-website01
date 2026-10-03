@@ -231,8 +231,18 @@ export const PortfolioPage: React.FC<PortfolioPageProps> = ({
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="nd-chip">{detailStudy.industryFa}</span>
                   <span className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>مشتری: {detailStudy.client}</span>
+                  {detailStudy.date && detailStudy.date.trim() && (
+                    <span className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>· {detailStudy.date}</span>
+                  )}
                 </div>
                 <h2 id="case-study-title" className={`nd-h2 text-xl sm:text-3xl leading-tight ${isDark ? 'text-white' : ''}`}>{detailStudy.title}</h2>
+                {detailStudy.tags.some((tag) => tag.trim()) && (
+                  <div className="flex flex-wrap gap-1.5" aria-label="برچسب‌ها">
+                    {detailStudy.tags.filter((tag) => tag.trim()).map((tag) => (
+                      <span key={tag} className="nd-chip dir-ltr">#{tag.trim()}</span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {detailPreviewUrl && (

@@ -8,14 +8,19 @@ interface MediaFieldProps {
   value?: string;
   onChange: (url: string) => void;
   label?: string;
+  /** Short explanation under the field (e.g. where on the site this picture appears). */
+  hint?: string;
+  /** Offers a one-click way back to the site's built-in picture. */
+  resetTo?: { value: string; label: string };
 }
 
 /** Image URL field + media-library picker (local library + Cloudflare R2). */
-export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label = 'تصویر' }) => {
+export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label = 'تصویر', hint, resetTo }) => {
   const { data, persistence, isAdmin, addMediaItem, removeMediaItem, logActivity } = useContent();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cloudItems, setCloudItems] = useState<CloudMediaItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [uploadError, setUploadError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -33,12 +38,17 @@ export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label =
     if (!file) return;
     e.target.value = '';
     setBusy(true);
+    setUploadError('');
     if (persistence === 'cloud') {
-      const item = await api.uploadMedia(file, file.name, file.name);
-      if (item) {
-        addMediaItem(item.url, item.title, item.sizeKb, undefined, ['cloud', 'r2']);
-        setCloudItems((prev) => [item, ...prev]);
-        onChange(item.url);
+      const res = await api.uploadMediaResult(file, file.name, file.name);
+      const uploaded = res.ok ? res.item : undefined;
+      if (uploaded) {
+        addMediaItem(uploaded.url, uploaded.title, uploaded.sizeKb, undefined, ['cloud', 'r2']);
+        setCloudItems((prev) => [uploaded, ...prev]);
+        onChange(uploaded.url);
+      } else {
+        // Used to fail silently — the admin saw nothing happen and assumed the site was updated.
+        setUploadError(res.error || 'آپلود ناموفق بود.');
       }
     } else {
       const reader = new FileReader();
@@ -69,6 +79,13 @@ export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label =
           <span>کتابخانه</span>
         </button>
       </div>
+      {hint && <p className="text-[10px] nd-muted mt-1.5 leading-relaxed">{hint}</p>}
+      {resetTo && (value || '') !== resetTo.value && (
+        <button type="button" onClick={() => onChange(resetTo.value)} className="mt-1.5 text-[11px] font-extrabold text-[color:var(--nd-accent)] underline underline-offset-2 cursor-pointer">
+          {resetTo.label}
+        </button>
+      )}
+      {uploadError && !pickerOpen && <p role="alert" className="text-[11px] font-bold text-[#dc2626] mt-1.5">{uploadError}</p>}
 
       <AModal open={pickerOpen} onClose={() => setPickerOpen(false)} title="کتابخانه رسانه" wide>
         <div className="flex items-center justify-between gap-3">
@@ -85,6 +102,8 @@ export const MediaField: React.FC<MediaFieldProps> = ({ value, onChange, label =
           </button>
           <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={handleUpload} />
         </div>
+
+        {uploadError && <p role="alert" className="text-[11px] font-bold text-[#dc2626]">{uploadError}</p>}
 
         {merged.length === 0 ? (
           <p className="text-xs nd-muted text-center py-10">کتابخانه خالی است — اولین فایل را آپلود کنید.</p>

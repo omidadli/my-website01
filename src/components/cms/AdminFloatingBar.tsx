@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Save, Download, Upload, RotateCcw, Lock, Edit3, CheckCircle, Sparkles } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
+import { SaveStatusChip } from './SaveStatus';
 
 export const AdminFloatingBar: React.FC = () => {
   const {
@@ -10,15 +11,16 @@ export const AdminFloatingBar: React.FC = () => {
     exportJSON,
     importJSON,
     hasUnsavedChanges,
-    saveChanges
+    saveNow,
   } = useContent();
 
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; tone: 'ok' | 'error' } | null>(null);
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const showToast = (msg: string, ms = 3000) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), ms);
+  const showToast = (msg: string, ms = 3000, tone: 'ok' | 'error' = 'ok') => {
+    setToast({ msg, tone });
+    setTimeout(() => setToast(null), ms);
   };
 
   // A conditional cloud save was rejected because the content changed elsewhere
@@ -27,7 +29,7 @@ export const AdminFloatingBar: React.FC = () => {
   useEffect(() => {
     const onConflict = (e: Event) => {
       const msg = (e as CustomEvent<{ message?: string }>).detail?.message;
-      showToast(msg || 'محتوا هم‌زمان از جای دیگری تغییر کرده بود؛ آخرین نسخه بارگذاری شد.', 8000);
+      showToast(msg || 'محتوا هم‌زمان از جای دیگری تغییر کرده بود؛ آخرین نسخه بارگذاری شد.', 8000, 'error');
     };
     window.addEventListener('nd:content-conflict', onConflict);
     return () => window.removeEventListener('nd:content-conflict', onConflict);
@@ -35,9 +37,17 @@ export const AdminFloatingBar: React.FC = () => {
 
   if (!isAdmin) return null;
 
-  const handleSave = () => {
-    saveChanges();
-    showToast('تمامی تغییرات با موفقیت ذخیره شدند! ✨');
+  // Only claim success when the server confirmed it. This button used to write the browser's
+  // localStorage and toast "all changes saved" regardless — even with no connection at all.
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const result = await saveNow();
+      if (result.ok) showToast('ذخیره شد و روی سایت اعمال شد ✓');
+      else showToast(result.error || 'ذخیره روی سایت انجام نشد.', 9000, 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleReset = () => {
@@ -69,16 +79,23 @@ export const AdminFloatingBar: React.FC = () => {
   return (
     <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-[10000] w-[95%] max-w-4xl dir-rtl">
       {/* Toast Notification */}
-      {toastMessage && (
-        <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-emerald-500 text-slate-950 font-extrabold px-4 py-1.5 rounded-full shadow-2xl flex items-center gap-2 text-xs animate-bounce border border-emerald-300">
-          <CheckCircle className="w-4 h-4" />
-          <span>{toastMessage}</span>
+      {toast && (
+        <div
+          role={toast.tone === 'error' ? 'alert' : 'status'}
+          className={`absolute -top-14 left-1/2 -translate-x-1/2 max-w-[95vw] font-extrabold px-4 py-1.5 rounded-full shadow-2xl flex items-center gap-2 text-xs border ${
+            toast.tone === 'error'
+              ? 'bg-rose-600 text-white border-rose-300'
+              : 'bg-emerald-500 text-slate-950 border-emerald-300 animate-bounce'
+          }`}
+        >
+          <CheckCircle className="w-4 h-4 shrink-0" />
+          <span>{toast.msg}</span>
         </div>
       )}
 
       <div className="bg-[color:var(--nd-surface)] backdrop-blur-xl border-2 border-[color:var(--nd-accent)] text-[color:var(--nd-ink)] rounded-2xl px-4 py-3 shadow-xl flex flex-wrap items-center justify-between gap-3">
         {/* Status Badge */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <span className="relative flex h-3 w-3">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[color:var(--nd-accent)] opacity-75"></span>
             <span className="relative inline-flex rounded-full h-3 w-3 bg-[color:var(--nd-accent)]"></span>
@@ -87,6 +104,7 @@ export const AdminFloatingBar: React.FC = () => {
             <Edit3 className="w-4 h-4" />
             <span>حالت ویرایش زنده فعال است</span>
           </div>
+          <SaveStatusChip compact />
         </div>
 
         {/* Action Buttons */}
@@ -95,14 +113,15 @@ export const AdminFloatingBar: React.FC = () => {
           <button
             type="button"
             onClick={handleSave}
-            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-lg cursor-pointer ${
+            disabled={saving}
+            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-lg cursor-pointer disabled:opacity-60 disabled:cursor-wait ${
               hasUnsavedChanges
                 ? 'bg-[color:var(--nd-accent)] text-white hover:opacity-90 scale-105 animate-pulse'
                 : 'bg-[color:var(--nd-accent)] text-white hover:opacity-90'
             }`}
           >
             <Save className="w-4 h-4" />
-            <span>ذخیره تغییرات</span>
+            <span>{saving ? 'در حال ذخیره…' : 'ذخیره تغییرات'}</span>
           </button>
 
           {/* Export JSON */}

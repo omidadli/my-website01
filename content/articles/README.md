@@ -1,4 +1,4 @@
-# محتوای تولیدی ۱۲ هفته — omidadli01.site
+# محتوای تولیدی ۱۲ هفته — omidadli.site
 
 این پوشه خروجیِ اجرای `omidadli-arena-ai-master-prompt.md` روی تقویمِ
 `omidadli-12-week-content-strategy.md` است.

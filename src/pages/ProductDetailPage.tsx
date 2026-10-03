@@ -29,6 +29,8 @@ import { complementaryProducts, relatedPostsForProduct } from '../data/productPr
 import { linkProps, navigate, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { mdToPlainText } from '../utils/plainText';
+import { hasAboutBlock, productCopy, withPlanCopy } from '../utils/productCopy';
+import type { ProductItem } from '../types';
 
 interface Props {
   productId: string;
@@ -44,8 +46,13 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
   const cfg = data.AI_TOOLS_CONFIG;
 
   const spec = getProductDetail(productId) || getProductDetail('business-therapist')!;
-  const toolMeta: AiToolMeta = AI_TOOLS.find((t) => t.id === productId) || AI_TOOLS[0];
-  const plans = getPlans(toolMeta.id);
+  const baseToolMeta: AiToolMeta = AI_TOOLS.find((t) => t.id === productId) || AI_TOOLS[0];
+  // What the admin changed in «محصولات» wins over the designed copy below; an untouched product is unchanged.
+  const cmsProduct = safeRecordArray<ProductItem>(data.PRODUCTS).find((p) => p.id === baseToolMeta.id);
+  const copy = productCopy(cmsProduct);
+  const toolMeta: AiToolMeta = copy.title ? { ...baseToolMeta, name: copy.title } : baseToolMeta;
+  const shortTitle = copy.title || spec.shortTitle;
+  const plans = withPlanCopy(getPlans(toolMeta.id), cmsProduct);
 
   // Articles that naturally lead to this tool — the way back from product to content.
   const relatedPosts = relatedPostsForProduct(
@@ -83,7 +90,7 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
             <span>محصولات</span>
           </button>
           <ChevronLeft className="w-3 h-3 opacity-60" />
-          <span className="text-[color:var(--nd-accent)] font-extrabold">{spec.shortTitle}</span>
+          <span className="text-[color:var(--nd-accent)] font-extrabold">{shortTitle}</span>
         </div>
 
         <span className="nd-chip">
@@ -95,15 +102,15 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
       <section className={`${isDark ? 'nd-stage nd-hairline-top' : 'nd-panel'} rounded-[32px] sm:rounded-[40px] p-8 sm:p-12 text-center space-y-6 relative overflow-hidden`}>
         <span className="nd-chip">
           <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--nd-accent)] animate-pulse" />
-          <span>{spec.categoryBadge}</span>
+          <span>{copy.badge || spec.categoryBadge}</span>
         </span>
 
         <h1 className={`nd-h1 text-2xl sm:text-4xl lg:text-[2.6rem] max-w-3xl mx-auto ${isDark ? 'text-white' : ''}`}>
-          {spec.heroHook}
+          {copy.hook || spec.heroHook}
         </h1>
 
         <p className={`${isDark ? 'text-slate-300' : 'nd-muted'} text-sm sm:text-base leading-relaxed max-w-2xl mx-auto`}>
-          {spec.heroSubhook}
+          {copy.subhook || spec.heroSubhook}
         </p>
 
         {/* Primary CTA button */}
@@ -113,15 +120,62 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
             className="nd-btn nd-btn-accent px-8 py-3.5 text-sm font-black flex items-center justify-center gap-2 shadow-lg cursor-pointer"
           >
             <MessageCircle className="w-4 h-4" />
-            <span>شروع تست گفتگو با ۵۰۰ سکه هدیه</span>
+            <span>{copy.actionText || 'شروع تست گفتگو با ۵۰۰ سکه هدیه'}</span>
             <ArrowLeft className="w-4 h-4" />
           </button>
         </div>
+        {copy.price && (
+          <p className="text-sm font-black text-[color:var(--nd-accent)]">{copy.price}</p>
+        )}
 
         <p className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
           بدون نیاز به ثبت کارت بانکی · کسر ۱۵۰ سکه برای هر تحلیل · فعال‌سازی آنی
         </p>
       </section>
+
+      {/* 2b. About this tool — appears only for the fields the admin filled in «محصولات» */}
+      {hasAboutBlock(copy) && (
+        <section className="nd-card p-6 sm:p-8 space-y-6 max-w-3xl mx-auto" aria-label="درباره این ابزار">
+          {([
+            ['برای چه کسانی؟', copy.audience],
+            ['چه مشکلی را حل می‌کند؟', copy.problem],
+            ['چرا ارزشش را دارد؟', copy.whyBuy],
+          ] as const).map(([label, body]) =>
+            body ? (
+              <div key={label} className="space-y-1.5">
+                <h3 className="text-sm font-black text-[color:var(--nd-accent)]">{label}</h3>
+                <p className={`text-sm leading-relaxed ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}>{body}</p>
+              </div>
+            ) : null,
+          )}
+          {copy.features && copy.features.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sm font-black text-[color:var(--nd-accent)]">ویژگی‌ها</h3>
+              <ul className="space-y-2">
+                {copy.features.map((f, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <Check className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                    <span className={isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}>{f}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {copy.howItWorks && copy.howItWorks.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sm font-black text-[color:var(--nd-accent)]">چطور کار می‌کند؟</h3>
+              <ol className="space-y-2">
+                {copy.howItWorks.map((step, i) => (
+                  <li key={i} className="flex items-start gap-3 text-sm">
+                    <span className="w-6 h-6 rounded-full bg-[color:var(--nd-accent-soft)] text-[color:var(--nd-accent)] text-xs font-black flex items-center justify-center shrink-0">{toFa(i + 1)}</span>
+                    <span className={isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}>{step}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* 3. Interactive Simulated Session — Clean and Standard */}
       <section className="space-y-8">
@@ -137,7 +191,7 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
           {/* Header Bar */}
           <div className="flex items-center justify-between pb-3 border-b border-[color:var(--nd-line)] text-xs">
             <span className={`font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
-              محیط تحلیل هوشمند «{spec.shortTitle}»
+              محیط تحلیل هوشمند «{shortTitle}»
             </span>
             {spec.simulatedCase.scorecard && (
               <span className="nd-chip text-emerald-600 dark:text-emerald-400 font-bold">
@@ -230,7 +284,7 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
                 isDark ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'
               }`}>
                 <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 block">
-                  ✓ با «{spec.shortTitle}»
+                  ✓ با «{shortTitle}»
                 </span>
                 <p className="text-xs font-bold leading-relaxed text-emerald-800 dark:text-emerald-200">
                   {item.gain}
@@ -408,7 +462,7 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
             theme={theme}
             eyebrow="ادامه‌ی یادگیری"
             title="مقالاتی که همین ابزار را کامل می‌کنند"
-            desc={`این نوشته‌ها همان چارچوب‌هایی را آموزش می‌دهند که «${spec.shortTitle}» بر اساس آن‌ها با تو کار می‌کند.`}
+            desc={`این نوشته‌ها همان چارچوب‌هایی را آموزش می‌دهند که «${shortTitle}» بر اساس آن‌ها با تو کار می‌کند.`}
           />
           <div className="grid grid-cols-1 gap-3">
             {relatedPosts.map((post) => (

@@ -11,7 +11,7 @@ This document explains the three ways the site can be driven programmatically:
 
 ## 1. HTTP API
 
-Base URL = your site origin (e.g. `https://omidadli01.site`).
+Base URL = your site origin (e.g. `https://omidadli.site`).
 
 ### Auth
 
@@ -109,7 +109,7 @@ cd mcp && npm install
 
 Then add it to Claude Desktop / Claude Code — see **[mcp/README.md](./mcp/README.md)**
 for the exact config snippet and the full tool list. Configure it with
-`SITE_URL`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` (your Cloudflare admin secrets).
+`SITE_URL` (`https://omidadli.site`), `ADMIN_USERNAME`, `ADMIN_PASSWORD` (your Cloudflare admin secrets).
 
 Content Claude edits via MCP is written to the **live database**. To keep Git as
 the source of truth, run `npm run content:export` afterwards (see below).
@@ -138,9 +138,12 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 |--------|---------|-------|
 | `CLOUDFLARE_API_TOKEN` | deploy | Cloudflare token with *Pages: Edit* + *D1: Edit* |
 | `CLOUDFLARE_ACCOUNT_ID` | deploy | your Cloudflare account id |
-| `SITE_URL` | content sync | live site URL, e.g. `https://omidadli01.site` |
 | `ADMIN_USERNAME` | content sync | same as the Pages secret |
 | `ADMIN_PASSWORD` | content sync | same as the Pages secret |
+
+> The site address is **not** a secret: the workflows default to `https://omidadli.site`. Only if the
+> domain ever changes, set the repository *variable* `SITE_URL` (Settings → Secrets and variables →
+> Actions → **Variables**). A stale `SITE_URL` *secret* is ignored.
 
 > The Pages **project name** in `deploy.yml` (`--project-name=my-website`) and in
 > `wrangler.toml` (`name = "my-website"`) must match your real Cloudflare Pages
@@ -162,7 +165,7 @@ npm run content:import   # content/site-content.json → live site   (what CI ru
 #   import options: --base <old-version.json>  --force  --dry-run
 ```
 
-All three read `SITE_URL`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` from the
+All three read `SITE_URL` (default `https://omidadli.site`), `ADMIN_USERNAME`, `ADMIN_PASSWORD` from the
 environment.
 
 **Import is a per-section merge, not a blind overwrite:**

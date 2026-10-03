@@ -38,7 +38,9 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      HAS_SITE_URL: ${{ secrets.SITE_URL != '' }}
+      # Not a secret: the public address of the site (override with the repository variable SITE_URL).
+      SITE_URL: ${{ vars.SITE_URL || 'https://omidadli.site' }}
+      HAS_ADMIN_CREDS: ${{ secrets.ADMIN_USERNAME != '' && secrets.ADMIN_PASSWORD != '' }}
     steps:
       - name: Checkout (full history — needed to read the pre-push version)
         uses: actions/checkout@v7
@@ -51,13 +53,13 @@ jobs:
           node-version: 22
 
       - name: Missing secrets → explain instead of silently passing
-        if: ${{ env.HAS_SITE_URL != 'true' }}
+        if: ${{ env.HAS_ADMIN_CREDS != 'true' }}
         run: |
-          echo "::warning title=Content sync skipped::Add the repository secrets SITE_URL (https://omidadli01.site), ADMIN_USERNAME and ADMIN_PASSWORD (Settings → Secrets and variables → Actions) to enable Git → live-site content sync."
+          echo "::warning title=Content sync skipped::Add the repository secrets ADMIN_USERNAME and ADMIN_PASSWORD (Settings → Secrets and variables → Actions) to enable Git → live-site content sync. The site address defaults to https://omidadli.site — override it with the repository variable SITE_URL only if the domain changes."
 
       # The version of the content file BEFORE this push = 3-way merge base.
       - name: Extract merge base
-        if: ${{ env.HAS_SITE_URL == 'true' && (github.event_name == 'push' || inputs.base_ref != '') }}
+        if: ${{ env.HAS_ADMIN_CREDS == 'true' && (github.event_name == 'push' || inputs.base_ref != '') }}
         env:
           BASE_REF: ${{ inputs.base_ref }}
         run: |
@@ -75,9 +77,8 @@ jobs:
           fi
 
       - name: Merge content into the live site
-        if: ${{ env.HAS_SITE_URL == 'true' }}
+        if: ${{ env.HAS_ADMIN_CREDS == 'true' }}
         env:
-          SITE_URL: ${{ secrets.SITE_URL }}
           ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: |

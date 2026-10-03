@@ -25,7 +25,9 @@ jobs:
   export:
     runs-on: ubuntu-latest
     env:
-      HAS_SITE_URL: ${{ secrets.SITE_URL != '' }}
+      # Not a secret: the public address of the site (override with the repository variable SITE_URL).
+      SITE_URL: ${{ vars.SITE_URL || 'https://omidadli.site' }}
+      HAS_ADMIN_CREDS: ${{ secrets.ADMIN_USERNAME != '' && secrets.ADMIN_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -38,20 +40,19 @@ jobs:
           node-version: 22
 
       - name: Missing secrets → explain instead of silently passing
-        if: ${{ env.HAS_SITE_URL != 'true' }}
+        if: ${{ env.HAS_ADMIN_CREDS != 'true' }}
         run: |
-          echo "::warning title=Export skipped::Add the repository secrets SITE_URL (https://omidadli01.site), ADMIN_USERNAME and ADMIN_PASSWORD to enable exporting live content into Git."
+          echo "::warning title=Export skipped::Add the repository secrets ADMIN_USERNAME and ADMIN_PASSWORD (Settings → Secrets and variables → Actions) to enable exporting live content into Git. The site address defaults to https://omidadli.site — override it with the repository variable SITE_URL only if the domain changes."
 
       - name: Export live content
-        if: ${{ env.HAS_SITE_URL == 'true' }}
+        if: ${{ env.HAS_ADMIN_CREDS == 'true' }}
         env:
-          SITE_URL: ${{ secrets.SITE_URL }}
           ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
         run: node scripts/sync-content.mjs export
 
       - name: Commit & push if changed
-        if: ${{ env.HAS_SITE_URL == 'true' }}
+        if: ${{ env.HAS_ADMIN_CREDS == 'true' }}
         run: |
           if git diff --quiet -- content/site-content.json; then
             echo "content/site-content.json is already up to date."

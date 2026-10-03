@@ -43,7 +43,7 @@ Cloudflare secrets):
 
 | Variable | Example |
 |----------|---------|
-| `SITE_URL` | `https://omidadli01.site` (the live custom domain — **not** `my-website.pages.dev`, which belongs to someone else) |
+| `SITE_URL` | `https://omidadli.site` (the live custom domain — **not** `my-website.pages.dev`, which belongs to someone else) |
 | `ADMIN_USERNAME` | your admin username |
 | `ADMIN_PASSWORD` | your admin password |
 
@@ -74,7 +74,7 @@ Add an entry under `mcpServers` (use the absolute path to `server.mjs`):
       "command": "node",
       "args": ["/ABSOLUTE/PATH/TO/my-website01/mcp/server.mjs"],
       "env": {
-        "SITE_URL": "https://omidadli01.site",
+        "SITE_URL": "https://omidadli.site",
         "ADMIN_USERNAME": "your-admin-username",
         "ADMIN_PASSWORD": "your-admin-password"
       }
@@ -90,7 +90,7 @@ Start with _"use omidadli-site ping"_ to confirm it's connected.
 
 ```bash
 claude mcp add omidadli-site \
-  --env SITE_URL=https://omidadli01.site \
+  --env SITE_URL=https://omidadli.site \
   --env ADMIN_USERNAME=your-admin-username \
   --env ADMIN_PASSWORD=your-admin-password \
   -- node /ABSOLUTE/PATH/TO/my-website01/mcp/server.mjs

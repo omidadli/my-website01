@@ -18,7 +18,7 @@ export type FieldDef =
   | { key: string; label: string; type: 'select'; options: (string | { value: string; label: string })[]; half?: boolean }
   /** Taxonomy-backed blog category: writes `category` (English) and `categoryFa` (Persian) together. */
   | { key: string; label: string; type: 'category'; hint?: string }
-  | { key: string; label: string; type: 'image' }
+  | { key: string; label: string; type: 'image'; hint?: string; resetTo?: { value: string; label: string } }
   | { key: string; label: string; type: 'tags'; placeholder?: string; hint?: string }
   | { key: string; label: string; type: 'group'; fields: FieldDef[]; hint?: string }
   | { key: string; label: string; type: 'items'; singular: string; fields: FieldDef[]; defaults?: Record<string, any> }
@@ -148,7 +148,7 @@ export const FieldsForm: React.FC<FieldsFormProps> = ({ basePath, item, fields }
       case 'image':
         return (
           <div key={f.key} className="sm:col-span-2">
-            <MediaField label={f.label} value={value} onChange={(v) => set(f.key, v)} />
+            <MediaField label={f.label} value={value} onChange={(v) => set(f.key, v)} hint={f.hint} resetTo={f.resetTo} />
           </div>
         );
       case 'tags':

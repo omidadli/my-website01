@@ -54,11 +54,61 @@ export interface SeoPostLike {
  * The one and only canonical origin of the site.
  *
  * It used to be spelled out literally in the edge helpers, the SPA context, the
- * SEO box and this file — which is how the docs drifted to `omidadli.site` while
- * every canonical/og/sitemap URL said `omidadli01.site`. Change it here and every
- * consumer follows.
+ * SEO box and this file — which is how the docs and the code drifted apart
+ * (`omidadli.site`, `omidadli01.site`, `omidadli.com` all appeared as "the"
+ * domain, two of which do not even resolve). Change it here and every consumer
+ * follows.
  */
-export const CANONICAL_SITE_URL = 'https://omidadli01.site';
+export const CANONICAL_SITE_URL = 'https://omidadli.site';
+
+/**
+ * Hosts that were once written down as the site's address — dead domains from
+ * old seeds/docs and the `www` alias of the real one. They must never reach a
+ * canonical tag, sitemap, robots.txt, OG tag or the visible footer.
+ */
+export const LEGACY_SITE_HOSTS: readonly string[] = [
+  'omidadli.com',
+  'www.omidadli.com',
+  'omidadli01.site',
+  'www.omidadli01.site',
+  'omidadli.ir',
+  'www.omidadli.ir',
+  'www.omidadli.site',
+];
+
+const canonicalOrigin = (): string => CANONICAL_SITE_URL.replace(/\/+$/, '');
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LEGACY_ORIGIN_RE = new RegExp(`https?://(?:${LEGACY_SITE_HOSTS.map(escapeRe).join('|')})(?![\\w.-])`, 'gi');
+
+/** Replace every legacy origin inside free text (robots.txt, descriptions…) with the canonical one. */
+export const rewriteLegacyOrigins = (text: string): string => String(text ?? '').replace(LEGACY_ORIGIN_RE, canonicalOrigin());
+
+/** `true` when `url` points at a legacy host (with or without a scheme). */
+export const isLegacySiteUrl = (url: string): boolean => {
+  const host = String(url || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z]+:\/\//, '')
+    .split(/[/?#]/)[0];
+  return LEGACY_SITE_HOSTS.includes(host);
+};
+
+/** A bare host such as the footer's "website" field: legacy → canonical host, anything else untouched. */
+export const migrateLegacySiteHost = (value: string): string => {
+  const raw = String(value ?? '');
+  return isLegacySiteUrl(raw) ? new URL(CANONICAL_SITE_URL).host : raw;
+};
+
+/**
+ * Base URL for canonical/OG/sitemap: the CMS value when it is a usable http(s)
+ * origin that is not a legacy host, the canonical constant otherwise. Trailing
+ * slashes are dropped.
+ */
+export const normalizeCanonicalBase = (value: unknown): string => {
+  const raw = String(value ?? '').trim();
+  if (!/^https?:\/\//i.test(raw) || isLegacySiteUrl(raw)) return canonicalOrigin();
+  return raw.replace(/\/+$/, '');
+};
 
 /** Resolve a public post by ID or slug; drafts are never routable by public crawlers. */
 export const findPublishedPost = <T extends SeoPostLike>(posts: readonly T[], idOrSlug: string): T | null =>
@@ -75,6 +125,27 @@ export const defaultGlobalSeo = {
   ogImage: `${CANONICAL_SITE_URL}/profile-photo-web.jpg`,
   canonicalBaseUrl: CANONICAL_SITE_URL,
   robotsTxt: `User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${CANONICAL_SITE_URL}/sitemap.xml`,
+};
+
+/** Values the very first CMS seed wrote that were never a real choice of the owner. */
+const STALE_FAVICON = '/favicon.ico'; // never shipped in /public — browsers got the SPA's HTML
+const STALE_STOCK_OG_IMAGE = /images\.unsplash\.com\/photo-1507003211169-0a1dd7228f2d/; // a stranger's stock portrait
+
+/**
+ * Repair the stale seed values of a stored GLOBAL_SEO block. The production
+ * database still holds the first seed (dead canonical host, robots.txt that
+ * advertises the dead sitemap, a stock photo as the link-preview image and a
+ * favicon path that does not exist), and the CMS value always wins over the
+ * defaults — so without this the crawlers keep getting them. Genuine edits are
+ * left alone: only the known-bad values are replaced.
+ */
+export const migrateGlobalSeo = <T extends SeoGlobalLike>(seo: T): T => {
+  const out: T = { ...seo };
+  out.canonicalBaseUrl = normalizeCanonicalBase(out.canonicalBaseUrl);
+  if (typeof out.robotsTxt === 'string') out.robotsTxt = rewriteLegacyOrigins(out.robotsTxt);
+  if (typeof out.faviconUrl === 'string' && out.faviconUrl.trim() === STALE_FAVICON) out.faviconUrl = defaultGlobalSeo.faviconUrl;
+  if (typeof out.ogImage === 'string' && STALE_STOCK_OG_IMAGE.test(out.ogImage)) out.ogImage = defaultGlobalSeo.ogImage;
+  return out;
 };
 
 export const PAGE_DEFAULT_TITLES: Record<string, string> = {

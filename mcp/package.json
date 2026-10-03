@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "MCP server that lets Claude read & edit the omidadli.ir site content (CMS) via the live admin API.",
+  "description": "MCP server that lets Claude read & edit the omidadli.site site content (CMS) via the live admin API.",
   "bin": {
     "omidadli-site-mcp": "server.mjs"
   },

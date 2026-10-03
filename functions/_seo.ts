@@ -1,4 +1,12 @@
-import { CANONICAL_SITE_URL, type SeoGlobalLike, type SeoPageLike, type SeoPostLike } from '../lib/seoDefaults';
+import {
+  CANONICAL_SITE_URL,
+  migrateGlobalSeo,
+  normalizeCanonicalBase,
+  rewriteLegacyOrigins,
+  type SeoGlobalLike,
+  type SeoPageLike,
+  type SeoPostLike,
+} from '../lib/seoDefaults';
 import { BLOG_POSTS as DEFAULT_BLOG_POSTS } from '../src/data/content';
 
 /**
@@ -44,26 +52,47 @@ export const loadPublicContent = async (env: SeoEnv): Promise<{ data: PublicSite
     const row = await env.DB.prepare(`SELECT data, updated_at FROM content WHERE id = 1`).first<{ data: string; updated_at: string }>();
     if (!row?.data) return { data: null, updatedAt: null };
     const parsed = JSON.parse(row.data);
-    return { data: parsed && typeof parsed === 'object' ? (parsed as PublicSiteContent) : null, updatedAt: row.updated_at || null };
+    if (!parsed || typeof parsed !== 'object') return { data: null, updatedAt: row.updated_at || null };
+    const data = parsed as PublicSiteContent;
+    // The stored SEO block may still hold the very first seed (dead canonical host, a stock photo as the
+    // link preview, a favicon that was never shipped). Repair it once here so robots.txt, sitemap.xml and the
+    // per-route <head> all agree — without waiting for the owner to open the SEO box and re-save.
+    if (data.GLOBAL_SEO && typeof data.GLOBAL_SEO === 'object') data.GLOBAL_SEO = migrateGlobalSeo(data.GLOBAL_SEO);
+    return { data, updatedAt: row.updated_at || null };
   } catch {
     // Missing table / D1 hiccup: fall back to defaults rather than failing the crawler.
     return { data: null, updatedAt: null };
   }
 };
 
-/** Canonical origin: CMS setting → request origin (custom domain) → default. */
-export const resolveBaseUrl = (request: Request, content: PublicSiteContent | null): string => {
-  const fromCms = String(content?.GLOBAL_SEO?.canonicalBaseUrl || '').trim();
-  if (/^https?:\/\//i.test(fromCms)) return fromCms.replace(/\/+$/, '');
-  try {
-    const origin = new URL(request.url).origin;
-    if (/^https?:\/\//i.test(origin) && !/localhost|127\.0\.0\.1/.test(origin)) return origin;
-  } catch { /* ignore */ }
-  return DEFAULT_SITE_URL;
-};
+/**
+ * Canonical origin: the CMS setting (GLOBAL_SEO.canonicalBaseUrl) when it is a real origin, the site's
+ * canonical constant otherwise.
+ *
+ * Deliberately NOT the request origin: the same deployment answers on `<project>.pages.dev` and on every
+ * preview URL, and those must canonicalize to the real domain instead of advertising themselves as a
+ * second copy of the site. Known-dead hosts typed into the CMS long ago are replaced by the constant.
+ */
+export const resolveBaseUrl = (_request: Request, content: PublicSiteContent | null): string =>
+  normalizeCanonicalBase(content?.GLOBAL_SEO?.canonicalBaseUrl);
+
+/** robots.txt text from the CMS with any legacy origin (the sitemap line!) rewritten to the canonical one. */
+export const sanitizeRobotsTxt = (text: string): string => rewriteLegacyOrigins(text);
 
 export const defaultRobotsTxt = (baseUrl: string): string =>
   ['User-agent: *', 'Allow: /', 'Disallow: /api/', '', `Sitemap: ${baseUrl}/sitemap.xml`, ''].join('\n');
+
+/**
+ * Body of GET /robots.txt: the CMS text (legacy hosts rewritten) or a sane default, always with a Sitemap line.
+ * Pure on purpose — the Pages Function is a thin wrapper, and this is what the tests exercise.
+ */
+export const buildRobotsTxt = (baseUrl: string, content: PublicSiteContent | null): string => {
+  const custom = sanitizeRobotsTxt(String(content?.GLOBAL_SEO?.robotsTxt || '')).trim();
+  let body = custom ? `${custom}\n` : defaultRobotsTxt(baseUrl);
+  // Always advertise the (now real) sitemap so crawlers discover posts and pages.
+  if (!/^\s*sitemap\s*:/im.test(body)) body += `\nSitemap: ${baseUrl}/sitemap.xml\n`;
+  return body;
+};
 
 const escapeXml = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');

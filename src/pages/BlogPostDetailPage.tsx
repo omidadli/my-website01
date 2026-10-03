@@ -3,12 +3,13 @@ import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
 import { useUser } from '../context/UserContext';
 import { inputCls } from '../components/nd/Kit';
-import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays, Bookmark, BookmarkCheck } from 'lucide-react';
+import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays, RefreshCw, Bookmark, BookmarkCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_DETAIL_COVER_SIZES } from '../utils/responsiveImage';
+import { resolveAuthorPhoto } from '../utils/profilePhoto';
 import { RichText } from '../components/RichText';
 import { mdToPlainText } from '../utils/plainText';
 import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
@@ -185,6 +186,9 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
         <h1 className={`nd-h1 text-2xl sm:text-4xl leading-snug ${isDark ? 'text-white' : ''}`}>{post.title}</h1>
         <div className={`flex flex-wrap items-center justify-center gap-4 text-[11px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>
           <span className="flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5" />{post.date}</span>
+          {post.updatedAt && post.updatedAt.trim() && post.updatedAt.trim() !== String(post.date || '').trim() && (
+            <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5" />به‌روزرسانی: {post.updatedAt}</span>
+          )}
           <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" />{post.readTime}</span>
           <span className="flex items-center gap-1.5"><Eye className="w-3.5 h-3.5" />{post.viewsCount || 0} بازدید</span>
           <span className="flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" />{postComments.length} دیدگاه</span>
@@ -319,12 +323,22 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
             </section>
           )}
 
+          {/* Tags — the «برچسب‌ها» field of the article in the admin panel */}
+          {Array.isArray(post.tags) && post.tags.some((t) => typeof t === 'string' && t.trim()) && (
+            <div className="flex flex-wrap items-center gap-2" aria-label="برچسب‌ها">
+              <span className={`text-[11px] font-black ${isDark ? 'text-slate-400' : 'text-[color:var(--nd-faint)]'}`}>برچسب‌ها:</span>
+              {post.tags.filter((t) => typeof t === 'string' && t.trim()).map((tag) => (
+                <span key={tag} className="nd-chip text-[11px]">#{tag.trim()}</span>
+              ))}
+            </div>
+          )}
+
           {/* Author */}
           <div className={`nd-card p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-5 sm:gap-6 text-center sm:text-right`}>
             <img
               alt={post.author}
               {...responsiveImageProps(
-                post.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+                resolveAuthorPhoto(post.authorAvatar, data.PERSONAL_INFO?.avatar),
                 { sizes: '80px', displayWidth: 80, displayHeight: 80 },
               )}
               className="w-20 h-20 rounded-2xl object-cover shadow-sm shrink-0"

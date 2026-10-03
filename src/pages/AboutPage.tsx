@@ -8,7 +8,7 @@ import { PageHero, Head, CtaPanel } from '../components/nd/Kit';
 import { GraduationCap, Award, Sparkles, Target, Rocket } from 'lucide-react';
 import { motion } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
-import { imageFallback } from '../utils/imageFallback';
+import { ProfilePhoto } from '../components/ProfilePhoto';
 import { responsiveImageProps } from '../utils/responsiveImage';
 import { ProductPromoStrip } from '../components/ProductPromo';
 import { productsForPage } from '../data/productPromo';
@@ -78,16 +78,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
         <div className="lg:col-span-5">
           <div className="nd-card rounded-[var(--nd-radius-panel)] p-5 sm:p-7 space-y-5 relative overflow-hidden">
             <div className="relative w-full aspect-square rounded-[var(--nd-radius-card)] overflow-hidden shadow-md">
-              <img
-                alt={personal.name}
-                src="/profile-photo-hero.webp"
-                srcSet="/profile-photo-400.webp 400w, /profile-photo-800.webp 800w, /profile-photo-hero.webp 1254w"
-                sizes="(max-width: 640px) 90vw, 480px"
-                loading="eager"
-                decoding="async"
-                onError={imageFallback('/profile-photo-web.jpg')}
-                className="w-full h-full object-cover"
-              />
+              <ProfilePhoto avatar={personal.avatar} name={personal.name} variant="hero" className="w-full h-full object-cover" />
               <div className="absolute -bottom-4 -right-4 z-10">
                 <IconBadge3D iconName="award" theme={theme} size="lg" glowColor="magenta" />
               </div>

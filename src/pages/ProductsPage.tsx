@@ -16,6 +16,7 @@ import { AI_TOOLS, AiToolMeta } from '../data/tools';
 import { startingPrice, resolveFreeTrial, INITIAL_FREE_COINS, getNeuromarketingTrigger } from '../../lib/toolPlans';
 import { Page, Theme, ProductItem } from '../types';
 import { getProductDetail } from '../data/productDetails';
+import { productCopy } from '../utils/productCopy';
 
 const toFa = (n: number | string) => String(n).replace(/[0-9]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[+d]);
 
@@ -137,6 +138,8 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNa
               {visibleTools.map((tool) => {
                 const spec = getProductDetail(tool.id);
                 const neuro = getNeuromarketingTrigger(tool.id);
+                // What the admin changed in «محصولات» wins over the designed copy; untouched products keep it.
+                const copy = productCopy(rawProducts.find((p) => p.id === tool.id));
 
                 return (
                   <div
@@ -155,10 +158,10 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNa
                         {tool.name}
                       </h3>
                       <p className="text-xs sm:text-[13px] font-extrabold text-[color:var(--nd-accent)] leading-relaxed">
-                        {spec?.heroHook || tool.tagline}
+                        {copy.hook || spec?.heroHook || tool.tagline}
                       </p>
                       <p className={`text-xs sm:text-sm leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'} line-clamp-2`}>
-                        {spec?.heroSubhook || tool.description}
+                        {copy.subhook || spec?.heroSubhook || tool.description}
                       </p>
                     </div>
 
@@ -172,7 +175,7 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNa
                     <div className={`pt-5 border-t flex items-center justify-between gap-4 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
                       <div>
                         <span className={`text-[11px] block ${isDark ? 'text-slate-400' : 'nd-muted'}`}>تعرفه</span>
-                        <span className="text-xs font-black text-amber-500 dark:text-amber-400">{neuro.dailyHook}</span>
+                        <span className="text-xs font-black text-amber-500 dark:text-amber-400">{copy.price || neuro.dailyHook}</span>
                       </div>
 
                       <button

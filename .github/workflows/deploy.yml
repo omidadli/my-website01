@@ -16,7 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
-      HAS_SITE_URL: ${{ secrets.SITE_URL != '' }}
+      # The public address of the site is not a secret. It used to come from a SITE_URL *secret* that still
+      # held a dead domain, which made every smoke test / export fail. Override only through the repository
+      # *variable* SITE_URL (Settings → Secrets and variables → Actions → Variables) if the domain ever changes.
+      SITE_URL: ${{ vars.SITE_URL || 'https://omidadli.site' }}
     permissions:
       contents: read
       deployments: write
@@ -72,19 +75,19 @@ jobs:
             exit $code
           fi
 
-      # Verify the live API answers after the deploy (needs the SITE_URL secret).
+      # Verify the live site answers after the deploy (SITE_URL: see the job env above).
       - name: Smoke-test the live API
-        if: ${{ env.HAS_CF_TOKEN == 'true' && env.HAS_SITE_URL == 'true' }}
-        env:
-          SITE_URL: ${{ secrets.SITE_URL }}
+        if: ${{ env.HAS_CF_TOKEN == 'true' }}
         run: |
           url="${SITE_URL%/}/api/content"
           for i in 1 2 3 4 5 6; do
-            body=$(curl -fsS --max-time 20 "$url" 2>/dev/null) && break
-            echo "attempt $i: not ready yet, retrying in 10s…"; sleep 10
+            body=$(curl -fsS --max-time 20 "$url" 2>/tmp/curl.err) && break
+            reason=$(tr '\n' ' ' < /tmp/curl.err)
+            echo "attempt $i: not ready yet ($reason), retrying in 10s…"; sleep 10
           done
           if [ -z "$body" ]; then
-            echo "::error title=Smoke test failed::$url did not answer after the deploy."
+            # Keep curl's own words (e.g. "Could not resolve host") — they name the real cause.
+            echo "::error title=Smoke test failed::$url did not answer after the deploy — ${reason:-no reason reported}. The deploy itself succeeded; if this says 'Could not resolve host', the domain/DNS is the problem, not the code."
             exit 1
           fi
           echo "$body" | head -c 300; echo
@@ -97,8 +100,17 @@ jobs:
           code=$(curl -s -o /tmp/services.html -w '%{http_code}' --max-time 20 "$base/services")
           [ "$code" = "200" ] || { echo "::error title=Smoke test failed::$base/services returned HTTP $code (SPA fallback / middleware broken)."; exit 1; }
           grep -q 'rel="canonical" href="[^"]*/services"' /tmp/services.html || echo "::warning title=Edge head not applied::$base/services has no per-route canonical — check functions/_middleware.ts."
+          # The canonical tag must sit on the live domain itself (a stale GLOBAL_SEO.canonicalBaseUrl once pointed at a dead host).
+          grep -q "rel=\"canonical\" href=\"$base/services\"" /tmp/services.html || echo "::warning title=Canonical origin::$base/services canonicalizes to a different origin than $base — check GLOBAL_SEO.canonicalBaseUrl."
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$base/definitely-not-a-page-$RANDOM")
           [ "$code" = "404" ] || echo "::warning title=Unknown routes are not 404::got HTTP $code for an unknown path."
-          curl -fsS --max-time 20 "$base/robots.txt" | grep -qi '^user-agent' || echo "::warning title=robots.txt::$base/robots.txt is not a robots file."
-          curl -fsS --max-time 20 "$base/sitemap.xml" | grep -q '<urlset' || echo "::warning title=sitemap.xml::$base/sitemap.xml is not a sitemap."
+          curl -fsS --max-time 20 "$base/robots.txt" > /tmp/robots.txt || true
+          curl -fsS --max-time 20 "$base/sitemap.xml" > /tmp/sitemap.xml || true
+          grep -qi '^user-agent' /tmp/robots.txt || echo "::warning title=robots.txt::$base/robots.txt is not a robots file."
+          grep -q '<urlset' /tmp/sitemap.xml || echo "::warning title=sitemap.xml::$base/sitemap.xml is not a sitemap."
+          # Crawlers must never be sent to a host that is not the live domain.
+          if grep -qiE 'omidadli\.com|omidadli01\.site|omidadli\.ir' /tmp/robots.txt /tmp/sitemap.xml; then
+            echo "::error title=Dead domain in robots/sitemap::robots.txt or sitemap.xml still mentions a domain that is not the live site."
+            exit 1
+          fi
           echo "routing + crawler files OK"

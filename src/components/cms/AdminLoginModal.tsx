@@ -9,7 +9,7 @@ interface AdminLoginModalProps {
 
 /** Quick edit-mode login (matches the /#admin gate: username+password in cloud mode). */
 export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClose }) => {
-  const { loginAdmin, persistence } = useContent();
+  const { loginAdmin, persistence, saveState, reconnect } = useContent();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,8 +85,16 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
             <ShieldCheck className="w-4 h-4" />
             <span>{busy ? 'در حال بررسی…' : 'ورود'}</span>
           </button>
+          {persistence === 'cloud' && saveState.status === 'error' && saveState.message && (
+            <p className="text-[11px] text-[#b91c1c] font-extrabold leading-relaxed" role="alert">
+              {saveState.message} تغییراتی که هنوز ذخیره نشده بودند بعد از ورود دوباره از نسخهٔ سرور جایگزین می‌شوند.
+            </p>
+          )}
           {persistence === 'local' && (
-            <p className="text-[10px] nd-faint text-center">حالت توسعه (بدون Cloudflare): رمز محلی مدیریت معتبر است.</p>
+            <div className="rounded-xl bg-[#fee2e2] text-[#b91c1c] text-[11px] font-extrabold leading-relaxed p-3 space-y-1.5" role="alert">
+              <p>اتصال به سرور برقرار نیست؛ ورود با رمز محلی فقط برای کار آفلاین است و تغییرات روی سایت اعمال نمی‌شود.</p>
+              <button type="button" onClick={() => { void reconnect(); }} className="underline underline-offset-2 font-black cursor-pointer">تلاش مجدد برای اتصال</button>
+            </div>
           )}
         </form>
       </div>

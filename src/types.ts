@@ -177,6 +177,8 @@ export interface ServiceItem {
   deliverables: string[];
   tags: string[];
   packages?: PricingPackage[];
+  /** Which tab of /services and of the home page lists this service (see src/utils/servicePath.ts). */
+  pathCategory?: 'start' | 'sell' | 'grow';
   slug?: string;
   status?: 'published' | 'draft';
   seo?: PageSeoConfig;

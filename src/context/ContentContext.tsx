@@ -19,10 +19,27 @@ import {
   BlogPost
 } from '../types';
 import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
+import { migratePersonalInfo, reconcileGlobalSeo, reconcileSections } from '../utils/contentMigrations';
+import { withServicePaths } from '../utils/servicePath';
 import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
+import {
+  type AdoptOutcome,
+  type Backend,
+  type SaveResult,
+  type SaveState,
+  classifyRemote,
+  leanSnapshotData,
+  normalizeSnapshotHistory,
+  retryDelayMs,
+  toCloudPayload,
+  trimSnapshotHistory,
+} from '../utils/cloudSync';
 
 const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
+/** Restore points live in this browser only: cap them by count and by serialized size. */
+const MAX_SNAPSHOTS = 20;
+const SNAPSHOT_BUDGET_CHARS = 3_500_000;
 const LOCAL_STORAGE_PIN_KEY = 'OMID_ADLI_ADMIN_PIN_CODE';
 const DEFAULT_PIN = '1234';
 
@@ -56,8 +73,8 @@ export const defaultPageSections: Record<string, PageSectionItem[]> = {
     { id: 'sec-proof', name: 'PROOF', label: 'صحنه اثبات با داده (آمار + کیس‌های منتخب)', isHidden: false },
     { id: 'sec-services', name: 'SERVICES_TABS', label: 'خدمات سه‌مرحله‌ای (تب‌بندی شده)', isHidden: false },
     { id: 'sec-how-i-work', name: 'HOW_I_WORK', label: 'فرآیند همکاری (How I Work)', isHidden: false },
-    { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + نقل‌قول مشتری', isHidden: false },
-    { id: 'sec-insights', name: 'INSIGHTS', label: 'آنالیز رایگان + نوشت‌های تازه', isHidden: false },
+    { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + معرفی کوتاه', isHidden: false },
+    { id: 'sec-insights', name: 'INSIGHTS', label: 'نوشت‌های تازه (به‌تفکیک موضوع)', isHidden: false },
     { id: 'sec-ai-tools', name: 'AI_TOOLS', label: 'دستیارهای هوشمند (معرفی محصولات)', isHidden: false },
     { id: 'sec-faq', name: 'FAQ', label: 'پرسش‌های پرتکرار', isHidden: false },
     { id: 'sec-final-cta', name: 'FINAL_CTA', label: 'فراخوان نهایی اقدام', isHidden: false },
@@ -249,6 +266,14 @@ interface ContentContextType {
   persistence: 'local' | 'cloud';
   /** True once the mount probe finished (cloud content adopted, or confirmed local-only). */
   contentReady: boolean;
+  /** Which backend the boot probe reached: the live Cloudflare API, the local dev emulator, or none. */
+  backend: Backend;
+  /** Honest status of the admin → server sync (saving / saved / failed / not connected). */
+  saveState: SaveState;
+  /** Push the current content to the server right now and report what really happened. */
+  saveNow: () => Promise<SaveResult>;
+  /** Ask the server again after a failed boot; reloads the page as soon as it answers. */
+  reconnect: () => Promise<boolean>;
   logoutAdmin: () => void;
   updateField: (path: string, newValue: any) => void;
   addItem: (arrayPath: string, templateItem?: any) => void;
@@ -323,17 +348,20 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           if (!parsed.PERSONAL_INFO.title || parsed.PERSONAL_INFO.title.includes('متخصص دیزاین')) {
             parsed.PERSONAL_INFO.title = initialData.PERSONAL_INFO.title;
           }
-          if (!parsed.PERSONAL_INFO.avatar || parsed.PERSONAL_INFO.avatar.includes('unsplash')) {
-            parsed.PERSONAL_INFO.avatar = initialData.PERSONAL_INFO.avatar;
-          }
         }
         // Restore SERVICES, STATS, TIMELINE, HOW_I_WORK_STEPS to default initialData
         return { 
           ...mergeContentDefaults(defaultContentState, parsed),
+          // Restore points from older builds embed one another (several MB): flatten + cap them once.
+          VERSION_HISTORY: normalizeSnapshotHistory(
+            parsed.VERSION_HISTORY ?? defaultContentState.VERSION_HISTORY,
+            MAX_SNAPSHOTS,
+            SNAPSHOT_BUDGET_CHARS,
+          ),
           // Older browser caches can hold a product collection from a previous
           // catalog. Reconcile it before first render, not only after cloud sync.
           PRODUCTS: reconcileProductCatalog(initialData.PRODUCTS, parsed.PRODUCTS),
-          SERVICES: initialData.SERVICES,
+          SERVICES: withServicePaths(initialData.SERVICES),
           STATS: initialData.STATS,
           TIMELINE: initialData.TIMELINE,
           HOW_I_WORK_STEPS: initialData.HOW_I_WORK_STEPS,
@@ -351,8 +379,8 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           BLOG_PAGE_DATA: { ...initialData.BLOG_PAGE_DATA, ...(parsed.BLOG_PAGE_DATA || {}) },
           BLOG_POSTS: parsed.BLOG_POSTS || initialData.CORE_BLOG_POSTS,
           ONGOING_PROJECTS: parsed.ONGOING_PROJECTS || initialData.ONGOING_PROJECTS,
-          PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...(parsed.PERSONAL_INFO || {}) },
-          GLOBAL_SEO: { ...defaultGlobalSeo, ...parsed.GLOBAL_SEO },
+          PERSONAL_INFO: migratePersonalInfo({ ...defaultContentState.PERSONAL_INFO, ...(parsed.PERSONAL_INFO || {}) }, defaultContentState.PERSONAL_INFO),
+          GLOBAL_SEO: reconcileGlobalSeo(defaultGlobalSeo, parsed.GLOBAL_SEO),
           NAVIGATION_MENU: (parsed.NAVIGATION_MENU || defaultNavigationMenu).filter((item: NavigationMenuItem) => item.pageSlug !== 'business-analysis'),
           PAGE_SECTIONS: { ...defaultPageSections, ...parsed.PAGE_SECTIONS, home: defaultPageSections.home },
           MEDIA_LIBRARY: parsed.MEDIA_LIBRARY || defaultMediaLibrary,
@@ -398,8 +426,17 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // ---------- Cloud (Cloudflare D1) persistence ----------
   const [persistence, setPersistence] = useState<'local' | 'cloud'>('local');
+  const [backend, setBackend] = useState<Backend>('none');
+  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [contentReady, setContentReady] = useState(false);
   const cloudReady = useRef(false);
+  /** Always the latest state — async save/retry callbacks must not read a stale closure. */
+  const dataRef = useRef<ContentState>(data);
+  dataRef.current = data;
+  /** The PUT currently in flight (saves are serialized, see flushSave). */
+  const inFlightSave = useRef<Promise<SaveResult> | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttempt = useRef(0);
   /** Version stamp of the content this tab last read from / saved to the cloud (optimistic concurrency). */
   const remoteUpdatedAt = useRef<string | null>(null);
   /** Serialized snapshot of what the cloud currently holds — lets us skip no-op saves. */
@@ -410,11 +447,21 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const merged = mergeContentDefaults(defaultContentState, r);
     return {
       ...merged,
+      // Restore points are browser-local (toCloudPayload never uploads them): keep this tab's own.
+      VERSION_HISTORY: dataRef.current.VERSION_HISTORY ?? defaultContentState.VERSION_HISTORY,
       // The cloud snapshot is authoritative for editable content, but an old
       // product catalog must not resurrect products unsupported by this build.
       PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, merged.PRODUCTS),
-      PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO },
-      GLOBAL_SEO: { ...defaultGlobalSeo, ...merged.GLOBAL_SEO },
+      SERVICES: Array.isArray(merged.SERVICES) ? withServicePaths(merged.SERVICES) : merged.SERVICES,
+      PERSONAL_INFO: migratePersonalInfo({ ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO }, defaultContentState.PERSONAL_INFO),
+      GLOBAL_SEO: reconcileGlobalSeo(defaultGlobalSeo, merged.GLOBAL_SEO),
+      // A section list saved before a section shipped would hide it forever (e.g. the home «AI_TOOLS» showcase).
+      PAGE_SECTIONS: {
+        ...merged.PAGE_SECTIONS,
+        ...Object.fromEntries(
+          Object.keys(defaultPageSections).map((page) => [page, reconcileSections(merged.PAGE_SECTIONS?.[page], defaultPageSections[page])]),
+        ),
+      },
       AI_TOOLS_CONFIG: {
         ...initialData.AI_TOOLS_CONFIG,
         ...merged.AI_TOOLS_CONFIG,
@@ -424,15 +471,23 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   };
 
-  /** Pull the latest cloud content into this tab. Returns true when the cloud had content. */
-  const adoptRemote = async (): Promise<boolean> => {
+  /** What the server would store for `state` — the key the no-op-save check compares. */
+  const syncKey = (state: ContentState): string => JSON.stringify(toCloudPayload(state));
+
+  /**
+   * Pull the latest cloud content into this tab.
+   * 'adopted' = content loaded, 'empty' = the server has none yet, 'error' = the read failed
+   * (an unreadable server is NOT an empty one — see classifyRemote).
+   */
+  const adoptRemote = async (): Promise<AdoptOutcome> => {
     const remote = await api.getContent();
-    if (!remote?.data) return false;
-    const merged = mergeRemote(remote.data);
-    remoteUpdatedAt.current = remote.updatedAt || null;
-    lastSyncedJson.current = JSON.stringify(merged);
+    const outcome = classifyRemote(remote);
+    if (outcome !== 'adopted') return outcome;
+    const merged = mergeRemote(remote!.data);
+    remoteUpdatedAt.current = remote!.updatedAt || null;
+    lastSyncedJson.current = syncKey(merged);
     setData(merged);
-    return true;
+    return 'adopted';
   };
 
   // On mount: detect API, pull remote content, restore admin session from token.
@@ -446,11 +501,12 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
       setPersistence('cloud');
+      setBackend(api.getBackend());
       const remote = await api.getContent();
       if (!cancelled && remote?.data) {
         const merged = mergeRemote(remote.data);
         remoteUpdatedAt.current = remote.updatedAt || null;
-        lastSyncedJson.current = JSON.stringify(merged);
+        lastSyncedJson.current = syncKey(merged);
         setData(merged);
       } else if (!cancelled) {
         remoteUpdatedAt.current = remote?.updatedAt || '';
@@ -467,36 +523,126 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
-  // Debounced push of every content change to D1 (only while logged in).
-  // The save is conditional on the version this tab last saw: if the site was
-  // edited elsewhere in the meantime (Claude MCP, another tab, the Git sync) the
-  // API answers 409 → we reload the latest version instead of overwriting it.
-  useEffect(() => {
-    if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) return;
-    const t = setTimeout(async () => {
-      const json = JSON.stringify(data);
-      if (json === lastSyncedJson.current) return; // nothing new to save
-      const res = await api.saveContent(data, remoteUpdatedAt.current);
+  /** Retry a transient save failure (network / 5xx) with a growing delay. */
+  const scheduleRetry = () => {
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    const delay = retryDelayMs(retryAttempt.current++);
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = null;
+      void flushSave();
+    }, delay);
+  };
+
+  /**
+   * Push the latest content to D1. The save is conditional on the version this tab last saw:
+   * if the site was edited elsewhere in the meantime (Claude MCP, another tab, the Git sync)
+   * the API answers 409 → we reload the latest version instead of overwriting it.
+   *
+   * Saves are SERIALIZED: the next PUT starts only after the previous one returned its new
+   * version stamp. Two overlapping PUTs (slow connection + 1.2 s debounce) made the second one
+   * fail with a bogus 409 that discarded the admin's newest keystrokes.
+   * Every outcome is reported through `saveState` — a failed save must never look like a saved one.
+   */
+  const flushSave = async (): Promise<SaveResult> => {
+    while (inFlightSave.current) {
+      try {
+        await inFlightSave.current;
+      } catch {
+        /* the save that owns that promise reports its own result */
+      }
+    }
+    const run = (async (): Promise<SaveResult> => {
+      const payload = toCloudPayload(dataRef.current);
+      const json = JSON.stringify(payload);
+      if (json === lastSyncedJson.current) {
+        setSaveState((s) => (s.status === 'saving' || s.status === 'error' ? { status: 'saved', at: s.at ?? Date.now() } : s));
+        return { ok: true };
+      }
+      setSaveState((s) => ({ status: 'saving', at: s.at }));
+      const res = await api.saveContent(payload, remoteUpdatedAt.current);
       if (res.ok) {
         remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
         lastSyncedJson.current = json;
-        return;
+        retryAttempt.current = 0;
+        if (retryTimer.current) {
+          clearTimeout(retryTimer.current);
+          retryTimer.current = null;
+        }
+        setSaveState({ status: 'saved', at: Date.now() });
+        return { ok: true };
       }
       if (res.conflict) {
         console.warn('Cloud save skipped: content changed elsewhere — reloading the latest version.');
         remoteUpdatedAt.current = res.updatedAt || ''; // resync the stamp even if the reload below finds no content
         await adoptRemote();
-        window.dispatchEvent(
-          new CustomEvent('nd:content-conflict', {
-            detail: { message: 'محتوا هم‌زمان از جای دیگری (مثلاً کلاد یا تب دیگر) تغییر کرده بود؛ آخرین نسخه بارگذاری شد. لطفاً آخرین تغییرت را دوباره اعمال کن.' },
-          })
-        );
-        return;
+        const message = 'محتوا هم‌زمان از جای دیگری (مثلاً کلاد یا تب دیگر) تغییر کرده بود؛ آخرین نسخه بارگذاری شد. لطفاً آخرین تغییرت را دوباره اعمال کن.';
+        setSaveState((s) => ({ status: 'error', message, at: s.at }));
+        window.dispatchEvent(new CustomEvent('nd:content-conflict', { detail: { message } }));
+        return { ok: false, conflict: true, error: message };
+      }
+      if (res.unauthorized) {
+        // The 7-day admin token expired (or AUTH_SECRET changed): edits can no longer be saved.
+        api.logout();
+        setIsAdmin(false);
+        setSaveState((s) => ({ status: 'error', message: res.error, at: s.at }));
+        return { ok: false, unauthorized: true, error: res.error };
       }
       console.warn('Cloud save failed:', res.error);
+      setSaveState((s) => ({ status: 'error', message: res.error, at: s.at }));
+      if (res.transient) scheduleRetry();
+      return { ok: false, error: res.error };
+    })();
+    inFlightSave.current = run;
+    try {
+      return await run;
+    } finally {
+      inFlightSave.current = null;
+    }
+  };
+
+  // Debounced push of every content change to D1 (only while logged in).
+  useEffect(() => {
+    if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) return;
+    const t = setTimeout(() => {
+      void flushSave();
     }, 1200);
     return () => clearTimeout(t);
   }, [data, persistence, isAdmin]);
+
+  // Never leave a retry timer behind when the provider goes away.
+  useEffect(() => () => {
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+  }, []);
+
+  /** "Save" buttons: persist locally, push to the server now, and say what happened. */
+  const saveNow = async (): Promise<SaveResult> => {
+    persistLocal(dataRef.current);
+    setHasUnsavedChanges(false);
+    if (persistence !== 'cloud') {
+      return {
+        ok: false,
+        error: contentReady
+          ? 'اتصال به سرور برقرار نیست؛ تغییرات فقط در همین مرورگر ذخیره شد و روی سایت اعمال نمی‌شود.'
+          : 'هنوز در حال اتصال به سرور هستیم؛ چند ثانیه دیگر دوباره امتحان کن.',
+      };
+    }
+    if (!isAdmin) return { ok: false, unauthorized: true, error: 'برای ذخیره روی سایت، ابتدا وارد شوید.' };
+    // Same guard as the debounced save: until the boot sequence has adopted the live content this
+    // tab still holds the built-in defaults, and pushing them would overwrite the real site.
+    if (!cloudReady.current) return { ok: false, error: 'هنوز در حال اتصال به سرور هستیم؛ چند ثانیه دیگر دوباره امتحان کن.' };
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    return flushSave();
+  };
+
+  /** Re-check the server after a failed boot; a reload then adopts the live content cleanly. */
+  const reconnect = async (): Promise<boolean> => {
+    const ok = await api.probe(true);
+    if (ok) window.location.reload();
+    return ok;
+  };
 
   // Activity logger helper
   const logActivity = (action: string, details?: string) => {
@@ -515,15 +661,10 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
   };
 
-  // Save changes to localStorage
+  // Kept for API compatibility: it used to write localStorage only (and log "saved in the
+  // browser") — i.e. it never published anything. It now pushes to the server like saveNow().
   const saveChanges = () => {
-    try {
-      persistLocal(data);
-      setHasUnsavedChanges(false);
-      logActivity('ذخیره تغییرات', 'تغییرات محتوا در مرورگر ذخیره شد.');
-    } catch (e) {
-      console.error('Failed to save content to localStorage', e);
-    }
+    void saveNow();
   };
 
   // Update specific field by dot path
@@ -601,14 +742,17 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (res.ok) {
         // Never push this tab's (possibly stale) state over the live content on
         // login: adopt the latest cloud version first; only seed when the cloud is empty.
-        const hadRemote = await adoptRemote().catch(() => false);
-        if (!hadRemote) {
-          const seeded = await api.saveContent(data, remoteUpdatedAt.current ?? '');
+        const outcome = await adoptRemote().catch((): AdoptOutcome => 'error');
+        if (outcome === 'empty') {
+          // Seed only when the server explicitly has no content yet. A failed read is NOT
+          // "empty": seeding then would overwrite live content with this tab's stale copy.
+          const seeded = await api.saveContent(toCloudPayload(dataRef.current), remoteUpdatedAt.current ?? '');
           if (seeded.ok) {
             remoteUpdatedAt.current = seeded.updatedAt || null;
-            lastSyncedJson.current = JSON.stringify(data);
+            lastSyncedJson.current = syncKey(dataRef.current);
           }
         }
+        setSaveState({ status: 'idle' });
         setIsAdmin(true);
         logActivity('ورود موفق', `کاربر «${username}» از طریق سرویس ابری وارد پیشخوان شد.`);
         return true;
@@ -628,6 +772,11 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const logoutAdmin = () => {
     api.logout();
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    setSaveState({ status: 'idle' });
     setIsAdmin(false);
     logActivity('خروج از سیستم', 'کاربر ادمین از سیستم خارج گردید.');
   };
@@ -765,10 +914,12 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: 'snap-' + Date.now(),
       timestamp: new Date().toLocaleString('fa-IR'),
       label: snapshotLabel,
-      data: JSON.parse(JSON.stringify(data))
+      // Editable content only: copying the whole state (history included) nested every
+      // earlier snapshot inside the new one and doubled the state size per click.
+      data: JSON.parse(JSON.stringify(leanSnapshotData(dataRef.current)))
     };
     setData((prev) => {
-      const history = [newSnap, ...(prev.VERSION_HISTORY || [])].slice(0, 20); // Keep last 20 snapshots
+      const history = trimSnapshotHistory([newSnap, ...(prev.VERSION_HISTORY || [])], MAX_SNAPSHOTS, SNAPSHOT_BUDGET_CHARS);
       const updated = { ...prev, VERSION_HISTORY: history };
       persistLocal(updated);
       return updated;
@@ -780,7 +931,13 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const snap = data.VERSION_HISTORY?.find((s) => s.id === snapshotId);
     if (snap && snap.data) {
       setData((prev) => {
-        const restored = { ...snap.data, VERSION_HISTORY: prev.VERSION_HISTORY };
+        const restored = {
+          ...mergeContentDefaults(defaultContentState, snap.data),
+          // Restore points hold content only; keep the live history, audit trail and moderation queue.
+          VERSION_HISTORY: prev.VERSION_HISTORY,
+          AUDIT_LOGS: prev.AUDIT_LOGS,
+          BLOG_COMMENTS: prev.BLOG_COMMENTS,
+        };
         persistLocal(restored);
         return restored;
       });
@@ -1057,6 +1214,19 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [data, isAdmin],
   );
 
+  // An admin session with no reachable content API is the dangerous state: the UI looks fully
+  // functional, but every edit stays in this browser. Surface it instead of pretending.
+  const effectiveSaveState = useMemo<SaveState>(
+    () =>
+      contentReady && persistence === 'local' && isAdmin
+        ? {
+            status: 'offline',
+            message: 'به سرور وصل نیست؛ تغییرات فقط در همین مرورگر می‌مانند و روی سایت دیده نمی‌شوند.',
+          }
+        : saveState,
+    [contentReady, persistence, isAdmin, saveState],
+  );
+
   return (
     <ContentContext.Provider
       value={{
@@ -1069,6 +1239,10 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logoutAdmin,
         persistence,
         contentReady,
+        backend,
+        saveState: effectiveSaveState,
+        saveNow,
+        reconnect,
         updateField,
         addItem,
         removeItem,
