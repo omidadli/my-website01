@@ -22,20 +22,9 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/logo-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="/logo-512.png">
-  <!-- Self-hosted Vazirmatn (variable, wght 100–900) — served from the same
-       Cloudflare edge as the site: no third-party DNS/TLS/redirect chain before
-       first text paint. font-display: swap keeps text visible while it loads. -->
-  <link rel="preload" href="/fonts/Vazirmatn-Variable.woff2" as="font" type="font/woff2" crossorigin>
-  <style>
-    @font-face {
-      font-family: 'Vazirmatn';
-      src: url('/fonts/Vazirmatn-Variable.woff2') format('woff2-variations'),
-           url('/fonts/Vazirmatn-Variable.woff2') format('woff2');
-      font-weight: 100 900;
-      font-style: normal;
-      font-display: swap;
-    }
-  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
   <!-- Anti-FOUC: apply the saved theme (default dark) before first paint -->
   <style>
     html { background: #0b0b12; }

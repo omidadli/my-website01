@@ -31,12 +31,14 @@ import {
   Send,
   Search,
 } from 'lucide-react';
-import { motion, AnimatePresence, useMotionValue, useSpring, useTransform, useReducedMotion } from 'motion/react';
-import { useHoverCapable } from '../utils/useHoverCapable';
+import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'motion/react';
 import { MaskLines, Magnetic } from '../components/motion/Cinematic';
 import { linkProps, postPath } from '../utils/router';
 import { normalizeCaseStudies } from '../utils/caseStudies';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { groupOfPost, normalizeCategory } from '../data/blogTaxonomy';
+import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
+import { productsForPage } from '../data/productPromo';
 import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps } from '../utils/responsiveImage';
 
@@ -67,6 +69,25 @@ const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
 };
 
 const iconFor = (name: string) => ICON_MAP[name] || Sparkles;
+
+/**
+ * موضوعاتِ اصلیِ بخش «نوشت‌های تازه» در صفحه اصلی.
+ *
+ * هر کادر، سه مقاله‌ی آخرِ همان خوشه‌ی موضوعی را نشان می‌دهد. خوشه‌ها همان
+ * `group`های تعریف‌شده در src/data/blogTaxonomy.ts هستند، بنابراین دسته‌بندی
+ * با فیلترهای صفحه‌ی وبلاگ یکی است و با اضافه‌شدن مقاله‌ی جدید، خودبه‌خود
+ * به‌روزرسانی می‌شود.
+ */
+const INSIGHT_GROUPS: { id: string; title: string; groups: string[] }[] = [
+  { id: 'performance', title: 'پرفورمنس مارکتینگ و تبلیغات', groups: ['مارکتینگ و تبلیغات'] },
+  { id: 'cro', title: 'بهینه‌سازی نرخ تبدیل (CRO)', groups: ['رشد و تبدیل'] },
+  { id: 'ai', title: 'هوش مصنوعی در مارکتینگ', groups: ['هوش مصنوعی'] },
+  {
+    id: 'digital',
+    title: 'دیجیتال مارکتینگ و رشد',
+    groups: ['جست‌وجو و محتوا', 'داده و تحلیل', 'کسب‌وکار', 'طراحی و راه‌اندازی'],
+  },
+];
 
 /* Soft pastel tints cycled across cards — calm, professional palette */
 const TINTS = [
@@ -108,12 +129,12 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const [heroPrompt, setHeroPrompt] = usePreservedState<string>('homepage_hero_prompt', '');
   const [auditPrompt, setAuditPrompt] = usePreservedState<string>('homepage_audit_prompt', '');
   const [openFaq, setOpenFaq] = usePreservedState<number>('homepage_open_faq', -1);
+  // Shared with the blog page (same StatePreserver keys) so «مطالب این دسته」
+  // lands on the article list already filtered to that topic.
+  const [, setBlogCategoryFilter] = usePreservedState<string>('blog_category_filter', 'all');
+  const [, setBlogSearchQuery] = usePreservedState<string>('blog_search_query', '');
 
-  // Cinematic pointer parallax for the hero stage — desktop-fine-pointer only
-  // (touch and reduced-motion visitors get a still stage, zero rAF work).
-  const hoverCapable = useHoverCapable();
-  const reducedMotion = useReducedMotion();
-  const parallaxEnabled = hoverCapable && !reducedMotion;
+  // Cinematic pointer parallax for the hero stage
   const px = useMotionValue(0);
   const py = useMotionValue(0);
   const sx = useSpring(px, { stiffness: 90, damping: 20 });
@@ -125,7 +146,6 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
   const spotY = useTransform(sy, (v) => `${42 + v * 34}%`);
 
   const handleStageMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!parallaxEnabled) return;
     const r = e.currentTarget.getBoundingClientRect();
     px.set(((e.clientX - r.left) / r.width - 0.5) * 2);
     py.set(((e.clientY - r.top) / r.height - 0.5) * 2);
@@ -284,25 +304,17 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
                   className={`${isDark ? 'nd-glass-dark' : 'nd-glass'} inline-flex items-center gap-3 rounded-full ps-2 pe-4 py-1.5`}
                 >
-                  <span className="flex">
-                    <img
-                      alt={personal.name}
-                      {...responsiveImageProps(personal.avatar, {
-                        sizes: '28px',
-                        displayWidth: 28,
-                        displayHeight: 28,
-                        priority: true,
-                      })}
-                      referrerPolicy="no-referrer"
-                      onError={imageFallback('/avatar-fallback.svg')}
-                      className={`w-7 h-7 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
-                    />
-                    <span className={`-ms-2 w-7 h-7 rounded-full ring-2 grid place-items-center text-[10px] font-black text-white nd-grad ${isDark ? 'ring-white/30' : 'ring-white'}`}>
-                      ۵+
-                    </span>
-                  </span>
+                  <img
+                    alt={personal.name}
+                    src="/profile-photo-64.webp"
+                    srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                    sizes="28px"
+                    referrerPolicy="no-referrer"
+                    onError={imageFallback('/profile-photo-web.jpg')}
+                    className={`w-8 h-8 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
+                  />
                   <span className={`text-xs font-extrabold ${isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink-2)]'}`}>
-                    همراه برندهای فروش‌محور · {personal.experienceYears} تجربه
+                    همراه برندهای فروش‌محور
                   </span>
                   <span className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-bold ${isDark ? 'text-emerald-300' : 'text-[color:var(--nd-success)]'}`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -424,8 +436,12 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
             >
               <img
                 alt={personal.name}
-                {...responsiveImageProps(personal.avatar, { sizes: '64px', displayWidth: 64, displayHeight: 64 })}
-                onError={imageFallback('/avatar-fallback.svg')}
+                src="/profile-photo-160.webp"
+                srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                sizes="64px"
+                loading="eager"
+                referrerPolicy="no-referrer"
+                onError={imageFallback('/profile-photo-web.jpg')}
                 className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0"
               />
               <p className="text-sm sm:text-base leading-relaxed text-[color:var(--nd-ink-2)]">
@@ -501,7 +517,9 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                     className="relative text-center space-y-1.5"
                   >
                     <RepeaterControls arrayPath="STATS" index={idx} totalCount={stats.length} className="absolute top-0 left-0" />
-                    <div className={`text-3xl sm:text-4xl font-black ${isDark ? 'nd-text-glow' : 'text-[color:var(--nd-accent)]'} dir-ltr text-center`}>
+                    {/* dir-rtl: «۲.۹ برابر» باید با جهتِ پاراگراف فارسی تراز شود،
+                        وگرنه عدد و کلمه جابه‌جا دیده می‌شوند («برابر ۲.۹»). */}
+                    <div className={`text-3xl sm:text-4xl font-black ${isDark ? 'nd-text-glow' : 'text-[color:var(--nd-accent)]'} dir-rtl text-center`}>
                       <EditableText path={`STATS.${idx}.value`}>{stat.value}</EditableText>
                     </div>
                     <div className={`font-extrabold text-xs sm:text-sm ${isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink)]'}`}>
@@ -530,15 +548,9 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                       <span className={`text-[11px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>{study.client}</span>
                     </div>
                     <h3 className={`nd-h2 ${isDark ? 'text-white' : ''} text-base sm:text-lg leading-snug`}>{study.title}</h3>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(study.metricsComparison || []).slice(0, 3).map((m: any, mi: number) => (
-                        <div key={mi} className={`rounded-2xl border px-2 py-2.5 text-center ${isDark ? 'bg-white/5 border-white/10' : 'bg-[color:var(--nd-bg)] border-[color:var(--nd-line)]'}`}>
-                          <span className={`block text-sm font-black ${isDark ? 'nd-text-glow' : 'text-[color:var(--nd-accent)]'} dir-ltr`}>{m.growth}</span>
-                          <span className={`block text-[9px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'} leading-tight mt-1 line-clamp-1`}>{m.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <span className={`flex items-center justify-between pt-3 border-t text-xs font-extrabold ${isDark ? 'border-white/10 text-indigo-300' : 'border-[color:var(--nd-line)] text-[color:var(--nd-accent)]'}`}>
+                    {/* آمار و ارقام حذف شد — به‌جای آن خلاصه‌ی پروژه می‌آید. */}
+                    <p className={`text-xs leading-relaxed line-clamp-3 ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{study.summary}</p>
+                    <span className={`mt-auto flex items-center justify-between pt-3 border-t text-xs font-extrabold ${isDark ? 'border-white/10 text-indigo-300' : 'border-[color:var(--nd-line)] text-[color:var(--nd-accent)]'}`}>
                       <span>دیدن کامل این پروژه</span>
                       <ChevronLeft className="w-4 h-4 transition-transform group-hover:-translate-x-1" />
                     </span>
@@ -622,7 +634,9 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
               {stats.map((stat, idx) => (
                 <div key={idx} className="relative text-center lg:text-right space-y-1.5">
                   <RepeaterControls arrayPath="STATS" index={idx} totalCount={stats.length} className="absolute top-0 left-0" />
-                  <div className="text-3xl sm:text-4xl font-black text-[color:var(--nd-accent)] dir-ltr text-center lg:text-right">
+                  {/* dir-rtl: «۲.۹ برابر» باید با جهتِ پاراگراف فارسی تراز شود،
+                      وگرنه عدد و کلمه جابه‌جا دیده می‌شوند («برابر ۲.۹»). */}
+                  <div className="text-3xl sm:text-4xl font-black text-[color:var(--nd-accent)] dir-rtl text-center lg:text-right">
                     <EditableText path={`STATS.${idx}.value`}>{stat.value}</EditableText>
                   </div>
                   <div className="font-extrabold text-xs sm:text-sm text-[color:var(--nd-ink)]">
@@ -805,16 +819,9 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   {/* Body */}
                   <div className="p-6 sm:p-7 flex flex-col gap-4 grow">
                     <h3 className="nd-h2 text-base sm:text-lg leading-snug">{study.title}</h3>
-                    <p className="nd-muted text-xs leading-relaxed line-clamp-2">{study.summary}</p>
-                    <div className="mt-auto grid grid-cols-3 gap-2">
-                      {(study.metricsComparison || []).slice(0, 3).map((m, mi) => (
-                        <div key={mi} className="rounded-2xl bg-[color:var(--nd-bg)] border border-[color:var(--nd-line)] px-2 py-2.5 text-center">
-                          <span className="block text-sm font-black text-[color:var(--nd-accent)] dir-ltr">{m.growth}</span>
-                          <span className="block text-[9px] font-bold text-[color:var(--nd-faint)] leading-tight mt-1 line-clamp-1">{m.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <span className="flex items-center justify-between pt-3 border-t border-[color:var(--nd-line)] text-xs font-extrabold text-[color:var(--nd-accent)]">
+                    <p className="nd-muted text-xs leading-relaxed line-clamp-3">{study.summary}</p>
+                    {/* آمار و ارقام حذف شد. */}
+                    <span className="mt-auto flex items-center justify-between pt-3 border-t border-[color:var(--nd-line)] text-xs font-extrabold text-[color:var(--nd-accent)]">
                       <span>دیدن کامل این پروژه</span>
                       <ChevronLeft className="w-4 h-4 transition-transform group-hover:-translate-x-1" />
                     </span>
@@ -904,32 +911,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                 ))}
               </div>
 
-              {/* Testimonial */}
-              {testimonials[0] && (
-                <div className="nd-card p-7 sm:p-9 flex flex-col sm:flex-row gap-6 items-start max-w-4xl mx-auto">
-                  <Quote className="w-8 h-8 text-[color:var(--nd-accent)] opacity-40 shrink-0 rotate-180" />
-                  <div className="space-y-4">
-                    <p className="text-sm sm:text-base leading-relaxed font-medium text-[color:var(--nd-ink-2)]">{testimonials[0].quote}</p>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <img
-                        alt={testimonials[0].clientName}
-                        {...responsiveImageProps(testimonials[0].avatarUrl, { sizes: '40px', displayWidth: 40, displayHeight: 40 })}
-                        onError={imageFallback('/avatar-fallback.svg')}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                      <span>
-                        <span className="block text-xs font-black text-[color:var(--nd-ink)]">{testimonials[0].clientName} — {testimonials[0].company}</span>
-                        <span className="block text-[11px] font-bold text-[color:var(--nd-faint)]">{testimonials[0].clientRole}</span>
-                      </span>
-                      <span className="ms-auto flex items-center gap-1 text-[color:#f59e0b]">
-                        {Array.from({ length: testimonials[0].rating || 5 }).map((_, i) => (
-                          <Star key={i} className="w-3.5 h-3.5 fill-current" />
-                        ))}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* Testimonial block intentionally removed per request */}
             </div>
           </section>
         );
@@ -996,82 +978,139 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
         );
 
       /* ============ 9. FINAL CTA ============ */
-      /* ============ 8.5 INSIGHTS — lead magnet + latest writing ============ */
+      /* ============ 8.5 INSIGHTS — lead magnet + latest articles per topic ============ */
       case 'INSIGHTS': {
-        const posts = safeRecordArray<any>(data.BLOG_POSTS).slice(0, 3);
-        return (
-          <section className="py-14 sm:py-20">
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-              {/* Lead magnet — free mini audit */}
-              <motion.div
-                initial={{ opacity: 0, y: 24 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true, margin: '-60px' }}
-                transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-                className="lg:col-span-2"
-              >
-                <div className={`${isDark ? 'nd-stage nd-hairline-top' : 'nd-card'} rounded-[var(--nd-radius-panel)] p-7 sm:p-9 h-full flex flex-col gap-5`} style={isDark ? undefined : { background: 'linear-gradient(150deg, var(--nd-accent-soft), var(--nd-sky-soft) 60%, var(--nd-mint-soft))' }}>
-                  <span className={`${isDark ? 'nd-glass-dark text-indigo-200' : 'nd-eyebrow'} inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-extrabold w-fit`}>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>بدون هزینه، بدون تعهد</span>
-                  </span>
-                  <h3 className={`nd-h2 ${isDark ? 'text-white' : ''} text-xl sm:text-2xl leading-snug`}>آنالیز سریع و رایگان سایتت</h3>
-                  <p className={`${isDark ? 'text-slate-400' : 'nd-muted'} text-xs sm:text-sm leading-relaxed`}>
-                    آدرس سایتت رو بنویس؛ تا ۴۸ ساعت یه بررسی اولیه از مسیر خرید، سرعت و نقاط ریزشت برات می‌فرستم — همین‌طوری، برای آشنایی.
-                  </p>
-                  <form onSubmit={(e) => handlePromptSubmit(e, auditPrompt)} className="mt-auto space-y-3">
-                    <input
-                      value={auditPrompt}
-                      onChange={(e) => setAuditPrompt(e.target.value)}
-                      placeholder="example.com"
-                      className={`w-full rounded-2xl px-4 py-3.5 text-sm focus:outline-none dir-ltr text-left ${isDark ? 'nd-glass-dark text-white placeholder:text-slate-500 focus:border-indigo-400/60' : 'bg-white border border-[color:var(--nd-line)] text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] focus:border-[color:var(--nd-accent)]'}`}
-                    />
-                    <button type="submit" className={`nd-btn ${isDark ? 'bg-white text-[#17171c] hover:bg-slate-200' : 'nd-btn-accent'} w-full py-3.5 text-sm`}>
-                      <span>درخواست آنالیز رایگان</span>
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </form>
-                  <p className={`text-[10px] font-bold ${isDark ? 'text-slate-500' : 'text-[color:var(--nd-faint)]'}`}>بدون اسپم؛ فقط یه نقشه‌ی راه قابل اجرا.</p>
-                </div>
-              </motion.div>
+        // Latest three articles of each topic cluster, newest first. Generated
+        // posts carry `dateIso`; the older hand-written ones only have the
+        // Persian date string, so they simply keep their stored order.
+        const publishedPosts = safeRecordArray<any>(data.BLOG_POSTS).filter(
+          (p: any) => p && typeof p.id === 'string' && p.status !== 'draft',
+        );
+        const insightsGroups = INSIGHT_GROUPS.map((g) => ({
+          ...g,
+          posts: publishedPosts
+            .filter((p: any) => g.groups.includes(groupOfPost(p)))
+            .sort((a: any, b: any) => String(b.dateIso || '').localeCompare(String(a.dateIso || '')))
+            .slice(0, 3),
+        })).filter((g) => g.posts.length > 0);
 
-              {/* Latest writing */}
-              <div className="lg:col-span-3 flex flex-col gap-4">
-                <div className="flex items-end justify-between gap-4">
-                  <div className="space-y-2">
-                    <span className="nd-eyebrow">
-                      <LineChart className="w-3.5 h-3.5" />
-                      <span>نوشت‌های تازه</span>
-                    </span>
-                    <h3 className="nd-h2 text-xl sm:text-2xl">چیزهایی که اخیراً از داده‌ها یاد گرفتم</h3>
-                  </div>
-                  <a {...linkProps('/blog', () => onNavigate('blog'))} className="nd-btn nd-btn-ghost px-5 py-2.5 text-xs font-extrabold shrink-0">
-                    <span>همه‌ی نوشت‌ها</span>
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </a>
+        return (
+          <section className="py-14 sm:py-20 space-y-8">
+            {/* Free-audit box removed per request — section now opens directly on articles */}
+
+            {/* نوشت‌های تازه — دسته‌بندی‌شده بر اساس موضوعات اصلی */}
+            <div className="space-y-6">
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div className="space-y-2">
+                  <span className="nd-eyebrow">
+                    <LineChart className="w-3.5 h-3.5" />
+                    <span>نوشت‌های تازه</span>
+                  </span>
+                  <h3 className="nd-h2 text-xl sm:text-2xl">چیزهایی که اخیراً از داده‌ها یاد گرفتم</h3>
                 </div>
-                {posts.map((post: any, idx: number) => (
-                  <motion.a
-                    key={post.id || idx}
-                    initial={{ opacity: 0, y: 16 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    viewport={{ once: true, margin: '-40px' }}
-                    transition={{ duration: 0.5, delay: idx * 0.08, ease: [0.22, 1, 0.36, 1] }}
-                    {...linkProps(postPath(post), () => (onSelectPost ? onSelectPost(post.id) : onNavigate('blog')))}
-                    className="nd-card nd-card-hover p-5 flex items-center gap-4 text-right cursor-pointer group"
-                  >
-                    <IconBadge3D iconName={post.imageIcon} theme={theme} size="sm" glowColor={(['purple', 'blue', 'emerald'] as const)[idx % 3]} floating={false} />
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-extrabold text-[color:var(--nd-ink)] leading-snug line-clamp-1 group-hover:text-[color:var(--nd-accent)] transition-colors">{post.title}</span>
-                      <span className="block nd-muted text-[11px] font-medium mt-1 line-clamp-1">{post.excerpt}</span>
-                    </span>
-                    <span className="hidden sm:flex flex-col items-end gap-1 shrink-0">
-                      <span className="nd-chip">{post.date}</span>
-                      <span className="text-[10px] font-bold text-[color:var(--nd-faint)]">{post.readTime}</span>
-                    </span>
-                  </motion.a>
-                ))}
+                <a {...linkProps('/blog', () => onNavigate('blog'))} className="nd-btn nd-btn-ghost px-5 py-2.5 text-xs font-extrabold shrink-0">
+                  <span>همه‌ی نوشت‌ها</span>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </a>
               </div>
+
+              {insightsGroups.length === 0 ? (
+                <div className="nd-card p-10 text-center">
+                  <p className="nd-muted text-xs sm:text-sm">مقاله‌ای هنوز منتشر نشده است.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  {insightsGroups.map((group, gi) => (
+                    <motion.div
+                      key={group.id}
+                      initial={{ opacity: 0, y: 20 }}
+                      whileInView={{ opacity: 1, y: 0 }}
+                      viewport={{ once: true, margin: '-40px' }}
+                      transition={{ duration: 0.5, delay: gi * 0.07, ease: [0.22, 1, 0.36, 1] }}
+                      className="nd-card p-5 sm:p-6 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-3 pb-2">
+                        <h4 className="text-sm font-black text-[color:var(--nd-ink)]">{group.title}</h4>
+                        <a
+                          {...linkProps('/blog', () => {
+                            const first = group.posts[0];
+                            setBlogSearchQuery('');
+                            setBlogCategoryFilter(first ? normalizeCategory(first).categoryFa : 'all');
+                            onNavigate('blog');
+                          })}
+                          className="nd-chip text-[10px] hover:text-[color:var(--nd-accent)] transition-colors cursor-pointer"
+                        >
+                          <span>مطالب این دسته</span>
+                          <ChevronLeft className="w-3 h-3" />
+                        </a>
+                      </div>
+                      <div className={`divide-y ${isDark ? 'divide-white/10' : 'divide-[color:var(--nd-line)]'}`}>
+                        {group.posts.map((post: any) => (
+                          <a
+                            key={post.id}
+                            {...linkProps(postPath(post), () => (onSelectPost ? onSelectPost(post.id) : onNavigate('blog')))}
+                            className="flex items-center gap-3 py-3.5 text-right cursor-pointer group"
+                          >
+                            {/* تصویر واقعی مقاله (نه آیکون) */}
+                            <span className={`block w-20 h-14 sm:w-24 sm:h-16 rounded-xl overflow-hidden border shrink-0 ${isDark ? 'border-white/10 bg-white/5' : 'border-[color:var(--nd-line)] bg-[color:var(--nd-bg-soft)]'}`}>
+                              <img
+                                alt={post.title}
+                                {...responsiveImageProps(post.coverImage || '/image-fallback.svg', { sizes: '96px', displayWidth: 160, displayHeight: 112 })}
+                                loading="lazy"
+                                className="w-full h-full object-cover group-hover:scale-[1.06] transition-transform duration-500"
+                                referrerPolicy="no-referrer"
+                                onError={imageFallback()}
+                              />
+                            </span>
+                            <span className="flex-1 min-w-0 space-y-1">
+                              <span className="block text-xs sm:text-sm font-extrabold text-[color:var(--nd-ink)] leading-snug line-clamp-2 group-hover:text-[color:var(--nd-accent)] transition-colors">
+                                {post.title}
+                              </span>
+                              <span className="block text-[10px] font-bold text-[color:var(--nd-faint)]">{post.date}</span>
+                            </span>
+                            <span className="nd-btn nd-btn-ghost px-3.5 py-2 text-[10px] shrink-0 group-hover:text-[color:var(--nd-accent)]">
+                              <span>مشاهده مقاله</span>
+                              <ChevronLeft className="w-3 h-3" />
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        );
+      }
+
+      /* ============ 8.6 AI_TOOLS — native showcase of the paid assistants ============ */
+      case 'AI_TOOLS': {
+        const toolsCfg = data.AI_TOOLS_CONFIG;
+        if (toolsCfg?.enabled === false) return null;
+        const toolIds = productsForPage('home');
+        if (!toolIds.some((id) => isProductPromotable(data, id))) return null;
+        return (
+          <section id="ai-tools" className="py-14 sm:py-20 space-y-10">
+            <SectionHead
+              eyebrow="دستیارهای هوشمند"
+              icon={<Sparkles className="w-3.5 h-3.5" />}
+              title="چهار هم‌فکرِ همیشه‌بیدار برای تصمیم‌های مارکتینگ"
+              desc="مشاوره، برنامه‌ریزی، حل مسئله و تمرین فروش — هرکدام روی یک گره مشخص. با ۵۰۰ سکه هدیه، همین‌جا امتحانشان کن."
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {toolIds.map((id) => (
+                <ProductPromo key={id} productId={id} theme={theme} onNavigate={onNavigate} variant="card" />
+              ))}
+            </div>
+            <div className="text-center">
+              <a
+                {...linkProps('/products', () => onNavigate('products'))}
+                className="nd-btn nd-btn-ghost px-6 py-3 text-xs font-extrabold"
+              >
+                <span>مشاهده همه ابزارها و تعرفه‌ها</span>
+                <ChevronLeft className="w-4 h-4" />
+              </a>
             </div>
           </section>
         );

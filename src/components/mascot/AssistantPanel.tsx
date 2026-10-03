@@ -9,7 +9,7 @@ import { SoulActSpec, applyAIRawAnswer, soulGetContext, soulSnapshotLine } from 
 import { MascotFigure } from './MascotAvatar';
 import { usePreservedState } from '../../utils/statePreserver';
 import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
-import { chatStorage, StoredChatMsg } from '../../utils/chatStorage';
+import { chatStorage, StoredChatMsg, getChatSessionId, resetChatSession } from '../../utils/chatStorage';
 import { keyboardAudio } from '../../utils/keyboardAudio';
 import { isPlainLeftClick, legacyHashToPath, navigate } from '../../utils/router';
 
@@ -128,6 +128,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
 
   const clearChatHistory = useCallback(() => {
     chatStorage.clearMessages();
+    resetChatSession('site-assistant'); // a fresh conversation gets a fresh memory
     setMessages(cfg?.greeting ? [{ role: 'model', content: cfg.greeting }] : []);
     mascotAct('wave');
   }, [cfg?.greeting, setMessages]);
@@ -229,7 +230,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
         page: ctx.page,
         daypart: ctx.daypart,
         bodyState: soulSnapshotLine(), // behavioral continuity for the soul
-      }
+      },
+      // stable conversation id → the server keeps the memory of this chat and
+      // reviews it before every answer (even after switching API keys)
+      getChatSessionId('site-assistant')
     );
     setBusy(false);
     if (res.ok && res.answer) {
@@ -347,11 +351,11 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
                   className={`max-w-[85%] break-words whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-xs leading-relaxed ${
                     m.role === 'user'
                       ? isDark
-                        ? 'rounded-es-sm bg-white/10 text-slate-100'
-                        : 'rounded-es-sm bg-white text-[color:var(--nd-ink)] shadow-sm'
+                      ? 'rounded-bl-sm bg-white/10 text-slate-100'
+                      : 'rounded-bl-sm bg-white text-[color:var(--nd-ink)] shadow-sm'
                       : isDark
-                        ? 'rounded-ee-sm bg-indigo-500/90 text-white'
-                        : 'rounded-ee-sm bg-[color:var(--nd-accent)] text-white shadow-sm'
+                        ? 'rounded-br-sm bg-indigo-500/90 text-white'
+                        : 'rounded-br-sm bg-[color:var(--nd-accent)] text-white shadow-sm'
                   }`}
                 >
                   {m.role === 'model' ? renderAnswer(m.content) : m.content}
@@ -360,7 +364,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
             ))}
             {busy && (
               <div className="flex justify-end">
-                <div className={`flex items-center gap-1.5 rounded-2xl rounded-ee-sm px-4 py-3 ${isDark ? 'bg-white/10' : 'bg-white shadow-sm'}`}>
+                <div className={`flex items-center gap-1.5 rounded-2xl rounded-br-sm px-4 py-3 ${isDark ? 'bg-white/10' : 'bg-white shadow-sm'}`}>
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '0ms' }} />
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '150ms' }} />
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[color:var(--nd-accent)]" style={{ animationDelay: '300ms' }} />

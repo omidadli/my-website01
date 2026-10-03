@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   question TEXT NOT NULL,
   answer TEXT NOT NULL,
   mode TEXT DEFAULT 'local',
+  -- Which of the 5 key slots answered (0 = local answer / no key), and the
+  -- conversation id used to stitch the server-side chat memory together.
+  key_slot INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -100,6 +104,102 @@ CREATE TABLE IF NOT EXISTS tool_access (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tool_access_phone ON tool_access (phone, product_id);
+
+-- Site user accounts (profile, saved articles, subscriptions, consultations).
+-- Passwords are stored as PBKDF2-SHA256 hashes; never plaintext.
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  login_id TEXT NOT NULL UNIQUE,             -- normalized email OR phone (lowercased email / digits-only phone)
+  login_type TEXT NOT NULL DEFAULT 'email',  -- 'email' | 'phone'
+  email TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
+  password_hash TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  avatar_url TEXT DEFAULT '',
+  bio TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  last_login_at TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_login ON users (login_id);
+
+-- Persistent HttpOnly-cookie sessions for users (separate from admin tokens).
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token TEXT PRIMARY KEY,                    -- random 32-byte hex, also stored in the session cookie
+  user_id TEXT NOT NULL,
+  ip TEXT DEFAULT '',
+  user_agent TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions (expires_at);
+
+-- Per-user saved articles (read-it-later list).
+CREATE TABLE IF NOT EXISTS user_saved_articles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  post_id TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  is_read INTEGER NOT NULL DEFAULT 0,
+  saved_at TEXT NOT NULL,
+  read_at TEXT DEFAULT '',
+  UNIQUE(user_id, post_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_saved_user ON user_saved_articles (user_id, saved_at);
+
+-- Per-user subscriptions (products/plans they bought).
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  product_id TEXT NOT NULL DEFAULT '',
+  product_name TEXT NOT NULL DEFAULT '',
+  plan_id TEXT NOT NULL DEFAULT '',
+  plan_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  price TEXT DEFAULT '',
+  features TEXT NOT NULL DEFAULT '[]',
+  auto_renew INTEGER NOT NULL DEFAULT 0,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_subs_user ON user_subscriptions (user_id, start_date);
+
+-- Per-user consultation requests (track what the admin replied).
+CREATE TABLE IF NOT EXISTS user_consultations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  service_id TEXT DEFAULT '',
+  service_name TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  admin_notes TEXT DEFAULT '',
+  scheduled_date TEXT DEFAULT '',
+  scheduled_time TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cons_user ON user_consultations (user_id, created_at);
+
+-- Activity log for the dashboard timeline.
+CREATE TABLE IF NOT EXISTS user_activities (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  description TEXT NOT NULL,
+  related_id TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_act_user_time ON user_activities (user_id, created_at);
 
 -- Device-based free-trial counters (gamification): N free messages per tool per device.
 CREATE TABLE IF NOT EXISTS tool_trials (
@@ -132,3 +232,64 @@ CREATE TABLE IF NOT EXISTS tool_settings (
   api_key TEXT DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- AI sections: 5 API key slots per section (admin panel tab «کلیدهای API»),
+-- per-slot health/cooldown, server-side chat memory so a key rotation does not
+-- break the conversation, and the rotation audit log.
+-- (Same statements as migrations/0005_ai_section_keys.sql — kept in sync by hand.)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ai_section_keys (
+    section_id TEXT PRIMARY KEY,
+    keys_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+
+CREATE TABLE IF NOT EXISTS ai_key_state (
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unused',
+    cooldown_until TEXT DEFAULT '',
+    last_error TEXT DEFAULT '',
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT DEFAULT '',
+    last_latency_ms INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    rate_limit_count INTEGER NOT NULL DEFAULT 0,
+    rotation_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (section_id, key_id)
+  );
+
+CREATE TABLE IF NOT EXISTS ai_chat_session (
+    session_id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    sticky_key_id TEXT DEFAULT '',
+    turns INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  );
+
+CREATE TABLE IF NOT EXISTS ai_chat_memory (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+CREATE INDEX IF NOT EXISTS idx_ai_memory_session ON ai_chat_memory (session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_key_events (
+    id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    status INTEGER DEFAULT 0,
+    message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+CREATE INDEX IF NOT EXISTS idx_ai_key_events_time ON ai_key_events (created_at);

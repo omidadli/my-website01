@@ -6,6 +6,8 @@ import { api } from '../services/api';
 import { CollectionEditor } from '../components/admin/CollectionEditor';
 import { FieldsForm, FieldDef } from '../components/admin/FieldsForm';
 import { SeoBox } from '../components/admin/SeoBox';
+import { ProductSyncManager } from '../components/admin/ProductSyncManager';
+import { ApiKeysManager } from '../components/admin/ApiKeysManager';
 import { ACard, ASectionTitle, AInput, ATextarea, ASelect, ALabel, ABadge, AConfirm, AModal } from '../components/admin/ui';
 import {
   LayoutDashboard, BookOpen, MessageSquare, Sparkles, Briefcase, ShoppingBag,
@@ -16,6 +18,7 @@ import {
   KeyRound, Smartphone, ShieldOff,
 } from 'lucide-react';
 import { AI_TOOLS } from '../data/tools';
+import type { SectionStatus } from '../../lib/aiKeys';
 import { getPlans, getPlan } from '../../lib/toolPlans';
 
 interface AdminPageProps {
@@ -164,6 +167,12 @@ const newPost = () => ({
 
 /* ------------------------------------------------------------------ */
 
+const ADMIN_TAB_IDS = [
+  'dashboard', 'posts', 'comments', 'services', 'portfolio', 'products', 'projects',
+  'about', 'home', 'pages', 'media', 'seo', 'chat', 'leads', 'toolaccess', 'apikeys',
+  'appearance', 'settings',
+] as const;
+
 export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   const {
     data, isAdmin, persistence, pinCode, changePin, loginAdmin, logoutAdmin,
@@ -175,8 +184,24 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
     toggleCommentApproval, deleteBlogComment, replyBlogComment,
   } = useContent();
 
-  type TabId = 'dashboard' | 'posts' | 'comments' | 'services' | 'portfolio' | 'products' | 'projects' | 'about' | 'home' | 'pages' | 'media' | 'seo' | 'chat' | 'leads' | 'toolaccess' | 'appearance' | 'settings';
+  type TabId = 'dashboard' | 'posts' | 'comments' | 'services' | 'portfolio' | 'products' | 'projects' | 'about' | 'home' | 'pages' | 'media' | 'seo' | 'chat' | 'leads' | 'toolaccess' | 'apikeys' | 'appearance' | 'settings';
   const [activeTab, setActiveTab] = usePreservedState<TabId>('admin_active_tab', 'dashboard');
+  // Deep link support: /admin?tab=apikeys&section=business-therapist opens the key
+  // manager straight on one section (used by the «مدیریت ۵ کلید» button below and
+  // by support/runbook links). Only read on mount; every later change goes through
+  // the normal tab navigation.
+  const [keySection, setKeySection] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    const section = params.get('section');
+    if (tab && (ADMIN_TAB_IDS as readonly string[]).includes(tab)) setActiveTab(tab as TabId);
+    if (section) {
+      setKeySection(section);
+      setActiveTab('apikeys');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -205,14 +230,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   // Per-tool behavior + AI connection management
   const [selectedTool, setSelectedTool] = useState<string>(AI_TOOLS[0]?.id || '');
   const [toolSettings, setToolSettings] = useState<Array<{ productId: string; name: string; provider: string; baseUrl: string; model: string; hasKey: boolean; keyMask: string; usingEnvFallback: boolean }>>([]);
+  const [toolSections, setToolSections] = useState<SectionStatus[]>([]);
   const [envKeyPresent, setEnvKeyPresent] = useState(false);
-  const [keyForm, setKeyForm] = useState({ provider: 'gemini', baseUrl: '', model: '', apiKey: '' });
-  const [keyBusy, setKeyBusy] = useState(false);
 
   const loadGrants = async () => setGrants(await api.listToolAccess());
   const loadToolSettings = async () => {
     const r = await api.listToolSettings();
     setToolSettings(r.items);
+    setToolSections(r.sections || []);
     setEnvKeyPresent(r.envKeyPresent);
   };
   // Load AI-connection status when the tab opens (once).
@@ -220,23 +245,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
     if (activeTab === 'toolaccess' && isAdmin) loadToolSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, isAdmin]);
-  // Populate the key form from the selected tool's stored settings.
-  useEffect(() => {
-    const s = toolSettings.find((x) => x.productId === selectedTool);
-    setKeyForm({ provider: s?.provider || 'gemini', baseUrl: s?.baseUrl || '', model: s?.model || '', apiKey: '' });
-  }, [selectedTool, toolSettings]);
-
-  const currentSetting = toolSettings.find((x) => x.productId === selectedTool);
-  const handleSaveKey = async () => {
-    setKeyBusy(true);
-    const r = await api.setToolKey({ productId: selectedTool, provider: keyForm.provider, baseUrl: keyForm.baseUrl, model: keyForm.model, apiKey: keyForm.apiKey });
-    setKeyBusy(false);
-    if (r.ok) { showToast('اتصال هوش مصنوعی ذخیره شد.'); await loadToolSettings(); }
-    else showToast(r.error || 'ذخیره ناموفق بود.');
-  };
-  const handleClearKey = async () => {
-    if (await api.clearToolKey(selectedTool)) { showToast('کلید حذف شد؛ به کلید پیش‌فرض بازگشت.'); await loadToolSettings(); }
-  };
+  const currentSection = toolSections.find((x) => x.sectionId === selectedTool);
   const toolName = (id: string) => (id === 'all' ? 'همه ابزارها' : (AI_TOOLS.find((t) => t.id === id)?.name || id));
   // Apply a plan's defaults into the grant form (still editable afterwards).
   const applyPlan = (productId: string, planId: string) => {
@@ -351,8 +360,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       group: 'دستیار و لیدها',
       items: [
         { id: 'chat', label: 'دستیار هوشمند', icon: Bot },
+        { id: 'apikeys', label: 'کلیدهای API', icon: KeyRound, badge: 5 },
         { id: 'leads', label: 'لیدها (تماس و رزرو)', icon: Target },
-        { id: 'toolaccess', label: 'دسترسی ابزارهای هوشمند', icon: KeyRound },
+        { id: 'toolaccess', label: 'دسترسی ابزارهای هوشمند', icon: ShieldCheck },
       ],
     },
     {
@@ -370,7 +380,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   /* ------------------------- LOGIN GATE ------------------------- */
   if (!isAdmin) {
     return (
-      <div className="min-h-[85dvh] flex items-center justify-center py-12 px-4 dir-rtl">
+      <div className="min-h-[85vh] supports-[min-height:85dvh]:min-h-[85dvh] flex items-center justify-center py-12 px-4 dir-rtl">
         <div className="nd-card max-w-md w-full p-8 sm:p-10 space-y-6">
           <div className="text-center space-y-3">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[color:var(--nd-accent)] text-white flex items-center justify-center shadow-md">
@@ -541,7 +551,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       </AModal>
 
       <div className="flex gap-6 items-start max-w-[1500px] mx-auto">
-        <div className="hidden lg:block sticky top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto">{sidebar}</div>
+        <div className="hidden lg:block sticky top-24 max-h-[calc(100vh-7rem)] supports-[height:1dvh]:max-h-[calc(100dvh-7rem)] overflow-y-auto">{sidebar}</div>
 
         <main className="flex-1 min-w-0 space-y-6 pb-24">
           {/* ---------------- DASHBOARD ---------------- */}
@@ -716,16 +726,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           {/* ---------------- PRODUCTS ---------------- */}
           {activeTab === 'products' && (
             <div className="space-y-8">
-              <CollectionEditor
-                title="محصولات و ابزارها"
-                arrayPath="PRODUCTS"
-                fields={PRODUCT_FIELDS}
-                defaults={() => ({ id: 'product-' + Date.now(), title: 'محصول جدید', description: '', targetAudience: '', iconName: 'target', badge: '', price: '', actionText: 'دریافت', status: 'draft', slug: '', seo: {} })}
-                addLabel="افزودن محصول"
-                preview={(p) => ({ title: p.title, subtitle: `${p.price || ''} · ${p.badge || ''}`, badges: [p.status === 'draft' ? { text: 'پیش‌نویس', tone: 'warn' as const } : { text: 'منتشرشده', tone: 'ok' as const }] })}
+              <ProductSyncManager
+                products={data.PRODUCTS || []}
+                data={data}
+                updateField={updateField}
+                onToast={showToast}
               />
+
               <ACard>
-                <ASectionTitle title="تنظیمات صفحه محصولات" />
+                <ASectionTitle title="تنظیمات صفحه ویترین محصولات" desc="نشان، تیتر و زیرتیتر صفحه /products در سایت" />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <FieldsForm basePath="PRODUCTS_PAGE_DATA" item={data.PRODUCTS_PAGE_DATA} fields={[
                     { key: 'badge', label: 'نشان هدر' },
@@ -1279,9 +1288,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   <p className="text-xs font-black flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-[color:var(--nd-accent)]" /> بازی‌وارسازی و تشویق به خرید</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                     <div className="space-y-1.5">
-                      <ALabel>تعداد پیام رایگان (هر ابزار / هر دستگاه)</ALabel>
+                      <ALabel>پیام‌های رایگان (اقتصاد ۵۰۰ سکه هدیه / کسر ۱۵۰ سکه)</ALabel>
                       <AInput dir="ltr" type="number" min={0} value={String(data.AI_TOOLS_CONFIG.freeTrialCount ?? 3)} onChange={(e) => updateField('AI_TOOLS_CONFIG.freeTrialCount', parseInt(e.target.value, 10) || 0)} />
-                      <p className="text-[10px] nd-faint">۰ = بدون تست رایگان (کاملاً قفل)</p>
+                      <p className="text-[10px] nd-faint">۳ پیام = ۵۰۰ سکه شروع (۱۵۰ کسر در هر پیام، ۵۰ سکه باقی‌مانده جهت تبدیل)</p>
                     </div>
                     <div className="space-y-1.5 sm:col-span-2">
                       <ALabel>جمله‌ی اعتمادساز (Social Proof)</ALabel>
@@ -1361,53 +1370,33 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   </div>
                 </div>
 
-                {/* AI connection / API token */}
+                {/* AI connection — 5 key slots (managed in the dedicated tab) */}
                 <div className="rounded-2xl border border-[color:var(--nd-line)] bg-[color:var(--nd-bg-soft)] p-4 space-y-3 mt-4">
-                  <p className="text-xs font-black flex items-center gap-1.5"><KeyRound className="w-4 h-4 text-emerald-500" /> اتصال و توکن API</p>
-                  <div className={`text-[11px] rounded-lg px-3 py-2 ${currentSetting?.hasKey ? 'bg-[color:var(--nd-mint-soft)] text-[color:var(--nd-success)]' : currentSetting?.usingEnvFallback ? 'bg-[color:var(--nd-peach-soft)] text-[#d97706]' : 'bg-red-50 text-red-600'}`}>
-                    {currentSetting?.hasKey
-                      ? <>کلید اختصاصی فعال است — <code dir="ltr">{currentSetting.keyMask}</code> ({currentSetting.provider})</>
-                      : currentSetting?.usingEnvFallback
-                        ? 'کلید اختصاصی ندارد؛ از کلید پیش‌فرض GEMINI_API_KEY استفاده می‌شود.'
+                  <p className="text-xs font-black flex items-center gap-1.5"><KeyRound className="w-4 h-4 text-emerald-500" /> اتصال کلیدهای API (۵ اسلات)</p>
+                  <div className={`text-[11px] rounded-lg px-3 py-2 ${currentSection?.configuredCount ? 'bg-[color:var(--nd-mint-soft)] text-[color:var(--nd-success)]' : currentSection?.envKeyPresent ? 'bg-[color:var(--nd-peach-soft)] text-[#d97706]' : 'bg-red-50 text-red-600'}`}>
+                    {currentSection?.configuredCount
+                      ? `${currentSection.configuredCount} از ${currentSection.totalKeys} اسلات این محصول کلید دارد — ${currentSection.healthyCount} کلید آماده‌ی پاسخ‌دهی.`
+                      : currentSection?.envKeyPresent
+                        ? 'کلید اختصاصی تنظیم نشده؛ از کلید محیطی GEMINI_API_KEY استفاده می‌شود.'
                         : 'هیچ کلیدی تنظیم نشده — بدون کلید، ابزار با پاسخ‌های نمونه‌ی محلی کار می‌کند.'}
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <ALabel>سرویس‌دهنده</ALabel>
-                      <ASelect value={keyForm.provider} onChange={(e) => setKeyForm((f) => ({ ...f, provider: e.target.value }))}>
-                        <option value="gemini">Google Gemini</option>
-                        <option value="openai">OpenAI / سازگار با OpenAI</option>
-                      </ASelect>
-                    </div>
-                    <div className="space-y-1.5">
-                      <ALabel>مدل (اختیاری)</ALabel>
-                      <AInput dir="ltr" placeholder={keyForm.provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash'} value={keyForm.model} onChange={(e) => setKeyForm((f) => ({ ...f, model: e.target.value }))} />
-                    </div>
-                    {keyForm.provider === 'openai' && (
-                      <div className="space-y-1.5 sm:col-span-2">
-                        <ALabel>Base URL (برای پروکسی‌های سازگار با OpenAI)</ALabel>
-                        <AInput dir="ltr" placeholder="https://api.openai.com/v1" value={keyForm.baseUrl} onChange={(e) => setKeyForm((f) => ({ ...f, baseUrl: e.target.value }))} />
+                  <div className="space-y-1.5">
+                    {(currentSection?.keys || []).map((k) => (
+                      <div key={k.id} className="flex items-center justify-between gap-2 rounded-xl border border-[color:var(--nd-line)] bg-[color:var(--nd-surface)] px-3 py-2">
+                        <span className="text-[11px] font-extrabold truncate">{k.slot}. {k.label}</span>
+                        <span className="flex items-center gap-2 shrink-0">
+                          <ABadge tone={k.health === 'healthy' ? 'ok' : k.health === 'unused' && k.hasKey ? 'accent' : k.hasKey ? 'warn' : 'muted'}>
+                            {k.hasKey ? (k.health === 'rate_limited' ? `لیمیت — ${k.cooldownLabel}` : k.health === 'healthy' ? 'سالم' : k.health === 'invalid' ? 'نامعتبر' : 'آماده') : 'خالی'}
+                          </ABadge>
+                          {k.hasKey && <code className="text-[10px] nd-faint" dir="ltr">{k.keyMask}</code>}
+                        </span>
                       </div>
-                    )}
-                    <div className="space-y-1.5 sm:col-span-2">
-                      <ALabel>کلید API {currentSetting?.hasKey && '(خالی = بدون تغییر)'}</ALabel>
-                      <AInput dir="ltr" type="password" placeholder="کلید API را اینجا وارد کن…" value={keyForm.apiKey} onChange={(e) => setKeyForm((f) => ({ ...f, apiKey: e.target.value }))} />
-                    </div>
+                    ))}
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={handleSaveKey} disabled={keyBusy} className="nd-btn nd-btn-accent px-5 py-2.5 text-[12px] cursor-pointer disabled:opacity-50">
-                      <KeyRound className="w-4 h-4" /><span>{keyBusy ? 'در حال ذخیره…' : 'ذخیره اتصال'}</span>
-                    </button>
-                    {currentSetting?.hasKey && (
-                      <button onClick={handleClearKey} className="nd-btn nd-btn-ghost px-4 py-2.5 text-[11px] cursor-pointer text-red-500">
-                        <Trash2 className="w-3.5 h-3.5" /><span>حذف کلید</span>
-                      </button>
-                    )}
-                    <button onClick={loadToolSettings} className="nd-btn nd-btn-ghost px-4 py-2.5 text-[11px] cursor-pointer">
-                      <RotateCcw className="w-3.5 h-3.5" /><span>بازخوانی وضعیت</span>
-                    </button>
-                  </div>
-                  <p className="text-[10.5px] nd-faint leading-relaxed">🔒 کلیدهای API فقط روی سرور و به‌صورت امن ذخیره می‌شوند و هرگز به‌صورت کامل به مرورگر برنمی‌گردند (فقط نمایش ماسک‌شده).</p>
+                  <button onClick={() => { setKeySection(selectedTool); setActiveTab('apikeys'); }} className="nd-btn nd-btn-accent px-5 py-2.5 text-[12px] cursor-pointer">
+                    <KeyRound className="w-4 h-4" /><span>مدیریت ۵ کلید در تب «کلیدهای API»</span>
+                  </button>
+                  <p className="text-[10.5px] nd-faint leading-relaxed">🔒 کلیدها فقط روی سرور ذخیره می‌شوند و هرگز کامل به مرورگر برنمی‌گردند (فقط ماسک‌شده). با لیمیت‌خوردن هر کلید، خودکار روی کلید سالم بعدی سوئیچ می‌شود و گفتگو از همان‌جا ادامه پیدا می‌کند.</p>
                 </div>
               </ACard>
 
@@ -1558,6 +1547,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           )}
 
           {/* ---------------- APPEARANCE ---------------- */}
+          {/* ---------------- API KEYS (6 sections × 5 slots) ---------------- */}
+          {activeTab === 'apikeys' && (
+            <ApiKeysManager onToast={showToast} initialSectionId={keySection ?? undefined} />
+          )}
+
           {activeTab === 'appearance' && (
             <div className="space-y-8">
               <ACard>

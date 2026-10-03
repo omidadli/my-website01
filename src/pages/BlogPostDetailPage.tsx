@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { inputCls } from '../components/nd/Kit';
-import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays } from 'lucide-react';
+import { ChevronLeft, ArrowRight, Sparkles, MessageSquare, CheckCircle2, ShieldCheck, Link2, Clock, Eye, CalendarDays, Bookmark, BookmarkCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
@@ -10,6 +11,8 @@ import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_DETAIL_COVER_SIZES } from '../utils/responsiveImage';
 import { RichText } from '../components/RichText';
 import { mdToPlainText } from '../utils/plainText';
+import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
+import { pickProductsForPost, topicOfCategory } from '../data/productPromo';
 
 interface BlogPostDetailPageProps {
   theme: Theme;
@@ -21,6 +24,7 @@ interface BlogPostDetailPageProps {
 export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, postId, onNavigate, onSelectPost }) => {
   const isDark = theme === 'dark';
   const { data, addBlogComment } = useContent();
+  const { isLoggedIn, isArticleSaved, saveArticle, removeSavedArticle, markArticleAsRead } = useUser();
   const blogPosts = safeRecordArray<NonNullable<typeof data.BLOG_POSTS[number]>>(data.BLOG_POSTS)
     .filter((item) => typeof item.id === 'string' && item.id.length > 0);
   const post = blogPosts.find((p) => p.id === postId || (!!p.slug && p.slug === postId));
@@ -46,7 +50,27 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
   const [commentError, setCommentError] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const relatedPosts = blogPosts.filter((p) => p.id !== post?.id).slice(0, 3);
+  // Related articles: same cluster first (so the "related" list is actually
+  // related), then fill up with the newest of the rest.
+  const relatedPosts = (() => {
+    if (!post) return [];
+    const others = blogPosts.filter((p) => p.id !== post.id);
+    const sameCluster = others.filter((p) => p.categoryFa === post.categoryFa || p.category === post.category);
+    const rest = others.filter((p) => !sameCluster.includes(p));
+    return [...sameCluster, ...rest].slice(0, 3);
+  })();
+
+  /* ---------------------------------------------------------------- *
+   * Native product placement: pick the tools that actually help with   *
+   * THIS article (see src/data/productPromo.ts) instead of showing a   *
+   * generic banner. `promoTopic` also selects the copy angle.          *
+   * ---------------------------------------------------------------- */
+  const promoIds = post ? pickProductsForPost(post, 2) : [];
+  const promoTopic = post ? topicOfCategory(post.category, post.categoryFa) : undefined;
+  const inlineProductId = promoIds[0];
+  const secondaryProductId = promoIds[1];
+  const promotableInline = inlineProductId ? isProductPromotable(data, inlineProductId) : false;
+  const hasAside = postToc.length > 0 || promoIds.length > 0;
   const postComments = safeRecordArray<NonNullable<typeof data.BLOG_COMMENTS[number]>>(data.BLOG_COMMENTS)
     .filter((comment) => comment.postId === post?.id && comment.isApproved);
 
@@ -111,6 +135,36 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
           <span className="text-[color:var(--nd-accent)] font-extrabold">{post.categoryFa}</span>
         </nav>
         <div className="flex items-center gap-2">
+          {isLoggedIn && (
+            <button
+              onClick={() => {
+                const postKey = post.slug || post.id;
+                if (isArticleSaved(postKey)) {
+                  removeSavedArticle(postKey);
+                } else {
+                  saveArticle(postKey);
+                }
+              }}
+              className={`nd-btn px-4 py-2 text-[11px] ${
+                isArticleSaved(post.slug || post.id)
+                  ? 'bg-[color:var(--nd-accent)] text-white'
+                  : 'nd-btn-ghost'
+              }`}
+              title={isArticleSaved(post.slug || post.id) ? 'حذف از لیست خواندن بعدا' : 'ذخیره برای خواندن بعدا'}
+            >
+              {isArticleSaved(post.slug || post.id) ? (
+                <>
+                  <BookmarkCheck className="w-3.5 h-3.5" />
+                  <span>ذخیره شده</span>
+                </>
+              ) : (
+                <>
+                  <Bookmark className="w-3.5 h-3.5" />
+                  <span>ذخیره برای بعد</span>
+                </>
+              )}
+            </button>
+          )}
           <button onClick={handleCopyLink} className="nd-btn nd-btn-ghost px-4 py-2 text-[11px]">
             <Link2 className="w-3.5 h-3.5" />
             <span>{copied ? 'کپی شد!' : 'کپی لینک'}</span>
@@ -154,31 +208,44 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start max-w-6xl mx-auto">
-        {/* TOC */}
-        {postToc.length > 0 && (
+        {/* TOC + ابزار مرتبط */}
+        {hasAside && (
           <aside className="lg:col-span-4 xl:col-span-3 lg:sticky lg:top-28 space-y-3">
-            <div className="nd-card p-5 space-y-3">
-              <h4 className={`nd-h2 text-xs ${isDark ? 'text-white' : ''}`}>در این مقاله</h4>
-              <ul className="space-y-2">
-                {postToc.map((t) => (
-                  <li key={t.id}>
-                    <button
-                      onClick={() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                      className={`text-right text-[11px] font-bold leading-relaxed transition-colors cursor-pointer ${
-                        isDark ? 'text-slate-400 hover:text-white' : 'nd-muted hover:text-[color:var(--nd-accent)]'
-                      }`}
-                    >
-                      {t.title}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            {postToc.length > 0 && (
+              <div className="nd-card p-5 space-y-3">
+                <h4 className={`nd-h2 text-xs ${isDark ? 'text-white' : ''}`}>در این مقاله</h4>
+                <ul className="space-y-2">
+                  {postToc.map((t) => (
+                    <li key={t.id}>
+                      <button
+                        onClick={() => document.getElementById(t.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                        className={`text-right text-[11px] font-bold leading-relaxed transition-colors cursor-pointer ${
+                          isDark ? 'text-slate-400 hover:text-white' : 'nd-muted hover:text-[color:var(--nd-accent)]'
+                        }`}
+                      >
+                        {t.title}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {promoIds.map((pid) => (
+              <ProductPromo
+                key={pid}
+                productId={pid}
+                theme={theme}
+                onNavigate={onNavigate}
+                topic={promoTopic}
+                variant="compact"
+                eyebrow="ابزار مرتبط"
+              />
+            ))}
           </aside>
         )}
 
         {/* Article body */}
-        <article className={`${postToc.length ? 'lg:col-span-8 xl:col-span-9' : 'lg:col-span-12'} space-y-10`}>
+        <article className={`${hasAside ? 'lg:col-span-8 xl:col-span-9' : 'lg:col-span-12'} space-y-10`}>
           <RichText
             text={post.excerpt}
             isDark={isDark}
@@ -212,6 +279,17 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
                   )}
                 </section>
               ))}
+              {/* ادامه‌ی طبیعی مقاله: ابزاری که همین مسئله را حل می‌کند، داخل متن */}
+              {promotableInline && inlineProductId && (
+                <ProductPromo
+                  productId={inlineProductId}
+                  theme={theme}
+                  onNavigate={onNavigate}
+                  topic={promoTopic}
+                  variant="inline"
+                  eyebrow="قدم بعدیِ این مقاله"
+                />
+              )}
             </div>
           )}
 
@@ -389,6 +467,19 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
             ))}
           </div>
         </section>
+      )}
+
+      {/* یک ابزارِ دیگرِ مرتبط — زاویه‌ی متفاوت نسبت به ابزارِ اول */}
+      {secondaryProductId && isProductPromotable(data, secondaryProductId) && (
+        <ProductPromo
+          productId={secondaryProductId}
+          theme={theme}
+          onNavigate={onNavigate}
+          topic={promoTopic}
+          variant="banner"
+          eyebrow="ابزار مرتبط با این مقاله"
+          className="max-w-5xl mx-auto"
+        />
       )}
     </div>
   );

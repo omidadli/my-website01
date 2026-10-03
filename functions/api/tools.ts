@@ -1,10 +1,24 @@
-import { Env, requireAuth, json, getClientIp, ensureCoreTablesSafe } from './_shared';
 import {
-  TOOLS,
+  Env,
+  requireAuth,
+  json,
+  getClientIp,
+  ensureCoreTablesSafe,
+  loadSectionKeys,
+  saveSectionKeys,
+  loadKeyStates,
+  saveKeyStates,
+  resetKeyStates,
+  loadAllSectionStatus,
+  listKeyEvents,
+  runSectionAi,
+  derivedSessionId,
+} from './_shared';
+import {
   getTool,
   buildToolSystemPrompt,
   resolveBehavior,
-  callAiProvider,
+  testSingleKey,
   localToolAnswer,
   normalizePhone,
   isValidIranMobile,
@@ -13,9 +27,20 @@ import {
   signAccessToken,
   verifyAccessToken,
   scopeCovers,
-  type AiSettings,
+  maskKey,
 } from '../../lib/tools';
-import { getPlan, resolveFreeTrial } from '../../lib/toolPlans';
+import {
+  KEYS_PER_SECTION,
+  mergeSectionKeys,
+  publicKeyInfo,
+  emptyKeyState,
+  applyAttemptToState,
+  classifyAiError,
+  isAiSectionId,
+  AI_SECTIONS,
+  type ChatTurn,
+} from '../../lib/aiKeys';
+import { getPlan, resolveFreeTrial, INITIAL_FREE_COINS, COINS_PER_MESSAGE, calculateRemainingCoins } from '../../lib/toolPlans';
 
 /**
  * Paid AI TOOLS backend (محصولات هوشمند).
@@ -96,16 +121,6 @@ const TOOL_TABLE_STATEMENTS = [
     ip TEXT DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tool_messages_phone_time ON tool_messages (phone, created_at)`,
-  // Per-tool AI connection settings. API KEYS are stored ONLY here (admin-only,
-  // never returned to the public) — never in the public content blob.
-  `CREATE TABLE IF NOT EXISTS tool_settings (
-    product_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL DEFAULT 'gemini',
-    base_url TEXT DEFAULT '',
-    model TEXT DEFAULT '',
-    api_key TEXT DEFAULT '',
-    updated_at TEXT NOT NULL
-  )`,
 ];
 
 // Columns added after the tables first shipped. ALTER fails when the column already
@@ -138,27 +153,19 @@ const ensureTables = (env: Env): Promise<void> => {
   return toolTablesReady;
 };
 
-interface SettingsRow { product_id: string; provider: string; base_url: string; model: string; api_key: string; updated_at: string }
-
-const maskKey = (k: string): string => {
-  const s = (k || '').trim();
-  if (!s) return '';
-  if (s.length <= 8) return '••••';
-  return `${s.slice(0, 4)}••••${s.slice(-4)}`;
+/** Resolve the requested section: any product id, or 'site-assistant' / 'seo-slug'. */
+const sectionIdOf = (body: any): string => {
+  const raw = String(body?.sectionId || body?.productId || '').trim();
+  if (raw && isAiSectionId(raw)) return raw;
+  if (raw && getTool(raw)) return raw;
+  return '';
 };
 
-/** Resolve the effective AI settings for a tool: per-tool row, else env fallback. */
-const resolveSettings = async (env: Env, productId: string): Promise<AiSettings> => {
-  let row: SettingsRow | null = null;
-  try {
-    row = await env.DB.prepare(`SELECT * FROM tool_settings WHERE product_id = ?1`).bind(productId).first<SettingsRow>();
-  } catch { /* ignore */ }
-  const envKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
-  if (row && (row.api_key || '').trim()) {
-    return { provider: (row.provider as any) || 'gemini', baseUrl: row.base_url || '', model: row.model || '', apiKey: row.api_key };
-  }
-  // Fall back to the shared Gemini secret, but honour a per-tool model override.
-  return { provider: 'gemini', baseUrl: '', model: row?.model || '', apiKey: envKey };
+/** 1-based slot index coming from the admin UI (0-based arrays on the client). */
+const clampSlot = (raw: unknown): number => {
+  const n = parseInt(String(raw ?? '0'), 10);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(KEYS_PER_SECTION, (n >= 1 ? n : n + 1)));
 };
 
 const parseDevices = (s: string): string[] => {
@@ -205,28 +212,49 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  // GET /api/tools?view=settings → per-tool AI connection status (key is MASKED, never raw).
-  if (url.searchParams.get('view') === 'settings') {
-    let rows: SettingsRow[] = [];
-    try {
-      const r = await env.DB.prepare(`SELECT * FROM tool_settings`).all<SettingsRow>();
-      rows = r.results || [];
-    } catch { /* ignore */ }
+  // GET /api/tools?view=settings → status of every AI section: 5 key slots each,
+  // masked keys, live health (healthy / rate-limited + cooldown) and stats.
+  const view = url.searchParams.get('view');
+  if (view === 'settings' || view === 'keys') {
     const envKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
-    const items = TOOLS.map((t) => {
-      const row = rows.find((x) => x.product_id === t.id);
-      return {
-        productId: t.id,
-        name: t.name,
-        provider: row?.provider || 'gemini',
-        baseUrl: row?.base_url || '',
-        model: row?.model || '',
-        hasKey: !!(row?.api_key || '').trim(),
-        keyMask: maskKey(row?.api_key || ''),
-        usingEnvFallback: !(row?.api_key || '').trim() && !!envKey,
-      };
+    const sections = await loadAllSectionStatus(env);
+    // Legacy shape (one row per product) so older clients keep working.
+    const items = sections
+      .filter((s) => s.kind === 'product')
+      .map((s) => ({
+        productId: s.sectionId,
+        name: s.name,
+        provider: s.keys[0]?.provider || 'gemini',
+        baseUrl: s.keys[0]?.baseUrl || '',
+        model: s.keys[0]?.model || '',
+        hasKey: s.configuredCount > 0,
+        keyMask: s.keys.find((k) => k.hasKey)?.keyMask || '',
+        usingEnvFallback: s.configuredCount === 0 && !!envKey,
+        keys: s.keys.map((k) => ({
+          id: k.id,
+          label: k.label,
+          provider: k.provider,
+          baseUrl: k.baseUrl,
+          model: k.model,
+          hasKey: k.hasKey,
+          keyMask: k.keyMask,
+          enabled: k.enabled,
+        })),
+      }));
+    return json({
+      ok: true,
+      sections,
+      items,
+      envKeyPresent: !!envKey,
+      keysPerSection: KEYS_PER_SECTION,
+      sectionsMeta: AI_SECTIONS,
     });
-    return json({ ok: true, items, envKeyPresent: !!envKey });
+  }
+
+  // GET /api/tools?view=keyEvents → audit trail of limit hits / key hand-offs.
+  if (view === 'keyEvents') {
+    const items = await listKeyEvents(env, parseInt(url.searchParams.get('limit') || '60', 10));
+    return json({ ok: true, items });
   }
 
   try {
@@ -265,30 +293,101 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const secret = env.AUTH_SECRET || '';
 
   // ---- ADMIN actions ----
-  if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'clearKey') {
+  if (
+    action === 'grant' || action === 'revoke' || action === 'resetDevices' ||
+    action === 'setKey' || action === 'setProductKeys' || action === 'setSectionKeys' ||
+    action === 'testKey' || action === 'testAllKeys' || action === 'resetKeyState' || action === 'clearKey'
+  ) {
     const user = await requireAuth(request, env);
     if (!user) return json({ ok: false, error: 'فقط ادمین.' }, { status: 401 });
 
+    if (action === 'testKey') {
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const existingKeys = await loadSectionKeys(env, sectionId);
+      const slot = clampSlot(body.keyIndex);
+      const currentKey = existingKeys[slot - 1] || existingKeys[0];
+      const provider = body.provider === 'openai' ? 'openai' : (body.provider === 'gemini' ? 'gemini' : (currentKey?.provider || 'gemini'));
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : currentKey?.baseUrl;
+      const model = typeof body.model === 'string' ? body.model.trim() : currentKey?.model;
+      const apiKey = (typeof body.apiKey === 'string' && body.apiKey.trim()) ? body.apiKey.trim() : (currentKey?.apiKey || '');
+
+      if (!apiKey) return json({ ok: false, error: 'کلید API برای این اسلات تنظیم نشده است.' }, { status: 400 });
+      const result = await testSingleKey({ provider, apiKey, baseUrl, model });
+      return json(result);
+    }
+
+    // تستِ زندهٔ همه‌ی ۵ اسلات یک بخش (پنل ادمین → «تست همه»)
+    if (action === 'testAllKeys') {
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const keys = await loadSectionKeys(env, sectionId);
+      const states = await loadKeyStates(env, sectionId);
+      const results: any[] = [];
+      for (const k of keys) {
+        if (!(k.apiKey || '').trim()) {
+          results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: false, ok: false, error: 'کلید ثبت نشده است.' });
+          continue;
+        }
+        const r = await testSingleKey({ provider: k.provider, apiKey: k.apiKey, baseUrl: k.baseUrl, model: k.model });
+        const prev = states[k.id] || emptyKeyState(k.id);
+        const now = Date.now();
+        states[k.id] = r.ok
+          ? { ...prev, keyId: k.id, status: 'healthy', cooldownUntil: 0, lastError: '', lastStatusCode: 200, lastUsedAt: now, lastLatencyMs: r.latencyMs, successCount: prev.successCount + 1 }
+          : applyAttemptToState(prev, k.id, { ok: false, code: classifyAiError({ message: r.error }), status: 0, latencyMs: r.latencyMs, error: r.error }, now);
+        results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: true, provider: k.provider, model: r.model || k.model, ok: r.ok, latencyMs: r.latencyMs, reply: r.reply, error: r.error });
+      }
+      await saveKeyStates(env, sectionId, Object.values(states));
+      return json({ ok: true, sectionId, results, passed: results.filter((r) => r.ok).length, total: results.length });
+    }
+
+    // صفر کردن وضعیت/کول‌داون کلیدها (یک اسلات یا کل بخش)
+    if (action === 'resetKeyState') {
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const slot = body.keyIndex === undefined || body.keyIndex === null || body.keyIndex === '' ? 0 : clampSlot(body.keyIndex);
+      await resetKeyStates(env, sectionId, slot ? `key-${slot}` : undefined);
+      return json({ ok: true });
+    }
+
+    // ذخیرهٔ هر ۵ اسلاتِ یک بخش (محصول یا بخش‌های سایت)
+    if (action === 'setProductKeys' || action === 'setSectionKeys') {
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const incomingKeys: any[] = Array.isArray(body.keys) ? body.keys : [];
+      const existingKeys = await loadSectionKeys(env, sectionId);
+      const nextKeys = mergeSectionKeys(sectionId, incomingKeys, existingKeys);
+      await saveSectionKeys(env, sectionId, nextKeys);
+      return json({ ok: true, sectionId, keys: nextKeys.map(publicKeyInfo) });
+    }
+
     if (action === 'setKey') {
-      const productId = String(body.productId || '');
-      if (!getTool(productId)) return json({ ok: false, error: 'محصول نامعتبر است.' }, { status: 400 });
-      const provider = body.provider === 'openai' ? 'openai' : 'gemini';
-      const baseUrl = String(body.baseUrl || '').trim().slice(0, 200);
-      const model = String(body.model || '').trim().slice(0, 80);
-      const newKey = String(body.apiKey || '').trim();
-      const existing = await env.DB.prepare(`SELECT * FROM tool_settings WHERE product_id = ?1`).bind(productId).first<SettingsRow>();
-      // Keep the existing key when the admin leaves the field blank (i.e. only editing model/provider).
-      const apiKey = newKey || existing?.api_key || '';
-      await env.DB.prepare(
-        `INSERT INTO tool_settings (product_id, provider, base_url, model, api_key, updated_at) VALUES (?1,?2,?3,?4,?5,?6)
-         ON CONFLICT(product_id) DO UPDATE SET provider=?2, base_url=?3, model=?4, api_key=?5, updated_at=?6`
-      ).bind(productId, provider, baseUrl, model, apiKey, nowIso()).run();
-      return json({ ok: true, hasKey: !!apiKey, keyMask: maskKey(apiKey) });
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const slot = clampSlot(body.keyIndex);
+      const existingKeys = await loadSectionKeys(env, sectionId);
+      const patch = [{ id: `key-${slot}`, provider: body.provider, baseUrl: body.baseUrl, model: body.model, apiKey: body.apiKey, label: body.label, enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined }];
+      const nextKeys = mergeSectionKeys(sectionId, patch, existingKeys);
+      await saveSectionKeys(env, sectionId, nextKeys);
+      const saved = nextKeys[slot - 1];
+      return json({ ok: true, hasKey: !!saved.apiKey, keyMask: maskKey(saved.apiKey || ''), slot });
     }
 
     if (action === 'clearKey') {
-      const productId = String(body.productId || '');
-      await env.DB.prepare(`DELETE FROM tool_settings WHERE product_id = ?1`).bind(productId).run();
+      const sectionId = sectionIdOf(body);
+      if (!sectionId) return json({ ok: false, error: 'بخش نامعتبر است.' }, { status: 400 });
+      const hasSlot = body.keyIndex !== undefined && body.keyIndex !== null && body.keyIndex !== '';
+      const existingKeys = await loadSectionKeys(env, sectionId);
+      if (hasSlot) {
+        const slot = clampSlot(body.keyIndex);
+        const nextKeys = mergeSectionKeys(sectionId, [{ id: `key-${slot}`, clearKey: true }], existingKeys);
+        await saveSectionKeys(env, sectionId, nextKeys);
+        return json({ ok: true, slot });
+      }
+      // بدون شماره اسلات = پاک کردن همه‌ی کلیدهای این بخش (سازگار با نسخه‌ی قبل)
+      const cleared = mergeSectionKeys(sectionId, existingKeys.map((k) => ({ id: k.id, clearKey: true })), existingKeys);
+      await saveSectionKeys(env, sectionId, cleared);
+      await resetKeyStates(env, sectionId);
       return json({ ok: true });
     }
 
@@ -441,9 +540,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     // ---- Trial gate (no valid paid token) ----
     const ip = getClientIp(request);
     let trialInfo: { used: number; remaining: number; limit: number } | undefined;
+    let coinInfo: { balance: number; cost: number; initial: number } | undefined;
     if (!paid) {
-      const limit = resolveFreeTrial(data);
-      if (limit <= 0 || !deviceId) {
+      if (!deviceId) {
         return json({ ok: false, error: 'برای استفاده از این ابزار، یکی از پلن‌ها را فعال کن.', code: 'locked' }, { status: 401 });
       }
       // Device ids are client-generated, so also cap free messages per IP per hour —
@@ -452,7 +551,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         const since = new Date(Date.now() - 3600_000).toISOString();
         const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM tool_messages WHERE ip = ?1 AND phone LIKE 'trial:%' AND created_at > ?2`).bind(ip, since).first<{ c: number }>();
         if ((row?.c || 0) >= 30) {
-          return json({ ok: false, error: 'سقف پیام‌های رایگان این ساعت پر شد. برای ادامه‌ی بدون محدودیت، یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used: limit, remaining: 0, limit } }, { status: 429 });
+          return json({ ok: false, error: 'سقف پیام‌های رایگان این ساعت پر شد. برای ادامه‌ی بدون محدودیت، یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used: 3, remaining: 0, limit: 3 }, coins: { balance: 0, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS } }, { status: 429 });
         }
       } catch { /* column missing — continue */ }
       let used = 0;
@@ -460,10 +559,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         const row = await env.DB.prepare(`SELECT count FROM tool_trials WHERE device_id = ?1 AND product_id = ?2`).bind(deviceId, productId).first<{ count: number }>();
         used = row?.count || 0;
       } catch { /* table missing */ }
-      if (used >= limit) {
-        return json({ ok: false, error: 'پیام‌های رایگان تمام شد. برای ادامه یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used, remaining: 0, limit } }, { status: 402 });
+
+      const currentCoins = calculateRemainingCoins(used);
+      if (currentCoins < COINS_PER_MESSAGE) {
+        return json({
+          ok: false,
+          error: `سکه طلایی هدیه شما (${currentCoins} سکه) برای این پیام کافی نیست (هزینه هر تحلیل هوشمند: ${COINS_PER_MESSAGE} سکه). برای ادامه مشاوره و باز کردن تمام ظرفیت، پلن پیشنهادی را فعال کنید.`,
+          code: 'trial_ended',
+          trial: { used, remaining: 0, limit: 3 },
+          coins: { balance: currentCoins, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS },
+        }, { status: 402 });
       }
-      trialInfo = { used: used + 1, remaining: Math.max(0, limit - (used + 1)), limit };
+
+      const nextCoins = Math.max(0, currentCoins - COINS_PER_MESSAGE);
+      coinInfo = { balance: nextCoins, cost: COINS_PER_MESSAGE, initial: INITIAL_FREE_COINS };
+      trialInfo = { used: used + 1, remaining: Math.floor(nextCoins / COINS_PER_MESSAGE), limit: Math.floor(INITIAL_FREE_COINS / COINS_PER_MESSAGE) };
     } else {
       // ---- Paid: validate grant + quota ----
       const grant = await env.DB.prepare(`SELECT * FROM tool_access WHERE id = ?1`).bind(payload!.gid).first<GrantRow>();
@@ -490,16 +600,35 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
     const behavior = resolveBehavior(tool, data);
     const systemPrompt = buildToolSystemPrompt(tool, data);
-    const settings = await resolveSettings(env, productId);
-    const history = messages.slice(0, -1)
+    const history: ChatTurn[] = messages
+      .slice(0, -1)
       .filter((m) => m.role === 'user' || m.role === 'model')
       .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
 
-    let answer = '';
-    let mode: 'ai' | 'local' = 'local';
-    const aiText = await callAiProvider({ systemPrompt, history, question, temperature: behavior.temperature, settings, preferredModel: behavior.model });
-    if (aiText) { answer = aiText; mode = 'ai'; }
-    if (!answer) answer = localToolAnswer(tool, question);
+    // The conversation id: sent by the client (localStorage) so the AI can
+    // review the previous chats; otherwise derived from phone/device/ip.
+    const sessionId = String(body?.sessionId || '').trim().slice(0, 120) ||
+      derivedSessionId(productId, paid && payload ? `phone:${payload.phone}` : `device:${deviceId || ip}`);
+
+    // 5 configured keys → sticky key first → next healthy key on limit/error.
+    // Memory + history are reviewed before answering, so a key switch never
+    // breaks the flow of the conversation (see lib/aiKeys.ts → continuity).
+    const aiResult = await runSectionAi(env, {
+      sectionId: productId,
+      systemPrompt,
+      history,
+      question,
+      temperature: behavior.temperature,
+      sessionId,
+      preferredModel: behavior.model,
+      maxOutputTokens: 900,
+      // zero-cost deterministic answer (also stored in the chat memory) when
+      // no key could reply — the flow is always demonstrable
+      fallback: () => localToolAnswer(tool, question),
+    });
+
+    const answer = aiResult.text || localToolAnswer(tool, question);
+    const mode: 'ai' | 'local' = aiResult.usedFallback || !aiResult.text ? 'local' : 'ai';
 
     // Persist: trial counter + message log.
     if (!paid && deviceId) {
@@ -533,7 +662,23 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       }
     }
 
-    return json({ ok: true, answer, mode, trial: trialInfo, quota: quotaInfo });
+    return json({
+      ok: true,
+      answer,
+      mode,
+      trial: trialInfo,
+      coins: coinInfo,
+      quota: quotaInfo,
+      // monitoring only: which of the 5 keys answered (no secrets)
+      key: {
+        slot: aiResult.usedSlot,
+        label: aiResult.usedKeyLabel,
+        provider: aiResult.usedProvider,
+        switched: aiResult.switched,
+        recalled: aiResult.recalledCount,
+        attempts: aiResult.attempts.length,
+      },
+    });
   }
 
   return json({ ok: false, error: 'اکشن نامعتبر است.' }, { status: 400 });

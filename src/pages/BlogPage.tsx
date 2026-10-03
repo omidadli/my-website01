@@ -12,6 +12,8 @@ import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
 import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_FEATURED_SIZES } from '../utils/responsiveImage';
 import { mdToPlainText } from '../utils/plainText';
+import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
+import { pickProductsForCategory, pickProductsForTopic, topicOfCategory } from '../data/productPromo';
 
 interface BlogPageProps {
   theme: Theme;
@@ -89,6 +91,27 @@ export const BlogPage: React.FC<BlogPageProps> = ({ theme, onNavigate, onSelectP
           </button>
         ))}
       </div>
+
+      {/* ابزار مرتبط با موضوعی که الان داری می‌خوانی — بر اساس فیلتر فعال */}
+      {(() => {
+        const activePost = category === 'all' ? undefined : filtered[0];
+        const topic = topicOfCategory(activePost?.category, category === 'all' ? undefined : category);
+        const ids = category === 'all'
+          ? pickProductsForTopic('ads-performance', 1)
+          : pickProductsForCategory(activePost?.category, category, 1);
+        const id = ids[0];
+        if (!id || !isProductPromotable(data, id)) return null;
+        return (
+          <ProductPromo
+            productId={id}
+            theme={theme}
+            onNavigate={onNavigate}
+            topic={topic}
+            variant="banner"
+            eyebrow={category === 'all' ? 'پرطرفدارترین ابزار' : `مرتبط با «${category}»`}
+          />
+        );
+      })()}
 
       {/* Featured */}
       {featured && category === 'all' && !query && (

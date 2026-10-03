@@ -80,7 +80,9 @@ export const buildDigest = (data: any, maxChars = 9000): string => {
   }
   for (const c of (data.CASE_STUDIES || []).slice(0, 8)) {
     if (c.status === 'draft') continue;
-    L.push(`نمونه‌کار «${c.title}» — مشتری: ${c.client || '-'} (${c.industryFa || ''}): ${c.summary || ''} نتایج: ROAS ${c.metrics?.roas || '-'}، نرخ تبدیل ${c.metrics?.conversionRate || '-'}، کاهش CAC ${c.metrics?.cacReduction || '-'}.`);
+    // آمار و ارقام (ROAS / نرخ تبدیل / CAC) به درخواستِ صاحب سایت از نمونه‌کارها
+    // حذف شده؛ دستیار هم فقط روایتِ پروژه را می‌گوید، نه عدد.
+    L.push(`نمونه‌کار «${c.title}» — مشتری: ${c.client || '-'} (${c.industryFa || ''}): ${c.summary || ''} ${c.results ? `نتیجه: ${c.results}` : ''}`.trim());
   }
   for (const pr of data.PRODUCTS || []) {
     if (pr.status === 'draft') continue;

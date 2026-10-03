@@ -8,8 +8,11 @@
  */
 
 import { compressImage } from '../utils/image';
+import type { AiKeyHealth, AiSectionDef, SectionStatus } from '../../lib/aiKeys';
 
 const TOKEN_KEY = 'nd_admin_token';
+
+const USER_DATA_CACHE_KEY = 'nd-user-data-cache';
 
 let cloudAvailable: boolean | null = null;
 /** Body of the probe response, handed to the first getContent() so boot needs one round-trip, not two. */
@@ -228,13 +231,14 @@ export const api = {
   /** AI consultant conversation. */
   async sendChat(
     messages: { role: 'user' | 'model'; content: string }[],
-    mascotContext?: { name?: string; page?: string; daypart?: string; bodyState?: string }
+    mascotContext?: { name?: string; page?: string; daypart?: string; bodyState?: string },
+    sessionId?: string
   ): Promise<{ ok: boolean; answer?: string; act?: { pose?: string; hold?: number; bubble?: string; then?: string }; mode?: 'ai' | 'local'; error?: string }> {
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, mascot: mascotContext }),
+        body: JSON.stringify({ messages, mascot: mascotContext, sessionId }),
       });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok ? { ok: true, answer: j.answer, act: j.act, mode: j.mode } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
@@ -336,13 +340,13 @@ export const api = {
   },
 
   /** Public: send a message to a tool. With a token → paid; without → free trial (device-based). */
-  async toolChat(payload: { token?: string; productId: string; deviceId: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; quota?: { limit: number; used: number; remaining: number } }> {
+  async toolChat(payload: { token?: string; productId: string; deviceId: string; sessionId?: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; coins?: { balance: number; cost: number; initial: number }; quota?: { limit: number; used: number; remaining: number }; key?: { slot?: number; label?: string; provider?: string; switched?: boolean; recalled?: number } }> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'chat', ...payload }) });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok
-        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, quota: j.quota }
-        : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, quota: j?.quota };
+        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, coins: j.coins, quota: j.quota, key: j.key }
+        : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, coins: j?.coins, quota: j?.quota };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
     }
@@ -360,33 +364,163 @@ export const api = {
     }
   },
 
-  /** Admin: per-tool AI connection settings (API key is MASKED, never raw). */
-  async listToolSettings(): Promise<{ items: Array<{ productId: string; name: string; provider: string; baseUrl: string; model: string; hasKey: boolean; keyMask: string; usingEnvFallback: boolean }>; envKeyPresent: boolean }> {
+  /** Admin: AI sections (site assistant, SEO slug, 4 products) with 5 key slots each. */
+  async listToolSettings(): Promise<{
+    items: Array<{
+      productId: string;
+      name: string;
+      provider: string;
+      baseUrl: string;
+      model: string;
+      hasKey: boolean;
+      keyMask: string;
+      usingEnvFallback: boolean;
+      keys?: Array<{
+        id: string;
+        label: string;
+        provider: 'gemini' | 'openai';
+        baseUrl: string;
+        model: string;
+        hasKey: boolean;
+        keyMask: string;
+        enabled: boolean;
+      }>;
+    }>;
+    /** the full 5-slot state of every section (health, cooldowns, stats, masked keys) */
+    sections: SectionStatus[];
+    envKeyPresent: boolean;
+    keysPerSection: number;
+    sectionsMeta: AiSectionDef[];
+  }> {
+    const empty = { items: [], sections: [], envKeyPresent: false, keysPerSection: 5, sectionsMeta: [] as AiSectionDef[] };
     try {
       const r = await fetch('/api/tools?view=settings', { headers: headers() });
-      if (!r.ok) return { items: [], envKeyPresent: false };
+      if (!r.ok) return empty;
       const j = await r.json();
-      return j?.ok ? { items: j.items, envKeyPresent: j.envKeyPresent } : { items: [], envKeyPresent: false };
+      return j?.ok
+        ? {
+            items: j.items || [],
+            sections: j.sections || [],
+            envKeyPresent: !!j.envKeyPresent,
+            keysPerSection: j.keysPerSection || 5,
+            sectionsMeta: j.sectionsMeta || [],
+          }
+        : empty;
     } catch {
-      return { items: [], envKeyPresent: false };
+      return empty;
     }
   },
 
-  /** Admin: set the AI connection (provider/model/key) for one tool. */
-  async setToolKey(payload: { productId: string; provider: string; baseUrl?: string; model?: string; apiKey?: string }): Promise<{ ok: boolean; error?: string }> {
+  /** Admin: save all 5 key slots of one section at once. */
+  async setSectionKeys(payload: {
+    sectionId: string;
+    keys: Array<{
+      id: string;
+      label?: string;
+      provider?: string;
+      baseUrl?: string;
+      model?: string;
+      apiKey?: string;
+      enabled?: boolean;
+      clearKey?: boolean;
+    }>;
+  }): Promise<{ ok: boolean; keys?: any[]; error?: string }> {
     try {
-      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'setKey', ...payload }) });
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'setProductKeys', ...payload }),
+      });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+      return r.ok && j?.ok ? { ok: true, keys: j.keys } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
     }
   },
 
-  /** Admin: clear the AI connection (falls back to the shared GEMINI_API_KEY). */
-  async clearToolKey(productId: string): Promise<boolean> {
+  /** Backwards-compatible alias of setSectionKeys (product sections). */
+  async setProductKeys(payload: {
+    productId: string;
+    keys: Array<{ id: string; label?: string; provider?: string; baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean; clearKey?: boolean }>;
+  }): Promise<{ ok: boolean; keys?: any[]; error?: string }> {
+    return this.setSectionKeys({ sectionId: payload.productId, keys: payload.keys });
+  },
+
+  /** Admin: test every key slot of a section (live, sequential). */
+  async testAllSectionKeys(sectionId: string): Promise<{
+    ok: boolean;
+    results?: Array<{ id: string; slot: number; label: string; hasKey: boolean; ok: boolean; provider?: string; model?: string; latencyMs?: number; reply?: string; error?: string }>;
+    passed?: number;
+    total?: number;
+    error?: string;
+  }> {
     try {
-      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'clearKey', productId }) });
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'testAllKeys', sectionId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? j : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  /** Admin: clear the cooldown/health of one slot (or a whole section). */
+  async resetSectionKeyState(sectionId: string, keyIndex?: number): Promise<boolean> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'resetKeyState', sectionId, keyIndex }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  /** Admin: audit trail of rate-limit hits / key hand-offs. */
+  async listKeyEvents(limit = 60): Promise<Array<{ id: string; section_id: string; key_id: string; code: string; status: number; message: string; created_at: string }>> {
+    try {
+      const r = await fetch(`/api/tools?view=keyEvents&limit=${limit}`, { headers: headers() });
+      if (!r.ok) return [];
+      const j = await r.json();
+      return j?.ok ? j.items : [];
+    } catch {
+      return [];
+    }
+  },
+
+  /** Admin: test an AI connection key live. */
+  async testToolKey(payload: {
+    sectionId?: string;
+    productId: string;
+    keyIndex?: number;
+    provider?: string;
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+  }): Promise<{ ok: boolean; latencyMs?: number; model?: string; reply?: string; error?: string }> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'testKey', ...payload }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return j;
+    } catch {
+      return { ok: false, error: 'اتصال به سرور جهت تست کلید برقرار نشد.' };
+    }
+  },
+
+  /** Admin: clear one key slot (keyIndex) or all of them (omit it) — falls back to GEMINI_API_KEY. */
+  async clearToolKey(productId: string, keyIndex?: number): Promise<boolean> {
+    try {
+      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'clearKey', productId, keyIndex }) });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok;
     } catch {
@@ -453,4 +587,137 @@ export const api = {
       return null;
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // User accounts (site visitors) — register / login / logout / sync.
+  // Session lives in an HttpOnly cookie set by the server; the client never sees
+  // the token. We just mirror user data to localStorage for instant hydration.
+  // ---------------------------------------------------------------------------
+
+  async getMe(): Promise<{
+    ok: boolean;
+    profile?: any;
+    savedArticles?: any[];
+    subscriptions?: any[];
+    consultations?: any[];
+    activities?: any[];
+    error?: string;
+  }> {
+    try {
+      const r = await fetch('/api/user', { method: 'GET', cache: 'no-store', credentials: 'same-origin' });
+      const ct = r.headers.get('Content-Type') || '';
+      // If the server returned HTML (e.g. dev server not ready, SPA fallback), treat as "not reachable"
+      // instead of showing a scary error — we'll silently fall back to anonymous state.
+      if (!ct.includes('application/json')) {
+        try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+        return { ok: false, error: 'not_authenticated' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+        return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+      }
+      if (r.status === 401 || !r.ok) {
+        try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+        return { ok: false, error: 'not_authenticated' };
+      }
+      return { ok: false, error: j?.error || 'not_authenticated' };
+    } catch {
+      return { ok: false, error: 'not_authenticated' };
+    }
+  },
+
+  async userRegister(payload: { fullName: string; email?: string; phone?: string; password: string }) {
+    const body: Record<string, string> = { fullName: payload.fullName, password: payload.password };
+    if (payload.email) body.email = payload.email;
+    if (payload.phone) body.phone = payload.phone;
+    const loginValue = payload.email || payload.phone || '';
+    if (loginValue) body.emailOrPhone = loginValue;
+    try {
+      const r = await fetch('/api/user?action=register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const ct = r.headers.get('Content-Type') || '';
+      if (!ct.includes('application/json')) {
+        return { ok: false, error: 'سرور در حال راه‌اندازی است، چند لحظه دیگر دوباره تلاش کنید.' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        if (j.profile && Array.isArray(j.savedArticles)) {
+          try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+          return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+        }
+        return await this.getMe();
+      }
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userLogin(payload: { email?: string; phone?: string; password: string }) {
+    const body: Record<string, string> = { password: payload.password };
+    if (payload.email) body.email = payload.email;
+    if (payload.phone) body.phone = payload.phone;
+    const loginValue = payload.email || payload.phone || '';
+    if (loginValue) body.emailOrPhone = loginValue;
+    try {
+      const r = await fetch('/api/user?action=login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const ct = r.headers.get('Content-Type') || '';
+      if (!ct.includes('application/json')) {
+        return { ok: false, error: 'سرور در حال راه‌اندازی است، چند لحظه دیگر دوباره تلاش کنید.' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        if (j.profile && Array.isArray(j.savedArticles)) {
+          try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+          return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+        }
+        return await this.getMe();
+      }
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userLogout() {
+    try {
+      await fetch('/api/user?action=logout', { method: 'POST', credentials: 'same-origin' });
+    } catch { /* ignore */ }
+    try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
+    return { ok: true };
+  },
+
+  async userUpdateProfile(payload: Partial<{ fullName: string; phone: string; bio: string }>) {
+    try {
+      const r = await fetch('/api/user?action=update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true, profile: j.profile };
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  getCachedMe(): any | null {
+    try {
+      const raw = localStorage.getItem(USER_DATA_CACHE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  },
 };
+

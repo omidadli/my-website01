@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page, CaseStudy } from './types';
 import { ContentProvider, useContent } from './context/ContentContext';
+import { UserProvider } from './context/UserContext';
 import { StatePreserverProvider } from './utils/statePreserver';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -23,9 +24,12 @@ const BlogPostDetailPage = lazy(() => import('./pages/BlogPostDetailPage').then(
 const ContactPage = lazy(() => import('./pages/ContactPage').then((m) => ({ default: m.ContactPage })));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage').then((m) => ({ default: m.ProjectsPage })));
 const ProductsPage = lazy(() => import('./pages/ProductsPage').then((m) => ({ default: m.ProductsPage })));
+const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
+const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
 const CustomPageView = lazy(() => import('./pages/CustomPageView').then((m) => ({ default: m.CustomPageView })));
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { PageLoader } from './components/PageLoader';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { SEOHead } from './components/SEOHead';
 const ChatWidget = lazy(() => import('./components/ChatWidget').then((m) => ({ default: m.ChatWidget })));
@@ -49,6 +53,9 @@ function MainLayout({
   const [selectedCaseStudy, setSelectedCaseStudy] = useState<CaseStudy | null>(null);
   const [selectedBlogPostId, setSelectedBlogPostId] = useState<string | null>(() =>
     initialRoute?.page === 'blog' ? initialRoute.postId : null,
+  );
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(() =>
+    initialRoute?.page === 'products' ? initialRoute.productId || null : null,
   );
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
   const [isThemeTransitioning, setIsThemeTransitioning] = useState<boolean>(false);
@@ -108,6 +115,7 @@ function MainLayout({
       // bare /blog = the article LIST — always drop the selected post so
       // clicking the "آموزش" nav while reading a post goes back to the list.
       setSelectedBlogPostId(route.page === 'blog' ? route.postId : null);
+      setSelectedProductId(route.page === 'products' ? route.productId || null : null);
     };
 
     syncFromUrl();
@@ -139,7 +147,15 @@ function MainLayout({
     // Navigating to 'blog' always means the article LIST — drop the selected
     // post even when coming from a post detail page.
     setSelectedBlogPostId(null);
+    setSelectedProductId(null);
     navigate(pathForPage(page));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSelectProduct = (productId: string | null) => {
+    setSelectedProductId(productId);
+    setCurrentPage('products');
+    navigate(productId ? `/products/${encodeURIComponent(productId)}` : '/products');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -238,7 +254,7 @@ function MainLayout({
             transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
           >
             <ErrorBoundary name="page" resetKeys={[currentPage, selectedBlogPostId, showNotFound]}>
-              <Suspense fallback={<div role="status" aria-live="polite" className="mx-auto my-20 flex min-h-40 items-center justify-center text-sm text-[color:var(--nd-muted)]">در حال بارگذاری صفحه…</div>}>
+              <Suspense fallback={<PageLoader />}>
             {showNotFound && (
               <NotFoundPage theme={theme} onNavigate={handleNavigate} onSelectPost={handleSelectBlogPost} />
             )}
@@ -306,15 +322,38 @@ function MainLayout({
             )}
 
             {currentPage === 'products' && (
-              <ProductsPage
-                theme={theme}
-                onNavigate={handleNavigate}
-              />
+              selectedProductId ? (
+                <ProductDetailPage
+                  productId={selectedProductId}
+                  theme={theme}
+                  onNavigate={(p) => {
+                    if (p === 'products') {
+                      handleSelectProduct(null);
+                    } else {
+                      handleNavigate(p);
+                    }
+                  }}
+                />
+              ) : (
+                <ProductsPage
+                  theme={theme}
+                  onNavigate={handleNavigate}
+                  onSelectProduct={handleSelectProduct}
+                />
+              )
             )}
 
             {currentPage === 'admin' && (
               <AdminPage
                 onNavigate={handleNavigate}
+              />
+            )}
+
+            {currentPage === 'profile' && (
+              <ProfilePage
+                theme={theme}
+                onNavigate={handleNavigate}
+                onSelectPost={handleSelectBlogPost}
               />
             )}
 
@@ -383,7 +422,9 @@ function MainLayout({
 export default function App() {
   return (
     <ContentProvider>
-      <StatePreserverWrapper />
+      <UserProvider>
+        <StatePreserverWrapper />
+      </UserProvider>
     </ContentProvider>
   );
 }

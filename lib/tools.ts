@@ -15,9 +15,31 @@
  *                      random access-code generation. Access is granted PER
  *                      PHONE NUMBER by the admin and bound to a limited number
  *                      of devices, so a buyer cannot freely re-share the link.
+ *
+ * Multi-key model (5 slots per section, auto-rotation, chat continuity) lives in
+ * lib/aiKeys.ts and is re-exported from here for backwards compatibility.
  */
 
 import { buildDigest } from './assistant';
+import {
+  KEYS_PER_SECTION,
+  createDefaultSectionKeys,
+  callProviderKey,
+  testProviderKey,
+  mergeConversationHistory,
+  buildContinuitySystemPrompt,
+  isDefaultSectionModel,
+  sanitizeTurns,
+  runKeyFailover,
+  envFallbackKey,
+  maskedKey,
+  type AiKeyEntry,
+  type AiKeyState,
+  type AiAttempt,
+  type ChatTurn,
+  type KeyTestResult,
+  type PublicKeyInfo,
+} from './aiKeys';
 
 // ---------------------------------------------------------------------------
 // 1. The 4 sellable AI tools
@@ -249,8 +271,15 @@ ${digest}`;
 };
 
 // ---------------------------------------------------------------------------
-// 2b. AI provider caller — per-tool key/model/provider (Gemini or OpenAI-compat)
+// 2b. AI provider caller — 5 API keys per section + auto-rotation
 // ---------------------------------------------------------------------------
+// The key model (5 slots, health, cooldowns, failover order, chat continuity)
+// lives in lib/aiKeys.ts and is shared with:
+//   - functions/api/_shared.ts  (production: D1-backed key store + runner)
+//   - functions/api/tools.ts    (product chats)
+//   - functions/api/chat.ts     (site assistant)  •  functions/api/slug.ts (SEO)
+//   - vite-dev-api.ts           (local development)
+// This file re-exports them so existing imports keep working.
 
 export interface AiSettings {
   provider: 'gemini' | 'openai';
@@ -260,89 +289,168 @@ export interface AiSettings {
   apiKey: string;
 }
 
-export const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+export type ToolApiKeyEntry = AiKeyEntry;
+export type ToolKeyPublic = PublicKeyInfo;
+export { maskedKey as maskKey, KEYS_PER_SECTION as KEYS_PER_TOOL };
 
-interface AiCallArgs {
+/** 5 default slots for a product section (kept for backwards compatibility). */
+export const createDefaultProductKeys = (legacySettings?: Partial<AiSettings>): ToolApiKeyEntry[] => {
+  const keys = createDefaultSectionKeys('business-therapist');
+  if (legacySettings?.apiKey || legacySettings?.provider || legacySettings?.model || legacySettings?.baseUrl) {
+    keys[0] = {
+      ...keys[0],
+      provider: legacySettings.provider === 'openai' ? 'openai' : 'gemini',
+      baseUrl: String(legacySettings.baseUrl || '').trim(),
+      model: String(legacySettings.model || keys[0].model).trim(),
+      apiKey: String(legacySettings.apiKey || '').trim(),
+    };
+  }
+  return keys;
+};
+
+export const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'];
+
+/** Single call with one key. Returns the answer text, or null on failure. */
+export const callAiProvider = async (args: {
   systemPrompt: string;
   history: { role: 'user' | 'model'; content: string }[];
   question: string;
   temperature: number;
   settings: AiSettings;
-  /** model preference coming from the tool's behavior config */
   preferredModel?: string;
-}
-
-/** Calls the configured provider. Returns the answer text, or null on failure. */
-export const callAiProvider = async (args: AiCallArgs): Promise<string | null> => {
-  const { systemPrompt, history, question, temperature, settings, preferredModel } = args;
-  const key = (settings.apiKey || '').trim();
-  if (!key) return null;
-
-  // ---- OpenAI-compatible ----
-  if (settings.provider === 'openai') {
-    const base = (settings.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    const model = (preferredModel || settings.model || 'gpt-4o-mini').trim();
-    try {
-      const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(30000),
-        body: JSON.stringify({
-          model,
-          temperature,
-          max_tokens: 900,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...history.map((m) => ({ role: m.role === 'model' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 2000) })),
-            { role: 'user', content: question },
-          ],
-        }),
-      });
-      if (res.ok) {
-        const j: any = await res.json();
-        const text = String(j?.choices?.[0]?.message?.content || '').trim();
-        if (text) return text;
-      }
-    } catch {
-      /* fall through */
-    }
-    return null;
-  }
-
-  // ---- Gemini (default) ----
-  const models = [preferredModel, settings.model, ...DEFAULT_GEMINI_MODELS].filter((m, i, a) => m && a.indexOf(m) === i) as string[];
-  const geminiHistory = history.map((m) => ({ role: m.role === 'model' ? 'model' : 'user', parts: [{ text: String(m.content || '').slice(0, 2000) }] }));
-  for (const model of models) {
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        signal: AbortSignal.timeout(30000),
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [...geminiHistory, { role: 'user', parts: [{ text: question }] }],
-          generationConfig: { temperature, maxOutputTokens: 900, thinkingConfig: { thinkingBudget: 0 } },
-          safetySettings: [
-            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-          ],
-        }),
-      });
-      if (res.ok) {
-        const j: any = await res.json();
-        const parts = j?.candidates?.[0]?.content?.parts || [];
-        const text = String(parts.find((p: any) => p?.text && !p?.thought)?.text || parts.find((p: any) => p?.text)?.text || parts[0]?.text || '').trim();
-        if (text) return text;
-      }
-    } catch {
-      /* try next model */
-    }
-  }
-  return null;
+  maxOutputTokens?: number;
+}): Promise<string | null> => {
+  const res = await callProviderKey({
+    provider: args.settings.provider === 'openai' ? 'openai' : 'gemini',
+    apiKey: args.settings.apiKey,
+    baseUrl: args.settings.baseUrl,
+    model: args.preferredModel || args.settings.model,
+    systemPrompt: args.systemPrompt,
+    history: sanitizeTurns(args.history),
+    question: args.question,
+    temperature: args.temperature,
+    maxOutputTokens: args.maxOutputTokens,
+  });
+  return res.text;
 };
 
+export interface FailoverCallResult {
+  text: string | null;
+  usedKeyId?: string;
+  usedKeyLabel?: string;
+  usedProvider?: string;
+  usedSlot?: number;
+  /** every attempt in order — admin logging / monitoring */
+  attempts: AiAttempt[];
+  /** true when the answer came from a fallback key */
+  switched: boolean;
+  /** updated per-key state, ready to be persisted */
+  states: Record<string, AiKeyState>;
+  /** true when every configured key was cooling down */
+  allCooling: boolean;
+  lastError?: string;
+  /** wall-clock time spent in the rotation loop */
+  elapsedMs: number;
+}
+
+/**
+ * Executes a call over the 5 configured keys of a section in priority order.
+ *
+ *   1. the key that last answered this conversation (sticky — no needless switch)
+ *   2. the next healthy slots (1 → 5)
+ *   3. keys that are cooling down (limit hit) — last resort, closest-to-reset first
+ *
+ * Before falling back it *reviews the previous chat*: server-side memory
+ * (recap) + the merged client history are handed to the next key together with
+ * a continuity instruction, so the conversation continues naturally and the
+ * user never notices that a different key/provider answered.
+ */
+export const callAiProviderWithFailover = async (args: {
+  /** section id (a product id, or 'site-assistant' / 'seo-slug') — used for logging */
+  sectionId?: string;
+  systemPrompt: string;
+  history: { role: 'user' | 'model'; content: string }[];
+  question: string;
+  temperature: number;
+  keys: ToolApiKeyEntry[];
+  preferredModel?: string;
+  envFallbackKey?: string;
+  /** per-key health from the store (skips keys that just hit a limit) */
+  states?: Record<string, AiKeyState>;
+  /** the key that answered last time in this conversation */
+  stickyKeyId?: string;
+  /** older turns recalled from the server-side chat memory */
+  recap?: ChatTurn[];
+  /** true when the caller already merged `history` with the server memory */
+  historyMerged?: boolean;
+  maxOutputTokens?: number;
+  /** persist updated key health after each attempt (D1 / dev file) */
+  persist?: (states: AiKeyState[]) => Promise<void> | void;
+}): Promise<FailoverCallResult> => {
+  const keys: ToolApiKeyEntry[] = [...(args.keys || [])];
+  const envEntry = envFallbackKey(args.envFallbackKey);
+  if (envEntry) keys.push(envEntry);
+
+  const history = args.historyMerged ? sanitizeTurns(args.history) : mergeConversationHistory(args.history as ChatTurn[], args.recap || []).history;
+
+  const outcome = await runKeyFailover({
+    sectionId: args.sectionId || 'unknown',
+    keys,
+    states: args.states,
+    stickyKeyId: args.stickyKeyId,
+    history,
+    persist: args.persist,
+    call: async (ctx) => {
+      const systemPrompt = buildContinuitySystemPrompt({
+        systemPrompt: args.systemPrompt,
+        recap: args.recap || [],
+        history: ctx.history,
+        handoff: ctx.isHandoff,
+        failoverCount: ctx.index,
+      });
+      // Per-slot model (set in the admin panel) always wins; the CMS-level
+      // model (`behavior.model`) only overrides slots that still use a default.
+      const slotModel = (ctx.key.model || '').trim();
+      const cmsModel = (args.preferredModel || '').trim();
+      const model = !cmsModel ? slotModel : !slotModel || isDefaultSectionModel(args.sectionId || '', slotModel) ? cmsModel : slotModel;
+      return callProviderKey({
+        provider: ctx.key.provider,
+        apiKey: ctx.key.apiKey || '',
+        baseUrl: ctx.key.baseUrl,
+        model,
+        systemPrompt,
+        history: ctx.history,
+        question: args.question,
+        temperature: args.temperature,
+        maxOutputTokens: args.maxOutputTokens,
+      });
+    },
+  });
+
+  return {
+    text: outcome.text,
+    usedKeyId: outcome.usedKeyId,
+    usedKeyLabel: outcome.usedKeyLabel,
+    usedProvider: outcome.usedProvider,
+    usedSlot: outcome.usedSlot,
+    attempts: outcome.attempts,
+    switched: outcome.switched,
+    states: outcome.states,
+    allCooling: outcome.allCooling,
+    lastError: outcome.lastError,
+    elapsedMs: outcome.elapsedMs,
+  };
+};
+
+export type { KeyTestResult } from './aiKeys';
+
+/** Live test of a single key (admin panel «تست» button). */
+export const testSingleKey = async (config: {
+  provider: 'gemini' | 'openai';
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+}): Promise<KeyTestResult> => testProviderKey(config);
 // ---------------------------------------------------------------------------
 // 3. Zero-cost local fallback (no API key) — keeps the flow demonstrable
 // ---------------------------------------------------------------------------

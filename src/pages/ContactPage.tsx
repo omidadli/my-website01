@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Theme, Page } from '../types';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { usePreservedState } from '../utils/statePreserver';
 import { api } from '../services/api';
 import { whatsappFallbackUrl } from '../utils/leadFallback';
@@ -9,6 +10,8 @@ import { BookingCalendar } from '../components/BookingCalendar';
 import { PageHero, inputCls } from '../components/nd/Kit';
 import { Send, Mail, Linkedin, CheckCircle2, Clock, ArrowUpLeft, MessageCircle, Instagram } from 'lucide-react';
 import { motion } from 'motion/react';
+import { ProductPromoStrip } from '../components/ProductPromo';
+import { pickProductsForTopic, topicForStage } from '../data/productPromo';
 
 interface ContactPageProps {
   theme: Theme;
@@ -18,6 +21,7 @@ interface ContactPageProps {
 export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) => {
   const isDark = theme === 'dark';
   const { data } = useContent();
+  const { isLoggedIn, addConsultation } = useUser();
   const personalInfo = data.PERSONAL_INFO;
 
   const [activeTab, setActiveTab] = usePreservedState<'form' | 'calendar'>('contact_active_tab', 'form');
@@ -48,6 +52,9 @@ export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) =
     window.addEventListener('nd:prefill-contact', onPrefill);
     return () => window.removeEventListener('nd:prefill-contact', onPrefill);
   }, []);
+
+  // The product suggestions follow the stage the visitor picked in the form.
+  const contactTopic = topicForStage(formData.serviceNeeded);
 
   const whatsappFallback = whatsappFallbackUrl(personalInfo, [
     ['نام', formData.name],
@@ -80,6 +87,14 @@ export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) =
     if (!res.ok) {
       setSendError(res.error || 'ارسال پیام ناموفق بود.');
       return;
+    }
+    // If the user is already logged in, also save the consultation in their profile dashboard
+    if (isLoggedIn) {
+      addConsultation({
+        subject: formData.serviceNeeded,
+        message: formData.details.trim() || 'درخواست مشاوره از فرم تماس',
+        serviceName: formData.serviceNeeded,
+      });
     }
     setSubmitted(true);
     window.dispatchEvent(new CustomEvent('nd:form-success'));
@@ -259,6 +274,36 @@ export const ContactPage: React.FC<ContactPageProps> = ({ theme, onNavigate }) =
             </div>
           </div>
         </div>
+      )}
+
+      {/* -------------------------------------------------------------- *
+       * تا زمانی که پیام را می‌خوانم، ابزارِ متناسب با همان مرحله‌ای که   *
+       * در فرم انتخاب کرده پیشنهاد می‌شود — نه یک بنر ثابت.              *
+       * -------------------------------------------------------------- */}
+      <ProductPromoStrip
+        productIds={pickProductsForTopic(contactTopic, 2)}
+        theme={theme}
+        onNavigate={onNavigate}
+        topic={contactTopic}
+        eyebrow="تا من جواب بدم، همین الان جواب بگیر"
+        title="منتظر نمان؛ همین امشب شروع کن"
+        desc={`این ابزارها روی همان مرحله‌ای کار می‌کنند که انتخاب کردی («${formData.serviceNeeded}») و با ۵۰۰ سکه هدیه بدون کارت بانکی تست می‌شوند.`}
+        gridClassName="grid grid-cols-1 md:grid-cols-2 gap-5"
+      />
+
+      {/* بعد از ارسال فرم: پیشنهادِ مستقیمِ ادامه مسیر */}
+      {submitted && (
+        <ProductPromoStrip
+          productIds={['business-therapist']}
+          theme={theme}
+          onNavigate={onNavigate}
+          topic={contactTopic}
+          variant="compact"
+          eyebrow="قدم بعدی"
+          title="تا جلسه‌مان، روی چالشت کار کن"
+          desc="چالش اصلی‌ات را همان‌جا مطرح کن؛ یک چک‌لیست عملیاتی برای همین هفته می‌گیری تا در جلسه وقت‌مان صرف اجرا شود، نه شرح مسئله."
+          gridClassName="grid grid-cols-1 md:grid-cols-2 gap-4"
+        />
       )}
     </div>
   );

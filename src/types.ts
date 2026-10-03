@@ -8,8 +8,68 @@ export type Page =
   | 'contact' 
   | 'projects' 
   | 'products'
+  | 'profile'
   | 'admin'
   | (string & {});
+
+export interface UserProfile {
+  id: string;
+  fullName: string;
+  email: string;
+  phone?: string;
+  avatarUrl?: string;
+  joinedAt: string;
+  bio?: string;
+}
+
+export interface SavedArticle {
+  postId: string;
+  savedAt: string;
+  notes?: string;
+  read: boolean;
+  readAt?: string;
+}
+
+export type SubscriptionStatus = 'active' | 'expired' | 'cancelled' | 'pending' | 'trial';
+
+export interface UserSubscription {
+  id: string;
+  productId: string;
+  productName: string;
+  planId: string;
+  planName: string;
+  status: SubscriptionStatus;
+  startDate: string;
+  endDate: string;
+  price: string;
+  autoRenew: boolean;
+  features: string[];
+}
+
+export type ConsultationStatus = 'pending' | 'reviewing' | 'scheduled' | 'completed' | 'cancelled';
+
+export interface ConsultationRequest {
+  id: string;
+  subject: string;
+  message: string;
+  serviceId?: string;
+  serviceName?: string;
+  status: ConsultationStatus;
+  createdAt: string;
+  updatedAt: string;
+  adminNotes?: string;
+  scheduledDate?: string;
+  scheduledTime?: string;
+}
+
+export interface UserActivity {
+  id: string;
+  type: 'article_saved' | 'article_read' | 'subscription_started' | 'subscription_renewed' | 'consultation_sent' | 'consultation_updated' | 'comment_posted';
+  description: string;
+  relatedId?: string;
+  timestamp: string;
+}
+
 
 export interface CustomBlock {
   id: string;
@@ -31,17 +91,62 @@ export interface CustomPage {
   blocks: CustomBlock[];
 }
 
+export interface ProductApiKey {
+  id: string;
+  label?: string;
+  provider: 'gemini' | 'openai';
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  hasKey?: boolean;
+  keyMask?: string;
+  enabled?: boolean;
+}
+
+export interface ProductPlan {
+  id: 'basic' | 'pro' | 'vip' | string;
+  name: string;
+  price: string;
+  durationDays: number;
+  messageQuota: number;
+  maxDevices: number;
+  tagline: string;
+  perks: string[];
+  popular?: boolean;
+  badge?: string;
+}
+
+export interface ProductBehavior {
+  persona?: string;
+  welcome?: string;
+  suggestions?: string[];
+  temperature?: number;
+  useDigest?: boolean;
+  model?: string;
+}
+
 export interface ProductItem {
   id: string;
   title: string;
+  tagline?: string;
   description: string;
   targetAudience: string;
+  problemSolved?: string;
+  whyBuy?: string;
   iconName: string;
+  glow?: 'magenta' | 'blue' | 'purple' | 'emerald';
   badge?: string;
   actionText?: string;
   price?: string;
   slug?: string;
   status?: 'published' | 'draft';
+  features?: string[];
+  howItWorks?: string[];
+  sample?: { role: 'user' | 'assistant'; text: string }[];
+  placeholder?: string;
+  plans?: ProductPlan[];
+  behavior?: ProductBehavior;
+  keys?: ProductApiKey[];
   seo?: PageSeoConfig;
 }
 

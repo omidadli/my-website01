@@ -6,11 +6,14 @@ Live: https://omidadli01.site
 
 | Doc | What it covers |
 |-----|----------------|
+| [AISTUDIO-GITHUB.md](./AISTUDIO-GITHUB.md) | رفع خطای Import/Push بین AI Studio و گیت‌هاب — Persian |
 | [DEPLOY-CHECKLIST.md](./DEPLOY-CHECKLIST.md) | One-time Cloudflare setup (D1, bindings, secrets) — Persian |
 | [CMS-DEPLOY.md](./CMS-DEPLOY.md) | The CMS API, media storage, local development — Persian |
+| [docs/API-KEYS.md](./docs/API-KEYS.md) | کلیدهای API: ۵ اسلات برای هر بخش، چرخش خودکار و ادامه‌ی طبیعی گفتگو — Persian |
 | [INTEGRATIONS.md](./INTEGRATIONS.md) | HTTP API, GitHub → site workflows, content-as-code round-trip |
 | [mcp/README.md](./mcp/README.md) | Connect the site to Claude (MCP server) |
 | [docs/CONTENT-SYSTEM-MAP.md](./docs/CONTENT-SYSTEM-MAP.md) | نقشهٔ سیستم محتوایی: URLهای واقعی، خوشه‌های موضوعی، لینک داخلی |
+| [docs/PRODUCT-PROMOTION.md](./docs/PRODUCT-PROMOTION.md) | تبلیغ بومی محصولات: هر ابزار در کدام صفحه/مقاله و با چه متنی معرفی می‌شود |
 | [content/articles/README.md](./content/articles/README.md) | خروجیِ تولید محتوای ۱۲ هفته‌ای (Batchها و وضعیت انتشار) |
 
 ```bash

@@ -3,8 +3,10 @@ import { Page, Theme } from '../types';
 import { useContent } from '../context/ContentContext';
 import { EditableText } from '../components/cms/EditableText';
 import { Mail, Phone, MapPin, Send, MessageCircle, Linkedin, Instagram, Twitter, ShieldCheck } from 'lucide-react';
-import { linkProps, pathForPage } from '../utils/router';
+import { linkProps, navigate, pathForPage, pathForProduct } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { resolveProduct, isProductPromotable } from './ProductPromo';
+import { PRODUCT_IDS } from '../data/productPromo';
 
 interface FooterProps {
   theme: Theme;
@@ -22,6 +24,10 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAdminModal }) 
   const services = safeRecordArray<NonNullable<typeof data.SERVICES[number]>>(data.SERVICES)
     .filter((service) => typeof service.id === 'string' && typeof service.title === 'string')
     .slice(0, 5);
+  // Products are promoted site-wide from the footer too — disabled ones drop out.
+  const footerProducts = PRODUCT_IDS.filter((id) => isProductPromotable(data, id)).map((id) =>
+    resolveProduct(data, id),
+  );
 
   const socials = [
     { id: 'telegram', href: personal.telegramUrl, icon: Send, label: 'تلگرام' },
@@ -35,7 +41,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAdminModal }) 
     <footer className="relative z-10 mt-10">
       <div className="max-w-6xl mx-auto px-4 sm:px-8 pb-28 sm:pb-24">
         <div className="nd-card rounded-[var(--nd-radius-panel)] p-8 sm:p-12">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-10">
             {/* Brand */}
             <div className="space-y-4 lg:col-span-1">
               <div className="flex items-center gap-3">
@@ -87,6 +93,31 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate, onOpenAdminModal }) 
                     </a>
                   </li>
                 ))}
+              </ul>
+            </nav>
+
+            {/* Products — every page links to the tools */}
+            <nav className="space-y-3">
+              <h4 className="text-xs font-black text-[color:var(--nd-ink)]">دستیارهای هوشمند</h4>
+              <ul className="space-y-2.5">
+                {footerProducts.map((p) => (
+                  <li key={p.id}>
+                    <a
+                      {...linkProps(pathForProduct(p.id), () => navigate(pathForProduct(p.id)))}
+                      className="text-xs font-bold nd-muted hover:text-[color:var(--nd-accent)] transition-colors cursor-pointer text-right"
+                    >
+                      {p.name}
+                    </a>
+                  </li>
+                ))}
+                <li>
+                  <a
+                    {...linkProps(pathForPage('products'), () => navigate(pathForPage('products')))}
+                    className="text-xs font-black text-[color:var(--nd-accent)] hover:underline transition-colors cursor-pointer text-right"
+                  >
+                    همه ابزارها و تعرفه‌ها
+                  </a>
+                </li>
               </ul>
             </nav>
 

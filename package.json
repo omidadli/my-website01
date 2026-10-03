@@ -12,15 +12,13 @@
     "content:gen": "tsx scripts/gen-default-content.mts",
     "content:export": "node scripts/sync-content.mjs export",
     "content:import": "node scripts/sync-content.mjs import",
-    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts",
+    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts && tsx scripts/tool-coins.test.ts && tsx scripts/product-promo.test.ts && tsx scripts/product-catalog-migration.test.ts && tsx scripts/ai-keys.test.ts",
     "lint:functions": "tsc -p functions/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
@@ -29,7 +27,6 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",
-    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

@@ -100,7 +100,7 @@ export const AModal: React.FC<{ open: boolean; onClose: () => void; title: strin
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" role="dialog" aria-modal>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative nd-card p-6 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[85dvh] overflow-y-auto space-y-4`}>
+      <div className={`relative nd-card p-6 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[85vh] supports-[max-height:85dvh]:max-h-[85dvh] overflow-y-auto space-y-4`}>
         <div className="flex items-center justify-between sticky -top-6 pt-0">
           <h3 className="nd-h2 text-base">{title}</h3>
           <button type="button" onClick={onClose} className="p-2 rounded-full hover:bg-[color:var(--nd-bg-soft)] cursor-pointer" aria-label="بستن">
