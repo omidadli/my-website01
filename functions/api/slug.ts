@@ -1,4 +1,5 @@
-import { Env, requireAuth, json, unauthorized } from './_shared';
+import { Env, requireAuth, json, unauthorized, runSectionAi } from './_shared';
+import { SEO_SLUG_SECTION } from '../../lib/aiKeys';
 
 /* Fallback: Persian → Finglish transliteration (no external API needed). */
 const FA_MAP: Record<string, string> = {
@@ -27,10 +28,12 @@ const cleanSlug = (input: string): string =>
     .join('-');
 
 /**
- * POST /api/slug { title } → { ok, slug, source: 'gemini' | 'translit' }
- * Uses Gemini (GEMINI_API_KEY secret) to translate the Persian title into an
- * English URL slug; falls back to transliteration when no key/error.
- * Admin-only (kept private so nobody can burn your Gemini quota).
+ * POST /api/slug { title } → { ok, slug, source: 'ai' | 'translit' }
+ * Uses the 5 API keys of the «تولید اسلاگ سئو» section (admin panel → کلیدهای
+ * API; GEMINI_API_KEY as the last resort) to translate the Persian title into an
+ * English URL slug. If a key is rate-limited the next one takes over
+ * automatically; falls back to transliteration when no key works at all.
+ * Admin-only (kept private so nobody can burn your API quota).
  */
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const user = await requireAuth(request, env);
@@ -44,61 +47,23 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
   if (!title) return json({ ok: false, error: 'عنوان خالی است.' }, { status: 400 });
 
-  const geminiKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
-  if (geminiKey) {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': geminiKey,
-    };
+  const systemPrompt =
+    'You are an SEO slug generator. Convert the Persian page/post title you receive into a short, SEO-friendly English URL slug.\n' +
+    'Rules: lowercase English words only, joined by single dashes, max 6 words, no dates, no stop words at the start, translate the meaning (do not transliterate).\n' +
+    'Respond with ONLY the slug, nothing else.';
 
-    const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite'];
-
-    for (const model of candidateModels) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-        const res = await fetch(
-          url,
-          {
-            method: 'POST',
-            headers,
-            signal: AbortSignal.timeout(8000),
-            body: JSON.stringify({
-              contents: [
-                {
-                  role: 'user',
-                  parts: [
-                    {
-                      text:
-                        `Convert this Persian page/post title into a short, SEO-friendly English URL slug.\n` +
-                        `Rules: lowercase English words only, joined by single dashes, max 6 words, no dates, no stop words at the start, translate the meaning (do not transliterate).\n` +
-                        `Respond with ONLY the slug, nothing else.\n\nTitle: ${title}`,
-                    },
-                  ],
-                },
-              ],
-              generationConfig: {
-                temperature: 0.1,
-                maxOutputTokens: 150,
-                thinkingConfig: {
-                  thinkingBudget: 0,
-                },
-              },
-            }),
-          }
-        );
-        if (res.ok) {
-          const data: any = await res.json();
-          const parts = data?.candidates?.[0]?.content?.parts || [];
-          const textPart = parts.find((p: any) => p.text && !p.thought) || parts[0];
-          const text = textPart?.text || '';
-          const slug = cleanSlug(text);
-          if (slug) return json({ ok: true, slug, source: 'gemini' });
-        }
-      } catch {
-        /* try next model */
-      }
-    }
-  }
+  // 5 configured keys, automatic rotation on limit/error (see lib/aiKeys.ts).
+  const ai = await runSectionAi(env, {
+    sectionId: SEO_SLUG_SECTION,
+    systemPrompt,
+    history: [],
+    question: title,
+    temperature: 0.1,
+    maxOutputTokens: 150,
+    remember: false,
+  });
+  const aiSlug = cleanSlug(String(ai.text || '').replace(/^["'`\s]+|["'`\s]+$/g, ''));
+  if (aiSlug) return json({ ok: true, slug: aiSlug, source: 'ai', key: { slot: ai.usedSlot, label: ai.usedKeyLabel } });
 
   return json({ ok: true, slug: cleanSlug(transliterate(title)) || 'page', source: 'translit' });
 };

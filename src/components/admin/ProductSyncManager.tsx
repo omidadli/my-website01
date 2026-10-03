@@ -24,6 +24,7 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { ProductItem, ProductApiKey, ProductPlan } from '../../types';
+import { createDefaultSectionKeys, KEYS_PER_SECTION } from '../../../lib/aiKeys';
 import { api } from '../../services/api';
 import { ACard, ASectionTitle, ALabel, AInput, ATextarea, ASelect, AToggle, ABadge } from './ui';
 
@@ -45,15 +46,13 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
   const [envKeyPresent, setEnvKeyPresent] = useState(false);
   const [loadingSettings, setLoadingSettings] = useState(false);
 
-  // Form for 3 keys
-  const [keysForm, setKeysForm] = useState<ProductApiKey[]>([
-    { id: 'key-1', label: 'کلید اصلی (Primary)', provider: 'gemini', baseUrl: '', model: 'gemini-2.5-flash', apiKey: '', enabled: true },
-    { id: 'key-2', label: 'کلید پشتیبان اول (Backup 1)', provider: 'gemini', baseUrl: '', model: 'gemini-flash-latest', apiKey: '', enabled: true },
-    { id: 'key-3', label: 'کلید پشتیبان دوم (Backup 2)', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '', enabled: true },
-  ]);
+  // Form for the 5 key slots of the selected product
+  const [keysForm, setKeysForm] = useState<ProductApiKey[]>(
+    createDefaultSectionKeys('business-therapist').map((k) => ({ ...k }))
+  );
   const [savingKeys, setSavingKeys] = useState(false);
 
-  // Test status per key slot: 0, 1, 2
+  // Test status per key slot (0 … 4)
   const [testResults, setTestResults] = useState<Record<number, { busy: boolean; ok?: boolean; latencyMs?: number; model?: string; reply?: string; error?: string }>>({});
   const [testingAll, setTestingAll] = useState(false);
 
@@ -100,11 +99,7 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
   useEffect(() => {
     if (!currentProduct) return;
     const setting = toolSettings.find((s) => s.productId === currentProduct.id);
-    const defaults: ProductApiKey[] = [
-      { id: 'key-1', label: 'کلید اصلی (Primary)', provider: 'gemini', baseUrl: '', model: 'gemini-2.5-flash', apiKey: '', enabled: true },
-      { id: 'key-2', label: 'کلید پشتیبان اول (Backup 1)', provider: 'gemini', baseUrl: '', model: 'gemini-flash-latest', apiKey: '', enabled: true },
-      { id: 'key-3', label: 'کلید پشتیبان دوم (Backup 2)', provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', apiKey: '', enabled: true },
-    ];
+    const defaults: ProductApiKey[] = createDefaultSectionKeys(currentProduct.id).map((k) => ({ ...k }));
 
     if (setting?.keys && Array.isArray(setting.keys) && setting.keys.length > 0) {
       const filled = defaults.map((def, i) => {
@@ -139,7 +134,7 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
     }
   };
 
-  // Save the 3 keys to server
+  // Save the 5 keys to server
   const handleSaveKeys = async () => {
     if (!currentProduct) return;
     setSavingKeys(true);
@@ -158,14 +153,14 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
     setSavingKeys(false);
 
     if (res.ok) {
-      onToast(`اتصال ۳ کلید API برای «${currentProduct.title}» با موفقیت ذخیره شد.`);
+      onToast(`اتصال ۵ کلید API برای «${currentProduct.title}» با موفقیت ذخیره شد.`);
       await loadSettings();
     } else {
       onToast(res.error || 'خطا در ذخیره کلیدها');
     }
   };
 
-  // Test a single key slot (0, 1, or 2)
+  // Test a single key slot (0 … 4)
   const handleTestKey = async (slotIndex: number) => {
     if (!currentProduct) return;
     const target = keysForm[slotIndex];
@@ -201,10 +196,10 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
     }
   };
 
-  // Test all 3 keys in parallel
+  // Test all 5 key slots
   const handleTestAllKeys = async () => {
     setTestingAll(true);
-    await Promise.all([handleTestKey(0), handleTestKey(1), handleTestKey(2)]);
+    await Promise.all(Array.from({ length: KEYS_PER_SECTION }, (_, i) => handleTestKey(i)));
     setTestingAll(false);
   };
 
@@ -595,11 +590,11 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5 text-emerald-500" />
                 <h4 className="text-sm font-black text-[color:var(--nd-ink)]">
-                  معماری اتصال ۳ کلید API با سیستم Failover خودکار
+                  معماری اتصال ۵ کلید API با سیستم Failover خودکار
                 </h4>
               </div>
               <p className="text-xs nd-muted leading-relaxed">
-                برای محصول «{currentProduct.title}» ۳ کلید مستقل با اولویت ۱ (اصلی)، ۲ (پشتیبان اول) و ۳ (پشتیبان دوم) تعریف کنید. در هنگام گفتگوی کاربر با این محصول، سیستم ابتدا از کلید ۱ استفاده می‌کند. اگر کلید ۱ به سقف مصرف (Rate Limit 429) برسد یا خطای شبکه رخ دهد، سیستم به‌صورت آنی و خودکار روی کلید ۲ و سپس کلید ۳ سوئیچ می‌کند تا کاربر هیچ‌گاه افت سرعت یا قطعی را حس نکند.
+                برای محصول «{currentProduct.title}» ۵ کلید مستقل با اولویت ۱ (اصلی) تا ۵ (پشتیبان چهارم) تعریف کنید. در گفتگوی کاربر، سیستم ابتدا از کلیدِ همان گفتگو استفاده می‌کند؛ اگر کلید به سقف مصرف (Rate Limit 429) بخورد یا خطای شبکه رخ دهد، خودکار روی کلید سالم بعدی سوئیچ می‌کند — و پیش از پاسخ، چت‌های قبلی همان گفتگو را مرور می‌کند تا ادامه‌ی مکالمه طبیعی بماند. مدیریت متمرکز همه‌ی بخش‌ها (این محصول، دستیار سایت و اسلاگ سئو) در تب «کلیدهای API» است.
               </p>
               {envKeyPresent && (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-700 text-[11px] font-bold">
@@ -608,15 +603,17 @@ export const ProductSyncManager: React.FC<Props> = ({ products = [], data, updat
               )}
             </div>
 
-            {/* 3 Keys Grid */}
+            {/* 5 key slots */}
             <div className="space-y-4">
               {keysForm.map((k, slotIdx) => {
                 const priorityLabels = [
                   { title: 'کلید ۱ (اصلی - Primary)', desc: 'اولویت اول در کلیه درخواست‌های کاربران', badge: 'اولویت ۱', tone: 'accent' as const },
-                  { title: 'کلید ۲ (پشتیبان اول - Secondary)', desc: 'پشتیبان فوری در صورت خطای ۴۲۹ یا اتمام سهمیه کلید ۱', badge: 'اولویت ۲', tone: 'ok' as const },
-                  { title: 'کلید ۳ (پشتیبان دوم - Backup 2)', desc: 'پشتیبان اضطراری نهایی برای پایداری ۱۰۰ درصدی', badge: 'اولویت ۳', tone: 'warn' as const },
+                  { title: 'کلید ۲ (پشتیبان اول - Secondary)', desc: 'جایگزین فوری در صورت خطای ۴۲۹ یا اتمام سهمیه کلید ۱', badge: 'اولویت ۲', tone: 'ok' as const },
+                  { title: 'کلید ۳ (پشتیبان دوم - Backup 2)', desc: 'سومین گزینه‌ی چرخش خودکار کلیدها', badge: 'اولویت ۳', tone: 'warn' as const },
+                  { title: 'کلید ۴ (پشتیبان سوم - Backup 3)', desc: 'چهارمین گزینه؛ توصیه می‌شود روی سرویس‌دهنده‌ی دیگری باشد', badge: 'اولویت ۴', tone: 'warn' as const },
+                  { title: 'کلید ۵ (پشتیبان چهارم - Backup 4)', desc: 'آخرین خط دفاعی پیش از کلید محیطی', badge: 'اولویت ۵', tone: 'warn' as const },
                 ];
-                const meta = priorityLabels[slotIdx];
+                const meta = priorityLabels[slotIdx] || { title: `کلید ${slotIdx + 1}`, desc: 'اسلات پشتیبان', badge: `اولویت ${slotIdx + 1}`, tone: 'warn' as const };
                 const test = testResults[slotIdx];
 
                 return (

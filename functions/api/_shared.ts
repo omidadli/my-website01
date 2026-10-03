@@ -6,6 +6,21 @@
  *  - Mutating endpoints require `Authorization: Bearer <token>`.
  */
 
+import {
+  AI_SECTIONS,
+  KEYS_PER_SECTION,
+  normalizeStoredKeys,
+  buildSectionStatus,
+  sanitizeTurns,
+  type AiAttempt,
+  type AiKeyEntry,
+  type AiKeyState,
+  type AiKeyHealth,
+  type ChatTurn,
+  type SectionStatus,
+} from '../../lib/aiKeys';
+import { runSectionAiWithStore, type AiKeyStore, type RunSectionAiArgs, type RunSectionAiResult } from '../../lib/aiSection';
+
 export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
@@ -13,6 +28,8 @@ export interface Env {
   ADMIN_PASSWORD: string;
   AUTH_SECRET: string;
   GEMINI_API_KEY?: string;
+  /** optional extra env fallbacks (5 key slots per section live in the admin panel) */
+  OPENAI_API_KEY?: string;
 }
 
 export interface Ctx {
@@ -342,6 +359,78 @@ const CORE_TABLE_STATEMENTS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_act_user_time ON user_activities (user_id, created_at)`,
+  // ---- AI key management (5 slots per section) --------------------------------
+  // Per-section API keys (site-assistant, seo-slug, and the 4 paid products).
+  // Keys are admin-only and never returned in full (masked only).
+  `CREATE TABLE IF NOT EXISTS ai_section_keys (
+    section_id TEXT PRIMARY KEY,
+    keys_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  )`,
+  // Health of every slot: healthy / rate_limited / invalid / error + cooldown.
+  `CREATE TABLE IF NOT EXISTS ai_key_state (
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unused',
+    cooldown_until TEXT DEFAULT '',
+    last_error TEXT DEFAULT '',
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT DEFAULT '',
+    last_latency_ms INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    rate_limit_count INTEGER NOT NULL DEFAULT 0,
+    rotation_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (section_id, key_id)
+  )`,
+  // Which key is currently answering a given conversation (sticky key).
+  `CREATE TABLE IF NOT EXISTS ai_chat_session (
+    session_id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    sticky_key_id TEXT DEFAULT '',
+    turns INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  )`,
+  // Server-side chat memory: lets the AI review earlier messages of the same
+  // conversation (even after a key switch) and continue naturally.
+  `CREATE TABLE IF NOT EXISTS ai_chat_memory (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_memory_session ON ai_chat_memory (session_id, created_at)`,
+  // Audit trail of key attempts (limit hits, rotation, recovery) for the admin panel.
+  `CREATE TABLE IF NOT EXISTS ai_key_events (
+    id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    status INTEGER DEFAULT 0,
+    message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_key_events_time ON ai_key_events (created_at)`,
+  // Legacy per-tool settings table (kept for migration of pre-5-slot installs).
+  `CREATE TABLE IF NOT EXISTS tool_settings (
+    product_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 'gemini',
+    base_url TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    api_key TEXT DEFAULT '',
+    updated_at TEXT NOT NULL
+  )`,
+];
+
+// Columns added after a table first shipped (ALTER fails when it already exists).
+const CORE_TABLE_MIGRATIONS = [
+  `ALTER TABLE comments ADD COLUMN created_at TEXT DEFAULT ''`,
+  `ALTER TABLE tool_settings ADD COLUMN keys_json TEXT DEFAULT ''`,
+  `ALTER TABLE chat_messages ADD COLUMN key_slot INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE chat_messages ADD COLUMN session_id TEXT DEFAULT ''`,
 ];
 
 let coreTablesReady: Promise<void> | null = null;
@@ -350,11 +439,12 @@ export const ensureCoreTables = (env: Env): Promise<void> => {
   if (!coreTablesReady) {
     coreTablesReady = (async () => {
       await env.DB.batch(CORE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)));
-      // Migration 0002 for databases created before `comments.created_at` existed (no-op otherwise).
-      try {
-        await env.DB.prepare(`ALTER TABLE comments ADD COLUMN created_at TEXT DEFAULT ''`).run();
-      } catch {
-        /* column already exists */
+      for (const sql of CORE_TABLE_MIGRATIONS) {
+        try {
+          await env.DB.prepare(sql).run();
+        } catch {
+          /* column already exists */
+        }
       }
     })().catch((e) => {
       coreTablesReady = null; // allow a retry on the next request
@@ -381,3 +471,245 @@ export const CONTENT_TOO_LARGE_MESSAGE =
   'حجم محتوا بیش از حد مجاز (حدود ۱.۹ مگابایت) است. تصاویر را به‌جای درج مستقیم (base64) از «کتابخانهٔ رسانه» آپلود کنید و متن‌های خیلی بلند را کوتاه کنید.';
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB per media file
 export const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml', 'image/avif', 'application/pdf'];
+
+/* =========================================================================
+ * AI key management — 5 slots per section, health, auto-rotation & memory.
+ * Shared by the site assistant (chat.ts), the SEO slug generator (slug.ts) and
+ * the 4 paid products (tools.ts). The pure logic lives in lib/aiKeys.ts; this
+ * block is the D1 persistence + the high-level "run this section" helper.
+ * ========================================================================= */
+
+const makeId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${randomHex(4)}`;
+
+const toMs = (iso: string | null | undefined): number => {
+  const t = Date.parse(String(iso || ''));
+  return Number.isFinite(t) ? t : 0;
+};
+const toIso = (ms: number): string => (ms > 0 ? new Date(ms).toISOString() : '');
+
+/** Read the (up to) 5 keys of one section; migrates legacy per-tool settings on first read. */
+export const loadSectionKeys = async (env: Env, sectionId: string): Promise<AiKeyEntry[]> => {
+  let raw = '';
+  try {
+    const row = await env.DB.prepare(`SELECT keys_json FROM ai_section_keys WHERE section_id = ?1`).bind(sectionId).first<{ keys_json: string }>();
+    raw = row?.keys_json || '';
+  } catch {
+    /* table missing — fall through to legacy */
+  }
+  if (raw) return normalizeStoredKeys(sectionId, raw);
+
+  // Legacy installs kept one/four keys per PRODUCT in tool_settings.
+  if (AI_SECTIONS.some((s) => s.id === sectionId && s.kind === 'product')) {
+    try {
+      const legacy = await env.DB.prepare(`SELECT * FROM tool_settings WHERE product_id = ?1`).bind(sectionId).first<any>();
+      const legacyJson = legacy?.keys_json || '';
+      const legacySingle = legacy && (legacy.api_key || legacy.provider || legacy.model)
+        ? [{ id: 'key-1', label: 'کلید اصلی (Primary)', provider: legacy.provider, baseUrl: legacy.base_url, model: legacy.model, apiKey: legacy.api_key }]
+        : [];
+      const merged = normalizeStoredKeys(sectionId, legacyJson || legacySingle);
+      if (legacyJson || legacySingle.length) await saveSectionKeys(env, sectionId, merged).catch(() => {});
+      return merged;
+    } catch {
+      /* ignore */
+    }
+  }
+  return normalizeStoredKeys(sectionId, []);
+};
+
+/** Store the 5 keys of a section (only apiKey lives here — never in the CMS blob). */
+export const saveSectionKeys = async (env: Env, sectionId: string, keys: AiKeyEntry[]): Promise<void> => {
+  const keysJson = JSON.stringify((keys || []).slice(0, KEYS_PER_SECTION));
+  await env.DB.prepare(
+    `INSERT INTO ai_section_keys (section_id, keys_json, updated_at) VALUES (?1, ?2, ?3)
+     ON CONFLICT(section_id) DO UPDATE SET keys_json = excluded.keys_json, updated_at = excluded.updated_at`
+  )
+    .bind(sectionId, keysJson, new Date().toISOString())
+    .run();
+};
+
+/** Health/cooldown of every slot of a section. */
+export const loadKeyStates = async (env: Env, sectionId: string): Promise<Record<string, AiKeyState>> => {
+  const out: Record<string, AiKeyState> = {};
+  try {
+    const rows = await env.DB.prepare(`SELECT * FROM ai_key_state WHERE section_id = ?1`).bind(sectionId).all<any>();
+    for (const r of rows.results || []) {
+      out[r.key_id] = {
+        keyId: String(r.key_id),
+        status: (r.status || 'unused') as AiKeyHealth,
+        cooldownUntil: toMs(r.cooldown_until),
+        lastError: String(r.last_error || ''),
+        lastStatusCode: Number(r.last_status || 0),
+        lastUsedAt: toMs(r.last_used_at),
+        lastLatencyMs: Number(r.last_latency_ms || 0),
+        successCount: Number(r.success_count || 0),
+        failCount: Number(r.fail_count || 0),
+        rateLimitCount: Number(r.rate_limit_count || 0),
+        rotationCount: Number(r.rotation_count || 0),
+      };
+    }
+  } catch {
+    /* table missing — fresh state */
+  }
+  return out;
+};
+
+/** Persist key health (called after every attempt so the admin panel is always fresh). */
+export const saveKeyStates = async (env: Env, sectionId: string, states: AiKeyState[]): Promise<void> => {
+  const list = (states || []).slice(0, KEYS_PER_SECTION + 1);
+  if (!list.length) return;
+  const now = new Date().toISOString();
+  const stmts = list.map((s) =>
+    env.DB.prepare(
+      `INSERT INTO ai_key_state (section_id, key_id, status, cooldown_until, last_error, last_status, last_used_at, last_latency_ms, success_count, fail_count, rate_limit_count, rotation_count, updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+       ON CONFLICT(section_id, key_id) DO UPDATE SET
+         status = excluded.status, cooldown_until = excluded.cooldown_until, last_error = excluded.last_error,
+         last_status = excluded.last_status, last_used_at = excluded.last_used_at, last_latency_ms = excluded.last_latency_ms,
+         success_count = excluded.success_count, fail_count = excluded.fail_count,
+         rate_limit_count = excluded.rate_limit_count, rotation_count = excluded.rotation_count, updated_at = excluded.updated_at`
+    ).bind(
+      sectionId,
+      s.keyId,
+      s.status,
+      toIso(s.cooldownUntil),
+      String(s.lastError || '').slice(0, 400),
+      s.lastStatusCode || 0,
+      toIso(s.lastUsedAt),
+      s.lastLatencyMs || 0,
+      s.successCount || 0,
+      s.failCount || 0,
+      s.rateLimitCount || 0,
+      s.rotationCount || 0,
+      now
+    )
+  );
+  await env.DB.batch(stmts);
+};
+
+/** Audit trail: failed attempts + key hand-offs (admin «رویدادهای کلیدها»). */
+export const logKeyEvents = async (env: Env, sectionId: string, attempts: AiAttempt[]): Promise<void> => {
+  const interesting = (attempts || []).filter((a) => !a.ok || a.handoff);
+  if (!interesting.length) return;
+  const now = new Date().toISOString();
+  const stmts = interesting.map((a) =>
+    env.DB.prepare(`INSERT INTO ai_key_events (id, section_id, key_id, code, status, message, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)`).bind(
+      makeId('ake'),
+      sectionId,
+      a.keyId,
+      a.ok ? 'handoff' : a.code || 'unknown',
+      a.status || 0,
+      String(a.error || (a.handoff ? 'ادامه‌ی گفتگو روی کلید پشتیبان' : '')).slice(0, 300),
+      now
+    )
+  );
+  await env.DB.batch(stmts);
+};
+
+export const listKeyEvents = async (env: Env, limit = 60): Promise<any[]> => {
+  try {
+    const rows = await env.DB.prepare(`SELECT * FROM ai_key_events ORDER BY created_at DESC LIMIT ?1`).bind(Math.max(1, Math.min(200, limit))).all();
+    return rows.results || [];
+  } catch {
+    return [];
+  }
+};
+
+/** Append conversation turns to the server-side memory (+ remember the sticky key). */
+export const rememberChatTurns = async (env: Env, args: { sessionId: string; sectionId: string; turns: ChatTurn[]; stickyKeyId?: string }): Promise<void> => {
+  const sessionId = String(args.sessionId || '').slice(0, 120);
+  if (!sessionId) return;
+  const now = new Date().toISOString();
+  const turns = sanitizeTurns(args.turns, 8);
+  const stmts = turns.map((t) =>
+    env.DB.prepare(`INSERT INTO ai_chat_memory (id, session_id, section_id, role, content, created_at) VALUES (?1,?2,?3,?4,?5,?6)`).bind(
+      makeId('aim'),
+      sessionId,
+      args.sectionId,
+      t.role,
+      t.content.slice(0, 2000),
+      now
+    )
+  );
+  stmts.push(
+    env.DB.prepare(
+      `INSERT INTO ai_chat_session (session_id, section_id, sticky_key_id, turns, updated_at) VALUES (?1,?2,?3,?4,?5)
+       ON CONFLICT(session_id) DO UPDATE SET section_id = excluded.section_id, sticky_key_id = excluded.sticky_key_id, turns = ai_chat_session.turns + 1, updated_at = excluded.updated_at`
+    ).bind(sessionId, args.sectionId, args.stickyKeyId || '', turns.length, now)
+  );
+  // keep the memory bounded (80 newest turns per conversation)
+  stmts.push(
+    env.DB.prepare(
+      `DELETE FROM ai_chat_memory WHERE session_id = ?1 AND id NOT IN (
+         SELECT id FROM ai_chat_memory WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 80
+       )`
+    ).bind(sessionId)
+  );
+  await env.DB.batch(stmts);
+};
+
+/** The earlier turns of this conversation (used as the AI's "memory" before answering). */
+export const recallChatTurns = async (env: Env, args: { sessionId: string; limit?: number }): Promise<ChatTurn[]> => {
+  const sessionId = String(args.sessionId || '').slice(0, 120);
+  if (!sessionId) return [];
+  const limit = Math.max(2, Math.min(80, args.limit || 40));
+  try {
+    const rows = await env.DB.prepare(`SELECT role, content FROM ai_chat_memory WHERE session_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2`)
+      .bind(sessionId, limit)
+      .all<{ role: string; content: string }>();
+    return sanitizeTurns((rows.results || []).reverse().map((r) => ({ role: r.role, content: r.content })), limit);
+  } catch {
+    return [];
+  }
+};
+
+/** Which key last answered this conversation (so we do not switch needlessly). */
+export const sessionStickyKey = async (env: Env, sessionId: string): Promise<string> => {
+  try {
+    const row = await env.DB.prepare(`SELECT sticky_key_id FROM ai_chat_session WHERE session_id = ?1`).bind(sessionId).first<{ sticky_key_id: string }>();
+    return String(row?.sticky_key_id || '');
+  } catch {
+    return '';
+  }
+};
+
+/** Reset the health/cooldown of one key (or the whole section) — admin action. */
+export const resetKeyStates = async (env: Env, sectionId: string, keyId?: string): Promise<void> => {
+  if (keyId) {
+    await env.DB.prepare(`DELETE FROM ai_key_state WHERE section_id = ?1 AND key_id = ?2`).bind(sectionId, keyId).run();
+    return;
+  }
+  await env.DB.prepare(`DELETE FROM ai_key_state WHERE section_id = ?1`).bind(sectionId).run();
+};
+
+/** Status of every AI section (admin panel «کلیدهای API»). */
+export const loadAllSectionStatus = async (env: Env): Promise<SectionStatus[]> => {
+  const envKeyPresent = !!(env.GEMINI_API_KEY || '').trim();
+  const items: SectionStatus[] = [];
+  for (const section of AI_SECTIONS) {
+    const [keys, states] = await Promise.all([loadSectionKeys(env, section.id), loadKeyStates(env, section.id)]);
+    items.push(buildSectionStatus({ sectionId: section.id, keys, states, envKeyPresent }));
+  }
+  return items;
+};
+
+/** The D1-backed store used in production (Cloudflare Pages Functions). */
+export const d1KeyStore = (env: Env): AiKeyStore => ({
+  loadKeys: (sectionId) => loadSectionKeys(env, sectionId),
+  loadStates: (sectionId) => loadKeyStates(env, sectionId),
+  saveStates: (sectionId, states) => saveKeyStates(env, sectionId, states),
+  saveKeys: (sectionId, keys) => saveSectionKeys(env, sectionId, keys),
+  recall: (sessionId) => recallChatTurns(env, { sessionId }),
+  stickyKey: (sessionId) => sessionStickyKey(env, sessionId),
+  remember: (args) => rememberChatTurns(env, args),
+  logEvents: (sectionId, attempts) => logKeyEvents(env, sectionId, attempts),
+  envFallbackKey: (env.GEMINI_API_KEY || '').trim(),
+});
+
+/** Runs one AI section end-to-end (5-key rotation + conversation memory). */
+export const runSectionAi = async (env: Env, args: RunSectionAiArgs): Promise<RunSectionAiResult> => {
+  await ensureCoreTablesSafe(env);
+  return runSectionAiWithStore(d1KeyStore(env), args);
+};
+
+export { derivedSessionId } from '../../lib/aiSection';
+export type { RunSectionAiArgs, RunSectionAiResult } from '../../lib/aiSection';

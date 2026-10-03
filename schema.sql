@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   question TEXT NOT NULL,
   answer TEXT NOT NULL,
   mode TEXT DEFAULT 'local',
+  -- Which of the 5 key slots answered (0 = local answer / no key), and the
+  -- conversation id used to stitch the server-side chat memory together.
+  key_slot INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -228,3 +232,64 @@ CREATE TABLE IF NOT EXISTS tool_settings (
   api_key TEXT DEFAULT '',
   updated_at TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- AI sections: 5 API key slots per section (admin panel tab «کلیدهای API»),
+-- per-slot health/cooldown, server-side chat memory so a key rotation does not
+-- break the conversation, and the rotation audit log.
+-- (Same statements as migrations/0005_ai_section_keys.sql — kept in sync by hand.)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ai_section_keys (
+    section_id TEXT PRIMARY KEY,
+    keys_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+
+CREATE TABLE IF NOT EXISTS ai_key_state (
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unused',
+    cooldown_until TEXT DEFAULT '',
+    last_error TEXT DEFAULT '',
+    last_status INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT DEFAULT '',
+    last_latency_ms INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    rate_limit_count INTEGER NOT NULL DEFAULT 0,
+    rotation_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (section_id, key_id)
+  );
+
+CREATE TABLE IF NOT EXISTS ai_chat_session (
+    session_id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    sticky_key_id TEXT DEFAULT '',
+    turns INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  );
+
+CREATE TABLE IF NOT EXISTS ai_chat_memory (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+CREATE INDEX IF NOT EXISTS idx_ai_memory_session ON ai_chat_memory (session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_key_events (
+    id TEXT PRIMARY KEY,
+    section_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    status INTEGER DEFAULT 0,
+    message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+CREATE INDEX IF NOT EXISTS idx_ai_key_events_time ON ai_key_events (created_at);

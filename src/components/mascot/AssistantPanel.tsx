@@ -9,7 +9,7 @@ import { SoulActSpec, applyAIRawAnswer, soulGetContext, soulSnapshotLine } from 
 import { MascotFigure } from './MascotAvatar';
 import { usePreservedState } from '../../utils/statePreserver';
 import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
-import { chatStorage, StoredChatMsg } from '../../utils/chatStorage';
+import { chatStorage, StoredChatMsg, getChatSessionId, resetChatSession } from '../../utils/chatStorage';
 import { keyboardAudio } from '../../utils/keyboardAudio';
 import { isPlainLeftClick, legacyHashToPath, navigate } from '../../utils/router';
 
@@ -128,6 +128,7 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
 
   const clearChatHistory = useCallback(() => {
     chatStorage.clearMessages();
+    resetChatSession('site-assistant'); // a fresh conversation gets a fresh memory
     setMessages(cfg?.greeting ? [{ role: 'model', content: cfg.greeting }] : []);
     mascotAct('wave');
   }, [cfg?.greeting, setMessages]);
@@ -229,7 +230,10 @@ export const AssistantPanel: React.FC<AssistantPanelProps> = ({ theme, open, onC
         page: ctx.page,
         daypart: ctx.daypart,
         bodyState: soulSnapshotLine(), // behavioral continuity for the soul
-      }
+      },
+      // stable conversation id → the server keeps the memory of this chat and
+      // reviews it before every answer (even after switching API keys)
+      getChatSessionId('site-assistant')
     );
     setBusy(false);
     if (res.ok && res.answer) {
