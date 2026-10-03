@@ -41,6 +41,7 @@ import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
 import { productsForPage } from '../data/productPromo';
 import { imageFallback } from '../utils/imageFallback';
 import { ProfilePhoto } from '../components/ProfilePhoto';
+import { servicesInTab } from '../utils/servicePath';
 import { responsiveImageProps } from '../utils/responsiveImage';
 
 interface HomePageProps {
@@ -224,21 +225,18 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
     start: {
       label: 'شروع کنیم',
       tagline: 'هنوز آنلاین شروع نکرده‌اید؟ از صفر کنارتان هستم.',
-      serviceIds: ['web-app-design', 'ui-ux-design', 'social-media-strategy'],
       ctaText: 'ببینیم دقیقاً چی نیاز داری',
       icon: Sparkles,
     },
     sell: {
       label: 'بهتر بفروشیم',
       tagline: 'آنلاین هستید، اما فروش آن چیزی نیست که باید باشد؟ با هم پیدا می‌کنیم مشکل کجاست.',
-      serviceIds: ['performance-marketing', 'cro-optimization', 'tracking-analytics'],
       ctaText: 'ببینیم دقیقاً چی نیاز داری',
       icon: Target,
     },
     grow: {
       label: 'رشد کنیم',
       tagline: 'فروش دارید؟ حالا وقت مقیاس‌پذیر کردن و رشد پایدار است.',
-      serviceIds: ['seo-growth', 'growth-strategy', 'marketing-automation', 'retention-strategy'],
       ctaText: 'ببینیم دقیقاً چی نیاز داری',
       icon: Rocket,
     },
@@ -657,7 +655,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
       case 'SERVICES_TABS':
       case 'SERVICES': {
         const currentTab = tabConfig[activeServiceTab];
-        const currentServices = services.filter((s) => (currentTab.serviceIds as readonly string[]).includes(s.id));
+        const currentServices = servicesInTab(services, activeServiceTab);
         const TabIcon = currentTab.icon;
         return (
           <section id="services-tabs" className="py-14 sm:py-20 space-y-10">

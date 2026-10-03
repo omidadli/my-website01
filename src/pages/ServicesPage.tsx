@@ -9,6 +9,7 @@ import { FAQSection } from '../components/FAQSection';
 import { CheckCircle2, ArrowUpLeft, Sparkles, Target, Rocket, MessageCircle, PackageCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
+import { servicesInTab } from '../utils/servicePath';
 import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
 import { PRODUCT_BY_PATH_TAB, TOPIC_BY_PATH_TAB, productForService, topicForService } from '../data/productPromo';
 
@@ -33,12 +34,7 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ theme, onNavigate })
     { id: 'grow' as const, label: 'رشد کنیم', sublabel: 'سئو، استراتژی رشد و اتوماسیون', icon: Rocket },
   ];
 
-  const IDS: Record<typeof activeTab, string[]> = {
-    start: ['web-app-design', 'ui-ux-design', 'social-media-strategy'],
-    sell: ['performance-marketing', 'cro-optimization', 'tracking-analytics'],
-    grow: ['seo-growth', 'growth-strategy', 'marketing-automation', 'retention-strategy'],
-  };
-  const filtered = servicesList.filter((s) => IDS[activeTab].includes(s.id));
+  const filtered = servicesInTab(servicesList, activeTab);
 
   return (
     <div className="space-y-14 py-4">

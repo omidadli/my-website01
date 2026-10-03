@@ -19,7 +19,8 @@ import {
   BlogPost
 } from '../types';
 import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
-import { migratePersonalInfo, reconcileGlobalSeo, refreshSectionLabels } from '../utils/contentMigrations';
+import { migratePersonalInfo, reconcileGlobalSeo, reconcileSections } from '../utils/contentMigrations';
+import { withServicePaths } from '../utils/servicePath';
 import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
 import {
@@ -360,7 +361,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           // Older browser caches can hold a product collection from a previous
           // catalog. Reconcile it before first render, not only after cloud sync.
           PRODUCTS: reconcileProductCatalog(initialData.PRODUCTS, parsed.PRODUCTS),
-          SERVICES: initialData.SERVICES,
+          SERVICES: withServicePaths(initialData.SERVICES),
           STATS: initialData.STATS,
           TIMELINE: initialData.TIMELINE,
           HOW_I_WORK_STEPS: initialData.HOW_I_WORK_STEPS,
@@ -451,11 +452,15 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // The cloud snapshot is authoritative for editable content, but an old
       // product catalog must not resurrect products unsupported by this build.
       PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, merged.PRODUCTS),
+      SERVICES: Array.isArray(merged.SERVICES) ? withServicePaths(merged.SERVICES) : merged.SERVICES,
       PERSONAL_INFO: migratePersonalInfo({ ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO }, defaultContentState.PERSONAL_INFO),
       GLOBAL_SEO: reconcileGlobalSeo(defaultGlobalSeo, merged.GLOBAL_SEO),
+      // A section list saved before a section shipped would hide it forever (e.g. the home «AI_TOOLS» showcase).
       PAGE_SECTIONS: {
         ...merged.PAGE_SECTIONS,
-        home: refreshSectionLabels(merged.PAGE_SECTIONS?.home, defaultPageSections.home),
+        ...Object.fromEntries(
+          Object.keys(defaultPageSections).map((page) => [page, reconcileSections(merged.PAGE_SECTIONS?.[page], defaultPageSections[page])]),
+        ),
       },
       AI_TOOLS_CONFIG: {
         ...initialData.AI_TOOLS_CONFIG,

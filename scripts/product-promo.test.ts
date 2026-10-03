@@ -30,6 +30,7 @@ import { AI_TOOLS } from '../src/data/tools';
 import { BLOG_POSTS } from '../src/data/content';
 import { SERVICES } from '../src/data/contentCore';
 import { defaultPageSections } from '../src/context/ContentContext';
+import { reconcileSections } from '../src/utils/contentMigrations';
 
 // ---- every product id in the placement tables really exists ----
 const knownIds = new Set(AI_TOOLS.map((t) => t.id));
@@ -146,10 +147,16 @@ assert.ok(
 const siteContent: any = JSON.parse(
   readFileSync(new URL('../content/site-content.json', import.meta.url), 'utf8'),
 );
-const jsonHomeNames = ((siteContent.PAGE_SECTIONS && siteContent.PAGE_SECTIONS.home) || []).map(
-  (s: any) => s.name,
+// The export mirrors the LIVE database, and a section list saved before AI_TOOLS shipped does not carry it
+// (production's home page had no showcase for exactly that reason). So the guarantee is not "the export file lists
+// it" — it is "whatever list was saved, the home page still gets the showcase, in the right place".
+const exportedHome = (siteContent.PAGE_SECTIONS && siteContent.PAGE_SECTIONS.home) || [];
+const healedHomeNames = reconcileSections(exportedHome, defaultPageSections.home).map((s: any) => s.name);
+assert.ok(healedHomeNames.includes('AI_TOOLS'), 'a stored home section list is healed to include the AI_TOOLS showcase');
+assert.ok(
+  healedHomeNames.indexOf('AI_TOOLS') > healedHomeNames.indexOf('INSIGHTS') && healedHomeNames.indexOf('AI_TOOLS') < healedHomeNames.indexOf('FAQ'),
+  'the healed list keeps the showcase right after the fresh-writing block, before FAQ',
 );
-assert.ok(jsonHomeNames.includes('AI_TOOLS'), 'content/site-content.json export carries the AI_TOOLS home section');
 
 // ---- coverage: across the real corpus every product is promoted ----
 

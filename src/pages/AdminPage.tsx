@@ -85,6 +85,11 @@ const SERVICE_FIELDS: FieldDef[] = [
   { key: 'title', label: 'عنوان خدمت' },
   { key: 'seo', label: 'سئو', type: 'seo', urlPrefix: 'services' },
   { key: 'titleEn', label: 'عنوان انگلیسی', dir: 'ltr' },
+  { key: 'pathCategory', label: 'نمایش در کدام تب؟', type: 'select', options: [
+    { value: 'start', label: 'شروع کنیم — طراحی سایت، تجربه کاربری و شبکه‌های اجتماعی' },
+    { value: 'sell', label: 'بهتر بفروشیم — تبلیغات، افزایش نرخ تبدیل و رصد مشتری' },
+    { value: 'grow', label: 'رشد کنیم — سئو، استراتژی رشد و اتوماسیون' },
+  ] },
   { key: 'iconName', label: 'نام آیکون', dir: 'ltr', hint: 'code / sparkles / target / chart …' },
   { key: 'shortDesc', label: 'توضیح کوتاه', type: 'textarea', rows: 2 },
   { key: 'fullDesc', label: 'توضیح کامل', type: 'textarea', rows: 4 },
@@ -711,7 +716,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
               desc="هر خدمت: توضیحات، ویژگی‌ها، پکیج‌های قیمت و سئوی اختصاصی"
               arrayPath="SERVICES"
               fields={SERVICE_FIELDS}
-              defaults={() => ({ id: 'service-' + Date.now(), title: 'خدمت جدید', titleEn: '', iconName: 'sparkles', shortDesc: '', fullDesc: '', features: [], deliverables: [], tags: [], packages: [], status: 'draft', slug: '', seo: {} })}
+              defaults={() => ({ id: 'service-' + Date.now(), title: 'خدمت جدید', titleEn: '', iconName: 'sparkles', shortDesc: '', fullDesc: '', features: [], deliverables: [], tags: [], packages: [], pathCategory: 'start' as const, status: 'draft', slug: '', seo: {} })}
               addLabel="افزودن خدمت"
               preview={(s) => ({ title: s.title, subtitle: s.shortDesc, badges: [s.status === 'draft' ? { text: 'پیش‌نویس', tone: 'warn' as const } : { text: 'منتشرشده', tone: 'ok' as const }] })}
             />

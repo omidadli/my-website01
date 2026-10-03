@@ -96,3 +96,16 @@ export const withPlanCopy = <T extends { id: string; name: string; tagline: stri
     const c = planCopy(cms, p.id);
     return { ...p, ...c };
   });
+
+/**
+ * "از ۵۹۰٬۰۰۰ تومان" for a card footer. The CMS price label is free text and already reads
+ * «شروع از ۵۹۰٬۰۰۰ تومان», while the computed fallback is a bare amount — blindly prefixing «از » printed
+ * «از شروع از …». A label without any amount («رایگان», «توافقی») is shown as it is.
+ */
+export const fromPriceLabel = (label: unknown): string => {
+  const t = text(label);
+  if (!t) return '';
+  if (/^(شروع\s+)?از\s/.test(t)) return t;
+  if (!/[0-9\u06F0-\u06F9\u0660-\u0669]/.test(t)) return t;
+  return `از ${t}`;
+};

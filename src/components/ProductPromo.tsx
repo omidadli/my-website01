@@ -8,6 +8,7 @@ import { linkProps, navigate, pathForProduct } from '../utils/router';
 import { AI_TOOLS } from '../data/tools';
 import { getProductDetail } from '../data/productDetails';
 import { INITIAL_FREE_COINS, startingPrice } from '../../lib/toolPlans';
+import { fromPriceLabel } from '../utils/productCopy';
 import { angleFor, isCurrentProductId, type ProductAngle, type ProductId, type PromoTopic } from '../data/productPromo';
 
 /**
@@ -311,7 +312,7 @@ export const ProductPromo: React.FC<ProductPromoProps> = ({
 
       <div className={`pt-4 mt-auto border-t flex items-center justify-between gap-3 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
         <span className="text-[10px] font-extrabold text-amber-500 dark:text-amber-400">
-          {product.price ? `از ${product.price}` : `${toFa(INITIAL_FREE_COINS)} سکه هدیه`}
+          {product.price ? fromPriceLabel(product.price) : `${toFa(INITIAL_FREE_COINS)} سکه هدیه`}
         </span>
         <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-[color:var(--nd-accent)] group-hover:gap-2.5 transition-all">
           <span>{copy.cta}</span>

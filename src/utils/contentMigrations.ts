@@ -40,3 +40,31 @@ export const refreshSectionLabels = <T extends { name: string; label: string }>(
     return current ? { ...section, label: current.label } : section;
   });
 };
+
+/**
+ * A page renders only the sections that are in its stored list, and the admin panel's section manager can toggle
+ * visibility and order but neither add nor delete a section. So a section that ships in a later release — the home
+ * page's «AI_TOOLS» product showcase — never appeared on a site whose list had been saved before it existed, and
+ * nothing the admin could do would bring it back.
+ *
+ * Insert every default section the stored list does not know yet right after the default section that precedes
+ * it; labels are refreshed and everything the admin chose (order, visibility) is kept.
+ */
+export const reconcileSections = <T extends { name: string; label: string }>(stored: unknown, defaults: readonly T[]): T[] => {
+  const known = Array.isArray(stored) ? stored.filter((s) => s && typeof s === 'object' && typeof (s as { name?: unknown }).name === 'string') : [];
+  if (known.length === 0) return [...defaults];
+  const out: T[] = refreshSectionLabels<T>(known, defaults);
+  defaults.forEach((section, i) => {
+    if (out.some((s) => s.name === section.name)) return;
+    let at = 0; // no earlier default is present → it belongs at the very top
+    for (let j = i - 1; j >= 0; j--) {
+      const idx = out.findIndex((s) => s.name === defaults[j].name);
+      if (idx >= 0) {
+        at = idx + 1;
+        break;
+      }
+    }
+    out.splice(at, 0, { ...section });
+  });
+  return out;
+};

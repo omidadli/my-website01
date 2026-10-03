@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { PRODUCTS } from '../src/data/content';
 import { TOOL_PLANS } from '../lib/toolPlans';
-import { hasAboutBlock, isEditedList, isEditedText, planCopy, productCopy, withPlanCopy } from '../src/utils/productCopy';
+import { fromPriceLabel, hasAboutBlock, isEditedList, isEditedText, planCopy, productCopy, withPlanCopy } from '../src/utils/productCopy';
 
 const fresh = () => JSON.parse(JSON.stringify(PRODUCTS[0]));
 const product = fresh();
@@ -76,5 +76,15 @@ assert.equal(shown[1].popular, designed[1].popular, 'non-copy fields of the desi
 assert.equal(shown[1].dailyCost, designed[1].dailyCost);
 assert.deepEqual(shown[0], designed[0], 'untouched plan is identical to the designed one');
 assert.deepEqual(withPlanCopy(designed, undefined), designed);
+
+// ---- "از …" price prefix (the home showcase printed «از شروع از ۵۹۰٬۰۰۰ تومان») ----
+assert.equal(fromPriceLabel('شروع از ۵۹۰٬۰۰۰ تومان'), 'شروع از ۵۹۰٬۰۰۰ تومان', 'a label that already says "from" is not prefixed again');
+assert.equal(fromPriceLabel('از ۱٬۰۰۰ تومان'), 'از ۱٬۰۰۰ تومان');
+assert.equal(fromPriceLabel('۵۹۰٬۰۰۰ تومان'), 'از ۵۹۰٬۰۰۰ تومان', 'a bare amount gets the prefix');
+assert.equal(fromPriceLabel('590,000 تومان'), 'از 590,000 تومان');
+assert.equal(fromPriceLabel('رایگان'), 'رایگان', 'no amount → nothing to start from');
+assert.equal(fromPriceLabel('  '), '');
+assert.equal(fromPriceLabel(undefined), '');
+for (const p of PRODUCTS) assert.ok(!/از\s+شروع\s+از/.test(fromPriceLabel(p.price)), `${p.id}: no doubled "از"`);
 
 console.log('product-copy.test.ts: all assertions passed');

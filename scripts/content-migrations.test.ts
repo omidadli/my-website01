@@ -87,3 +87,57 @@ console.log('content-migrations.test.ts: all assertions passed');
   assert.deepEqual(refreshSectionLabels<Section>(undefined, defaults), defaults);
   console.log('section labels ok');
 }
+
+// ---- reconcileSections: a section shipped after the list was saved must not stay invisible ----
+{
+  const { reconcileSections } = await import('../src/utils/contentMigrations');
+  const { defaultPageSections } = await import('../src/context/ContentContext');
+  type Section = { id: string; name: string; label: string; isHidden: boolean };
+
+  // The home list production actually holds (no AI_TOOLS): visibility/order chosen by the admin must survive.
+  const live: Section[] = defaultPageSections.home
+    .filter((s) => s.name !== 'AI_TOOLS')
+    .map((s) => ({ ...s, label: s.name === 'INSIGHTS' ? 'آنالیز رایگان + نوشت‌های تازه' : s.label }));
+  live.find((s) => s.name === 'FAQ')!.isHidden = true;
+  const healed = reconcileSections<Section>(live, defaultPageSections.home);
+  const names = healed.map((s) => s.name);
+  assert.equal(healed.length, defaultPageSections.home.length, 'the missing section is added, nothing else');
+  assert.ok(names.includes('AI_TOOLS'), 'AI_TOOLS is back');
+  assert.equal(names.indexOf('AI_TOOLS'), names.indexOf('INSIGHTS') + 1, 'right after INSIGHTS, where the design puts it');
+  assert.ok(names.indexOf('AI_TOOLS') < names.indexOf('FAQ'));
+  assert.equal(healed.find((s) => s.name === 'AI_TOOLS')!.isHidden, false, 'a restored section starts visible');
+  assert.equal(healed.find((s) => s.name === 'FAQ')!.isHidden, true, 'what the admin hid stays hidden');
+  assert.equal(healed.find((s) => s.name === 'INSIGHTS')!.label, defaultPageSections.home.find((s) => s.name === 'INSIGHTS')!.label, 'labels follow the code');
+
+  // the admin's own ordering is kept: move FAQ to the top and the healed list still starts with it
+  const reordered = [live.find((s) => s.name === 'FAQ')!, ...live.filter((s) => s.name !== 'FAQ')];
+  assert.equal(reconcileSections<Section>(reordered, defaultPageSections.home)[0].name, 'FAQ');
+
+  // an already complete list is returned as it is (same order and flags)
+  const complete = defaultPageSections.home.map((s) => ({ ...s }));
+  assert.deepEqual(reconcileSections<Section>(complete, defaultPageSections.home), complete);
+
+  // several missing sections keep their relative order; a missing FIRST section goes to the top
+  const mini = [
+    { id: '1', name: 'A', label: 'a', isHidden: false },
+    { id: '2', name: 'B', label: 'b', isHidden: false },
+    { id: '3', name: 'C', label: 'c', isHidden: false },
+    { id: '4', name: 'D', label: 'd', isHidden: false },
+  ];
+  assert.deepEqual(reconcileSections<Section>([mini[2]], mini).map((s) => s.name), ['A', 'B', 'C', 'D'], 'A,B before C; D after C');
+  assert.deepEqual(reconcileSections<Section>([mini[1]], mini).map((s) => s.name), ['A', 'B', 'C', 'D']);
+
+  // sections the code does not know (e.g. a removed page) are kept, junk is dropped, nothing stored → defaults
+  const withUnknown = reconcileSections<Section>([...live, { id: 'x', name: 'LEGACY', label: 'old', isHidden: false }, null, 7], defaultPageSections.home);
+  assert.ok(withUnknown.some((s) => s.name === 'LEGACY'));
+  assert.ok(withUnknown.every((s) => s && typeof s === 'object'));
+  assert.deepEqual(reconcileSections<Section>(undefined, mini), mini);
+  assert.deepEqual(reconcileSections<Section>([], mini), mini);
+  assert.deepEqual(reconcileSections<Section>('nope', mini), mini);
+
+  // every page of the site is healed the same way
+  for (const [page, defaults] of Object.entries(defaultPageSections)) {
+    assert.deepEqual(reconcileSections<Section>(defaults.slice(1), defaults).map((s) => s.name).sort(), defaults.map((s) => s.name).sort(), `${page}: dropping a section and healing restores the full set`);
+  }
+  console.log('reconcileSections ok');
+}
