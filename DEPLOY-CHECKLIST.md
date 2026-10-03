@@ -51,7 +51,7 @@ Pages → پروژه‌ات → **Settings → Environment variables** (روی �
 | `AUTH_SECRET` | یک رشته‌ی تصادفیِ بلند (پایین یکی برایت ساختم) |
 | `ADMIN_USERNAME` | نام کاربریِ دلخواهِ ادمین |
 | `ADMIN_PASSWORD` | رمزِ قویِ دلخواهِ ادمین |
-| `GEMINI_API_KEY` | کلید Gemini برای پاسخ‌های واقعیِ هوش مصنوعی *(اختیاری ولی توصیه‌شده)* |
+| `GEMINI_API_KEY` | کلید پشتیبانِ همه‌ی بخش‌های هوش مصنوعی *(اختیاری — توصیه می‌شود به‌جایش در پنل ادمین → «کلیدهای API» برای هر بخش ۵ کلید ثبت کنید؛ `docs/API-KEYS.md`)* |
 
 یک `AUTH_SECRET` آماده (می‌توانی همین را استفاده کنی یا خودت بسازی):
 ```
@@ -112,5 +112,5 @@ Actions اضافه کن: `SITE_URL` (= `https://omidadli01.site`)، `ADMIN_USERN
 2. `schema.sql` را روی دیتابیس اجرا کن.
 3. پروژه‌ی Pages را بساز و به ریپو وصل کن (build: `npm run build`, output: `dist`).
 4. Binding دیتابیس با نام `DB` را اضافه کن.
-5. سکرت‌ها را بگذار: `AUTH_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `GEMINI_API_KEY`.
+5. سکرت‌ها را بگذار: `AUTH_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` (+ `GEMINI_API_KEY` فقط اگر می‌خواهی همه‌ی بخش‌ها یک کلید پشتیبانِ مشترک داشته باشند). بعد از ورود به پنل، در تب «کلیدهای API» برای هر بخش ۵ کلید ثبت کن.
 6. Deploy را بزن و تست کن.

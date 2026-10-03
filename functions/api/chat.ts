@@ -1,4 +1,5 @@
-import { Env, requireAuth, json, getClientIp, ensureCoreTablesSafe } from './_shared';
+import { Env, requireAuth, json, getClientIp, ensureCoreTablesSafe, runSectionAi, derivedSessionId } from './_shared';
+import { SITE_ASSISTANT_SECTION, type ChatTurn } from '../../lib/aiKeys';
 import {
   buildDigest,
   buildSoulPrompt,
@@ -16,11 +17,14 @@ import {
  *
  * The brain lives in lib/assistant.ts (shared with vite-dev-api.ts so dev and
  * production never drift):
- *   - With GEMINI_API_KEY: answers via Gemini grounded in a digest of ALL site
- *     content + full-text retrieval (RAG) over every published blog post.
- *     When the question is answered from an article, the AI cites the
- *     article link as the source.
- *   - Without a key: a deterministic Persian keyword matcher answers from the
+ *   - With the 5 API keys of the «دستیار هوشمند» section (admin panel → کلیدهای
+ *     API; env GEMINI_API_KEY as the last resort): answers via Gemini/OpenAI
+ *     grounded in a digest of ALL site content + full-text retrieval (RAG) over
+ *     every published blog post. When the question is answered from an article,
+ *     the AI cites the article link as the source. If a key hits its rate limit,
+ *     the next key takes over seamlessly — the previous chats of the same
+ *     conversation are reviewed first so the assistant keeps the same thread.
+ *   - Without any key: a deterministic Persian keyword matcher answers from the
  *     same digest and cites the best-matching article (zero cost).
  *   - The AI stages the mascot's body via the `[[act:{...}]]` contract — the
  *     frontend (soul.ts) turns it into video scenes.
@@ -106,69 +110,36 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   let answer = '';
   let mode: 'ai' | 'local' = 'local';
+  let usedKeySlot = 0;
+  let usedKeyLabel = '';
+  let usedKeySwitched = false;
 
-  // 1) Preferred path: Gemini grounded on the site digest + article sources.
-  const geminiKey = (env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '') || '').trim();
-  if (geminiKey) {
-    const history = messages.slice(0, -1).filter((m) => m.role === 'user' || m.role === 'model').map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: String(m.content || '').slice(0, 1200) }],
-    }));
+  // 1) Preferred path: the 5 keys of the site-assistant section, with automatic
+  //    rotation (limit/error → next key) and full conversation continuity.
+  const sessionId = String(body?.sessionId || '').trim().slice(0, 120) || derivedSessionId(SITE_ASSISTANT_SECTION, `ip:${ip}`);
+  const history: ChatTurn[] = messages
+    .slice(0, -1)
+    .filter((m) => m.role === 'user' || m.role === 'model')
+    .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': geminiKey,
-    };
-
-    const candidateModels = [
-      'gemini-2.5-flash',
-      'gemini-flash-latest',
-      'gemini-3.5-flash',
-      'gemini-3.1-flash-lite',
-    ];
-
-    for (const model of candidateModels) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-        const res = await fetch(
-          url,
-          {
-            method: 'POST',
-            headers,
-            signal: AbortSignal.timeout(20000),
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: soulPrompt }] },
-              contents: [...history, { role: 'user', parts: [{ text: question }] }],
-              generationConfig: {
-                temperature: 0.6,
-                maxOutputTokens: 600,
-                thinkingConfig: {
-                  thinkingBudget: 0,
-                },
-              },
-              safetySettings: [
-                { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-                { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-                { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-                { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-              ],
-            }),
-          }
-        );
-        if (res.ok) {
-          const j: any = await res.json();
-          const parts = j?.candidates?.[0]?.content?.parts || [];
-          const text = String(parts.find((p: any) => p?.text && !p?.thought)?.text || parts.find((p: any) => p?.text)?.text || parts[0]?.text || '').trim();
-          if (text) {
-            answer = text;
-            mode = 'ai';
-            break;
-          }
-        }
-      } catch {
-        /* try next model or fallback */
-      }
-    }
+  const ai = await runSectionAi(env, {
+    sectionId: SITE_ASSISTANT_SECTION,
+    systemPrompt: soulPrompt,
+    history,
+    question,
+    temperature: 0.6,
+    maxOutputTokens: 600,
+    sessionId,
+    scope: `ip:${ip}`,
+    // deterministic matcher answer (also remembered, so the thread survives)
+    fallback: () => localAnswer(question, digest, cfg.ctaText, sources),
+  });
+  if (ai.text) {
+    answer = ai.text;
+    mode = ai.usedFallback ? 'local' : 'ai';
+    usedKeySlot = ai.usedSlot || 0;
+    usedKeyLabel = ai.usedKeyLabel || '';
+    usedKeySwitched = ai.switched;
   }
 
   // 2) Fallback: deterministic matcher over the digest (works with zero keys/costs).
@@ -204,12 +175,27 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   // 3) Log for behavior monitoring (admin panel → «دستیار هوشمند»).
   try {
     const id = `chat-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
-    await env.DB.prepare(
-      `INSERT INTO chat_messages (id, ip, question, answer, mode, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
-    ).bind(id, ip, question, answer.slice(0, 4000), mode, new Date().toISOString()).run();
+    try {
+      await env.DB.prepare(
+        `INSERT INTO chat_messages (id, ip, question, answer, mode, created_at, key_slot, session_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+      ).bind(id, ip, question, answer.slice(0, 4000), mode, new Date().toISOString(), usedKeySlot, sessionId).run();
+    } catch {
+      // pre-migration table without key_slot / session_id
+      await env.DB.prepare(
+        `INSERT INTO chat_messages (id, ip, question, answer, mode, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+      ).bind(id, ip, question, answer.slice(0, 4000), mode, new Date().toISOString()).run();
+    }
   } catch {
     /* non-fatal */
   }
 
-  return json({ ok: true, answer, act, mode, sources: sources.map(({ title, url }) => ({ title, url })) });
+  return json({
+    ok: true,
+    answer,
+    act,
+    mode,
+    sources: sources.map(({ title, url }) => ({ title, url })),
+    // monitoring only: which of the 5 keys answered (no secrets)
+    key: usedKeySlot ? { slot: usedKeySlot, label: usedKeyLabel, switched: usedKeySwitched } : undefined,
+  });
 };

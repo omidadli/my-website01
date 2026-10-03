@@ -8,6 +8,7 @@
  */
 
 import { compressImage } from '../utils/image';
+import type { AiKeyHealth, AiSectionDef, SectionStatus } from '../../lib/aiKeys';
 
 const TOKEN_KEY = 'nd_admin_token';
 
@@ -230,13 +231,14 @@ export const api = {
   /** AI consultant conversation. */
   async sendChat(
     messages: { role: 'user' | 'model'; content: string }[],
-    mascotContext?: { name?: string; page?: string; daypart?: string; bodyState?: string }
+    mascotContext?: { name?: string; page?: string; daypart?: string; bodyState?: string },
+    sessionId?: string
   ): Promise<{ ok: boolean; answer?: string; act?: { pose?: string; hold?: number; bubble?: string; then?: string }; mode?: 'ai' | 'local'; error?: string }> {
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, mascot: mascotContext }),
+        body: JSON.stringify({ messages, mascot: mascotContext, sessionId }),
       });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok ? { ok: true, answer: j.answer, act: j.act, mode: j.mode } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
@@ -338,12 +340,12 @@ export const api = {
   },
 
   /** Public: send a message to a tool. With a token → paid; without → free trial (device-based). */
-  async toolChat(payload: { token?: string; productId: string; deviceId: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; coins?: { balance: number; cost: number; initial: number }; quota?: { limit: number; used: number; remaining: number } }> {
+  async toolChat(payload: { token?: string; productId: string; deviceId: string; sessionId?: string; messages: { role: 'user' | 'model'; content: string }[] }): Promise<{ ok: boolean; answer?: string; mode?: 'ai' | 'local'; error?: string; code?: string; trial?: { used: number; remaining: number; limit: number }; coins?: { balance: number; cost: number; initial: number }; quota?: { limit: number; used: number; remaining: number }; key?: { slot?: number; label?: string; provider?: string; switched?: boolean; recalled?: number } }> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'chat', ...payload }) });
       const j = await r.json().catch(() => ({}));
       return r.ok && j?.ok
-        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, coins: j.coins, quota: j.quota }
+        ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, coins: j.coins, quota: j.quota, key: j.key }
         : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, coins: j?.coins, quota: j?.quota };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
@@ -362,7 +364,7 @@ export const api = {
     }
   },
 
-  /** Admin: per-tool AI connection settings (API key is MASKED, never raw). */
+  /** Admin: AI sections (site assistant, SEO slug, 4 products) with 5 key slots each. */
   async listToolSettings(): Promise<{
     items: Array<{
       productId: string;
@@ -384,25 +386,38 @@ export const api = {
         enabled: boolean;
       }>;
     }>;
+    /** the full 5-slot state of every section (health, cooldowns, stats, masked keys) */
+    sections: SectionStatus[];
     envKeyPresent: boolean;
+    keysPerSection: number;
+    sectionsMeta: AiSectionDef[];
   }> {
+    const empty = { items: [], sections: [], envKeyPresent: false, keysPerSection: 5, sectionsMeta: [] as AiSectionDef[] };
     try {
       const r = await fetch('/api/tools?view=settings', { headers: headers() });
-      if (!r.ok) return { items: [], envKeyPresent: false };
+      if (!r.ok) return empty;
       const j = await r.json();
-      return j?.ok ? { items: j.items, envKeyPresent: j.envKeyPresent } : { items: [], envKeyPresent: false };
+      return j?.ok
+        ? {
+            items: j.items || [],
+            sections: j.sections || [],
+            envKeyPresent: !!j.envKeyPresent,
+            keysPerSection: j.keysPerSection || 5,
+            sectionsMeta: j.sectionsMeta || [],
+          }
+        : empty;
     } catch {
-      return { items: [], envKeyPresent: false };
+      return empty;
     }
   },
 
-  /** Admin: set the 3 AI connection keys for one tool/product. */
-  async setProductKeys(payload: {
-    productId: string;
+  /** Admin: save all 5 key slots of one section at once. */
+  async setSectionKeys(payload: {
+    sectionId: string;
     keys: Array<{
       id: string;
       label?: string;
-      provider: string;
+      provider?: string;
       baseUrl?: string;
       model?: string;
       apiKey?: string;
@@ -423,8 +438,65 @@ export const api = {
     }
   },
 
+  /** Backwards-compatible alias of setSectionKeys (product sections). */
+  async setProductKeys(payload: {
+    productId: string;
+    keys: Array<{ id: string; label?: string; provider?: string; baseUrl?: string; model?: string; apiKey?: string; enabled?: boolean; clearKey?: boolean }>;
+  }): Promise<{ ok: boolean; keys?: any[]; error?: string }> {
+    return this.setSectionKeys({ sectionId: payload.productId, keys: payload.keys });
+  },
+
+  /** Admin: test every key slot of a section (live, sequential). */
+  async testAllSectionKeys(sectionId: string): Promise<{
+    ok: boolean;
+    results?: Array<{ id: string; slot: number; label: string; hasKey: boolean; ok: boolean; provider?: string; model?: string; latencyMs?: number; reply?: string; error?: string }>;
+    passed?: number;
+    total?: number;
+    error?: string;
+  }> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'testAllKeys', sectionId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? j : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  /** Admin: clear the cooldown/health of one slot (or a whole section). */
+  async resetSectionKeyState(sectionId: string, keyIndex?: number): Promise<boolean> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers() },
+        body: JSON.stringify({ action: 'resetKeyState', sectionId, keyIndex }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  /** Admin: audit trail of rate-limit hits / key hand-offs. */
+  async listKeyEvents(limit = 60): Promise<Array<{ id: string; section_id: string; key_id: string; code: string; status: number; message: string; created_at: string }>> {
+    try {
+      const r = await fetch(`/api/tools?view=keyEvents&limit=${limit}`, { headers: headers() });
+      if (!r.ok) return [];
+      const j = await r.json();
+      return j?.ok ? j.items : [];
+    } catch {
+      return [];
+    }
+  },
+
   /** Admin: test an AI connection key live. */
   async testToolKey(payload: {
+    sectionId?: string;
     productId: string;
     keyIndex?: number;
     provider?: string;
