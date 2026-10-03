@@ -12,7 +12,7 @@
     "content:gen": "tsx scripts/gen-default-content.mts",
     "content:export": "node scripts/sync-content.mjs export",
     "content:import": "node scripts/sync-content.mjs import",
-    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts && tsx scripts/tool-coins.test.ts && tsx scripts/product-promo.test.ts && tsx scripts/product-catalog-migration.test.ts && tsx scripts/cloud-sync.test.ts && tsx scripts/api-client.test.ts && node scripts/site-client-errors.test.mjs",
+    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/seo-domain.test.ts && tsx scripts/content-migrations.test.ts && tsx scripts/product-copy.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts && tsx scripts/tool-coins.test.ts && tsx scripts/product-promo.test.ts && tsx scripts/product-catalog-migration.test.ts && tsx scripts/cloud-sync.test.ts && tsx scripts/api-client.test.ts && node scripts/site-client-errors.test.mjs",
     "lint:functions": "tsc -p functions/tsconfig.json --noEmit"
   },
   "dependencies": {

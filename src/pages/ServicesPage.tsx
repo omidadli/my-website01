@@ -6,7 +6,7 @@ import { SectionEditHeader } from '../components/cms/SectionEditHeader';
 import { IconBadge3D } from '../components/3D/3DIconBadge';
 import { PageHero, Head, CtaPanel } from '../components/nd/Kit';
 import { FAQSection } from '../components/FAQSection';
-import { CheckCircle2, ArrowUpLeft, Sparkles, Target, Rocket, MessageCircle } from 'lucide-react';
+import { CheckCircle2, ArrowUpLeft, Sparkles, Target, Rocket, MessageCircle, PackageCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
@@ -115,6 +115,17 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ theme, onNavigate })
                     </div>
                   ))}
                 </div>
+                {Array.isArray(service.deliverables) && service.deliverables.some((d) => typeof d === 'string' && d.trim()) && (
+                  <div className={`space-y-2.5 pt-4 border-t ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
+                    <span className={`text-[11px] font-extrabold ${isDark ? 'text-slate-400' : 'nd-muted'}`}>خروجی‌هایی که تحویل می‌گیرید:</span>
+                    {service.deliverables.filter((d) => typeof d === 'string' && d.trim()).map((item, dIdx) => (
+                      <div key={dIdx} className="flex items-center gap-2.5 text-xs">
+                        <PackageCheck className="w-4 h-4 text-[color:var(--nd-accent)] shrink-0" />
+                        <span className={isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink-2)]'}>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {Array.isArray(service.packages) && service.packages.length > 0 && (
                   <div className={`space-y-2.5 pt-4 border-t ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
                     <span className={`text-[11px] font-extrabold ${isDark ? 'text-amber-300' : 'text-[#b45309]'}`}>تعرفه و پکیج‌های قیمت‌گذاری:</span>

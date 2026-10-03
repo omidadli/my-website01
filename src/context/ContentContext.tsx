@@ -19,6 +19,7 @@ import {
   BlogPost
 } from '../types';
 import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
+import { migratePersonalInfo, reconcileGlobalSeo, refreshSectionLabels } from '../utils/contentMigrations';
 import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
 import {
@@ -71,8 +72,8 @@ export const defaultPageSections: Record<string, PageSectionItem[]> = {
     { id: 'sec-proof', name: 'PROOF', label: 'صحنه اثبات با داده (آمار + کیس‌های منتخب)', isHidden: false },
     { id: 'sec-services', name: 'SERVICES_TABS', label: 'خدمات سه‌مرحله‌ای (تب‌بندی شده)', isHidden: false },
     { id: 'sec-how-i-work', name: 'HOW_I_WORK', label: 'فرآیند همکاری (How I Work)', isHidden: false },
-    { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + نقل‌قول مشتری', isHidden: false },
-    { id: 'sec-insights', name: 'INSIGHTS', label: 'آنالیز رایگان + نوشت‌های تازه', isHidden: false },
+    { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + معرفی کوتاه', isHidden: false },
+    { id: 'sec-insights', name: 'INSIGHTS', label: 'نوشت‌های تازه (به‌تفکیک موضوع)', isHidden: false },
     { id: 'sec-ai-tools', name: 'AI_TOOLS', label: 'دستیارهای هوشمند (معرفی محصولات)', isHidden: false },
     { id: 'sec-faq', name: 'FAQ', label: 'پرسش‌های پرتکرار', isHidden: false },
     { id: 'sec-final-cta', name: 'FINAL_CTA', label: 'فراخوان نهایی اقدام', isHidden: false },
@@ -346,9 +347,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           if (!parsed.PERSONAL_INFO.title || parsed.PERSONAL_INFO.title.includes('متخصص دیزاین')) {
             parsed.PERSONAL_INFO.title = initialData.PERSONAL_INFO.title;
           }
-          if (!parsed.PERSONAL_INFO.avatar || parsed.PERSONAL_INFO.avatar.includes('unsplash')) {
-            parsed.PERSONAL_INFO.avatar = initialData.PERSONAL_INFO.avatar;
-          }
         }
         // Restore SERVICES, STATS, TIMELINE, HOW_I_WORK_STEPS to default initialData
         return { 
@@ -380,8 +378,8 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           BLOG_PAGE_DATA: { ...initialData.BLOG_PAGE_DATA, ...(parsed.BLOG_PAGE_DATA || {}) },
           BLOG_POSTS: parsed.BLOG_POSTS || initialData.CORE_BLOG_POSTS,
           ONGOING_PROJECTS: parsed.ONGOING_PROJECTS || initialData.ONGOING_PROJECTS,
-          PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...(parsed.PERSONAL_INFO || {}) },
-          GLOBAL_SEO: { ...defaultGlobalSeo, ...parsed.GLOBAL_SEO },
+          PERSONAL_INFO: migratePersonalInfo({ ...defaultContentState.PERSONAL_INFO, ...(parsed.PERSONAL_INFO || {}) }, defaultContentState.PERSONAL_INFO),
+          GLOBAL_SEO: reconcileGlobalSeo(defaultGlobalSeo, parsed.GLOBAL_SEO),
           NAVIGATION_MENU: (parsed.NAVIGATION_MENU || defaultNavigationMenu).filter((item: NavigationMenuItem) => item.pageSlug !== 'business-analysis'),
           PAGE_SECTIONS: { ...defaultPageSections, ...parsed.PAGE_SECTIONS, home: defaultPageSections.home },
           MEDIA_LIBRARY: parsed.MEDIA_LIBRARY || defaultMediaLibrary,
@@ -453,8 +451,12 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // The cloud snapshot is authoritative for editable content, but an old
       // product catalog must not resurrect products unsupported by this build.
       PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, merged.PRODUCTS),
-      PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO },
-      GLOBAL_SEO: { ...defaultGlobalSeo, ...merged.GLOBAL_SEO },
+      PERSONAL_INFO: migratePersonalInfo({ ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO }, defaultContentState.PERSONAL_INFO),
+      GLOBAL_SEO: reconcileGlobalSeo(defaultGlobalSeo, merged.GLOBAL_SEO),
+      PAGE_SECTIONS: {
+        ...merged.PAGE_SECTIONS,
+        home: refreshSectionLabels(merged.PAGE_SECTIONS?.home, defaultPageSections.home),
+      },
       AI_TOOLS_CONFIG: {
         ...initialData.AI_TOOLS_CONFIG,
         ...merged.AI_TOOLS_CONFIG,

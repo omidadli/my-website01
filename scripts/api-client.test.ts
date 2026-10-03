@@ -27,6 +27,18 @@ assert.equal(await probe(true), true);
 assert.equal(getBackend(), 'cloudflare');
 assert.deepEqual(await api.getContent(), { data: { A: 1 }, updatedAt: 't1' });
 assert.equal(calls.length, 1, 'probe + first getContent share one request');
+// every content READ has its own URL, so a CDN "Cache Everything" rule can never serve a stale copy
+assert.ok(/^\/api\/content\?_=[a-z0-9]+$/.test(calls[0].url), `read URL carries a cache-buster: ${calls[0].url}`);
+{
+  const first = calls[0].url;
+  stub([{ body: { ok: true, data: {}, updatedAt: 't9' } }]);
+  await probe(true);
+  assert.notEqual(calls[0].url, first, 'the next read uses a different URL');
+  assert.equal(calls[0].method, 'GET');
+}
+stub([{ body: { ok: true, data: { A: 1 }, updatedAt: 't1' } }]);
+await probe(true);
+await api.getContent();
 assert.equal(await probe(), true, 'answer is cached…');
 assert.equal(calls.length, 1, '…without asking again');
 

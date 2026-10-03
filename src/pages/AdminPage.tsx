@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { AI_TOOLS } from '../data/tools';
 import { getPlans, getPlan } from '../../lib/toolPlans';
+import { BUILT_IN_PROFILE_PHOTO } from '../utils/profilePhoto';
 
 interface AdminPageProps {
   onNavigate: (page: Page) => void;
@@ -125,16 +126,7 @@ const CASE_FIELDS: FieldDef[] = [
   { key: 'challenge', label: 'چالش', type: 'textarea', rows: 3 },
   { key: 'solution', label: 'راهکار', type: 'textarea', rows: 3 },
   { key: 'results', label: 'نتایج', type: 'textarea', rows: 3 },
-  { key: 'metrics', label: 'شاخص‌های اصلی', type: 'group', fields: [
-    { key: 'roas', label: 'ROAS' },
-    { key: 'conversionRate', label: 'نرخ تبدیل' },
-    { key: 'cacReduction', label: 'کاهش CAC' },
-  ] },
-  { key: 'metricsComparison', label: 'مقایسه قبل/بعد', type: 'items', singular: 'شاخص', defaults: { label: '', before: '', after: '' }, fields: [
-    { key: 'label', label: 'نام شاخص' },
-    { key: 'before', label: 'قبل' },
-    { key: 'after', label: 'بعد' },
-  ] },
+  // «شاخص‌های اصلی» و «مقایسه قبل/بعد»: به درخواست صاحب سایت اعداد از نمونه‌کارها حذف شد؛ ویرایشگرشان هم برداشته شد.
   { key: 'thumbnailIcon', label: 'نام آیکون کاور', dir: 'ltr' },
   { key: 'heroColor', label: 'رنگ غالب', dir: 'ltr', placeholder: 'indigo' },
   { key: 'tags', label: 'برچسب‌ها', type: 'tags' },
@@ -454,12 +446,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
     e.target.value = '';
     setMediaBusy(true);
     if (persistence === 'cloud') {
-      const item = await api.uploadMedia(file, file.name, file.name);
-      if (item) {
-        addMediaItem(item.url, item.title, item.sizeKb, undefined, ['cloud', 'r2']);
-        showToast('فایل با موفقیت در Cloudflare R2 ذخیره شد.');
+      const res = await api.uploadMediaResult(file, file.name, file.name);
+      if (res.ok && res.item) {
+        addMediaItem(res.item.url, res.item.title, res.item.sizeKb, undefined, ['cloud', 'r2']);
+        showToast('فایل با موفقیت روی سرور ذخیره شد.');
       } else {
-        showToast('آپلود ناموفق بود.');
+        showToast(res.error || 'آپلود ناموفق بود.');
       }
     } else {
       const reader = new FileReader();
@@ -821,17 +813,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
               />
               <CollectionEditor
                 title="مسیر همکاری در صفحه اصلی"
-                desc="مراحل «چطور کار می‌کنیم» که در صفحه اصلی نمایش داده می‌شود"
+                desc="مراحل «چطور کار می‌کنیم» در صفحه اصلی — شماره‌ی مرحله خودکار و به‌ترتیب همین لیست است"
                 arrayPath="HOMEPAGE_HOW_I_WORK_STEPS"
                 fields={[
-                  { key: 'step', label: 'شماره مرحله', half: true },
-                  { key: 'icon', label: 'نام آیکون', dir: 'ltr', half: true },
+                  { key: 'icon', label: 'نام آیکون', dir: 'ltr' },
                   { key: 'title', label: 'عنوان' },
                   { key: 'desc', label: 'توضیح', type: 'textarea', rows: 2 },
                 ]}
-                defaults={() => ({ step: '', title: '', desc: '', icon: 'rocket' })}
+                defaults={() => ({ title: '', desc: '', icon: 'rocket' })}
                 addLabel="افزودن مرحله"
-                preview={(s) => ({ title: `${s.step}. ${s.title}`, subtitle: s.desc })}
+                preview={(s) => ({ title: s.title, subtitle: s.desc })}
               />
               <CollectionEditor
                 title="مسیر ۴ مرحله‌ای همکاری (صفحه خدمات)"
@@ -858,37 +849,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                 addLabel="افزودن نقطه تمایز"
                 preview={(p) => ({ title: p.title, subtitle: p.description })}
               />
-              <CollectionEditor
-                title="نقل‌قول مشتریان"
-                arrayPath="TESTIMONIALS"
-                fields={[
-                  { key: 'clientName', label: 'نام مشتری/تیم' },
-                  { key: 'clientRole', label: 'سمت' },
-                  { key: 'company', label: 'شرکت' },
-                  { key: 'avatarUrl', label: 'آواتار', type: 'image' },
-                  { key: 'rating', label: 'امتیاز (۱ تا ۵)', type: 'number', min: 1, max: 5, half: true },
-                  { key: 'metricHighlight', label: 'نشان دستاورد' },
-                  { key: 'quote', label: 'متن نقل‌قول', type: 'textarea', rows: 4 },
-                ]}
-                defaults={() => ({ id: 't-' + Date.now(), clientName: '', clientRole: '', company: '', avatarUrl: '', rating: 5, quote: '', metricHighlight: '' })}
-                addLabel="افزودن نقل‌قول"
-                preview={(t) => ({ title: `${t.clientName} — ${t.company}`, subtitle: t.quote, image: t.avatarUrl })}
-              />
-              <ACard>
-                <ASectionTitle title="بخش تحلیل کسب‌وکار" desc="«قبل از پیشنهاد، وضعیتت رو می‌فهمم»" />
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <FieldsForm basePath="BUSINESS_ANALYSIS_DATA" item={data.BUSINESS_ANALYSIS_DATA} fields={[
-                    { key: 'headline', label: 'تیتر' },
-                    { key: 'subheadline', label: 'زیرتیتر', type: 'textarea', rows: 2 },
-                    { key: 'steps', label: 'مراحل تحلیل', type: 'items', singular: 'مرحله', defaults: { step: '', title: '', desc: '' }, fields: [
-                      { key: 'step', label: 'شماره', half: true },
-                      { key: 'title', label: 'عنوان' },
-                      { key: 'desc', label: 'توضیح', type: 'textarea', rows: 2 },
-                    ] },
-                    { key: 'checklist', label: 'چک‌لیست سوالات', type: 'tags' },
-                  ]} />
-                </div>
-              </ACard>
+              <p className="text-[11px] nd-muted leading-relaxed px-1">
+                بلوک «نقل‌قول مشتریان» و بخش «تحلیل کسب‌وکار / آنالیز رایگان» به درخواست خودتان از صفحه اصلی برداشته شده‌اند؛
+                برای همین ویرایشگرشان هم از این‌جا حذف شد (داده‌هایشان دست‌نخورده مانده است).
+              </p>
             </div>
           )}
 
@@ -901,14 +865,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   <FieldsForm basePath="PERSONAL_INFO" item={data.PERSONAL_INFO} fields={[
                     { key: 'name', label: 'نام و نام خانوادگی' },
                     { key: 'title', label: 'عنوان شغلی' },
-                    { key: 'avatar', label: 'عکس پروفایل', type: 'image' },
-                    { key: 'tagline', label: 'تگ‌لاین', type: 'textarea', rows: 2 },
+                    { key: 'avatar', label: 'عکس پروفایل', type: 'image',
+                      hint: 'این عکس در صفحه «درباره من»، صفحه اصلی و کنار نام نویسنده‌ی مقالات نمایش داده می‌شود. اگر خالی بماند یا به پیش‌فرض برگردد، پرتره‌ی آماده‌ی سایت نشان داده می‌شود.',
+                      resetTo: { value: BUILT_IN_PROFILE_PHOTO, label: 'بازگشت به پرتره‌ی پیش‌فرض سایت' } },
                     { key: 'bio', label: 'بیوگرافی کامل', type: 'textarea', rows: 5 },
                     { key: 'shortBio', label: 'بیوگرافی کوتاه', type: 'textarea', rows: 3 },
-                    { key: 'experienceYears', label: 'سال‌های تجربه', half: true },
-                    { key: 'campaignsCount', label: 'تعداد کمپین‌ها', half: true },
-                    { key: 'avgRoasBoost', label: 'میانگین رشد ROAS', half: true },
-                    { key: 'totalAdSpendManaged', label: 'برندهای مدیریت‌شده', half: true },
+                    { key: 'experienceYears', label: 'سال‌های تجربه', half: true, hint: 'فقط در پاسخ‌های دستیار هوشمند استفاده می‌شود' },
+                    { key: 'campaignsCount', label: 'تعداد کمپین‌ها', half: true, hint: 'فقط در پاسخ‌های دستیار هوشمند استفاده می‌شود' },
                     { key: 'availability', label: 'وضعیت پذیرش همکاری', type: 'textarea', rows: 2 },
                     { key: 'location', label: 'موقعیت مکانی' },
                     { key: 'email', label: 'ایمیل', dir: 'ltr' },
@@ -1141,7 +1104,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                     { key: 'defaultKeywords', label: 'کلمات کلیدی پیش‌فرض', hint: 'با کاما جدا کنید' },
                     { key: 'faviconUrl', label: 'فاوآیکون', type: 'image' },
                     { key: 'ogImage', label: 'تصویر پیش‌فرض اشتراک‌گذاری', type: 'image' },
-                    { key: 'canonicalBaseUrl', label: 'آدرس پایه سایت', dir: 'ltr' },
+                    { key: 'canonicalBaseUrl', label: 'آدرس پایه سایت', dir: 'ltr', hint: 'آدرس رسمی سایت، مثل https://omidadli.site — در canonical، sitemap، robots.txt و پیش‌نمایش لینک‌ها استفاده می‌شود' },
                     { key: 'robotsTxt', label: 'متن robots.txt', type: 'textarea', rows: 4 },
                   ]} />
                 </div>
@@ -1180,7 +1143,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <FieldsForm basePath="CHAT_CONFIG" item={data.CHAT_CONFIG} fields={[
                     { key: 'enabled', label: 'دستیار در سایت فعال باشد', type: 'toggle', hint: 'خاموش = ویجت چت به بازدیدکنندگان نمایش داده نمی‌شود' },
-                    { key: 'title', label: 'نام دستیار (در هدر چت)' },
                     { key: 'greeting', label: 'پیام خوش‌آمدگویی', type: 'textarea', rows: 3 },
                     { key: 'persona', label: 'شخصیت و قوانین پاسخ‌دهی (System Prompt)', type: 'textarea', rows: 8, hint: 'لحن، مرزها و CTA را اینجا تعریف کنید' },
                     { key: 'quickQuestions', label: 'سوال‌های پیشنهادی (چیپ‌های سریع)', type: 'tags' },

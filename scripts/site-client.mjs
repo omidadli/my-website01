@@ -6,7 +6,7 @@
  * then sent as `Authorization: Bearer <token>` on every admin call.
  *
  * Configure via environment variables:
- *   SITE_URL        base URL of the live site   (e.g. https://omidadli01.site)
+ *   SITE_URL        base URL of the live site   (e.g. https://omidadli.site)
  *   ADMIN_USERNAME  admin username              (same as the Cloudflare secret)
  *   ADMIN_PASSWORD  admin password              (same as the Cloudflare secret)
  */

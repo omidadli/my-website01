@@ -8,6 +8,7 @@
  * plus the full BLOG_POSTS list).
  */
 import { ServiceItem, CaseStudy, Testimonial, BlogPost, SkillTool, TimelineMilestone, ProductItem, OngoingProjectItem, BlogComment } from '../types';
+import { CANONICAL_SITE_URL } from '../../lib/seoDefaults';
 
 export const PERSONAL_INFO = {
   name: 'امید عدلی',
@@ -30,7 +31,7 @@ export const PERSONAL_INFO = {
   linkedin: 'https://linkedin.com/in/omidadli01',
   instagram: 'https://instagram.com/omidadli01',
   xTwitter: 'https://x.com/omidad01',
-  website: 'omidadli01.site',
+  website: new URL(CANONICAL_SITE_URL).host,
   location: 'مشهد / تهران / ریموت'
 };
 

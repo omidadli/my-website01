@@ -40,6 +40,7 @@ import { groupOfPost, normalizeCategory } from '../data/blogTaxonomy';
 import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
 import { productsForPage } from '../data/productPromo';
 import { imageFallback } from '../utils/imageFallback';
+import { ProfilePhoto } from '../components/ProfilePhoto';
 import { responsiveImageProps } from '../utils/responsiveImage';
 
 interface HomePageProps {
@@ -304,13 +305,10 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                   transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
                   className={`${isDark ? 'nd-glass-dark' : 'nd-glass'} inline-flex items-center gap-3 rounded-full ps-2 pe-4 py-1.5`}
                 >
-                  <img
-                    alt={personal.name}
-                    src="/profile-photo-64.webp"
-                    srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
-                    sizes="28px"
-                    referrerPolicy="no-referrer"
-                    onError={imageFallback('/profile-photo-web.jpg')}
+                  <ProfilePhoto
+                    avatar={personal.avatar}
+                    name={personal.name}
+                    variant="chip"
                     className={`w-8 h-8 rounded-full object-cover ring-2 ${isDark ? 'ring-white/30' : 'ring-white'}`}
                   />
                   <span className={`text-xs font-extrabold ${isDark ? 'text-slate-200' : 'text-[color:var(--nd-ink-2)]'}`}>
@@ -434,16 +432,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
               transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
               className={`relative z-10 nd-card max-w-3xl mx-auto p-6 sm:p-8 flex flex-col sm:flex-row items-start gap-5 ${isDark ? '-mt-10 sm:-mt-12' : 'mt-6'}`}
             >
-              <img
-                alt={personal.name}
-                src="/profile-photo-160.webp"
-                srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
-                sizes="64px"
-                loading="eager"
-                referrerPolicy="no-referrer"
-                onError={imageFallback('/profile-photo-web.jpg')}
-                className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0"
-              />
+              <ProfilePhoto avatar={personal.avatar} name={personal.name} variant="card" className="w-16 h-16 rounded-2xl object-cover shadow-sm shrink-0" />
               <p className="text-sm sm:text-base leading-relaxed text-[color:var(--nd-ink-2)]">
                 <span className="font-black text-[color:var(--nd-accent)] me-1">من امید عدلی هستم؛</span>
                 متخصص رشد دیجیتال برای فروشگاه‌ها. کمک می‌کنم بفهمید مشتری‌ها کجا شما را پیدا می‌کنند، چرا بعضی‌ها خرید می‌کنند و بعضی‌ها نه، و برای بهتر شدن فروش باید دقیقاً روی چه چیزی کار کنید.

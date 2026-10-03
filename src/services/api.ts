@@ -67,13 +67,21 @@ export const probeConfig = { retryDelaysMs: [0, 800, 2500], timeoutMs: 10_000 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/**
+ * URL of a content READ. The query string is unique per request on purpose: the site sits behind Cloudflare's
+ * CDN, and a "Cache Everything" Cache/Page Rule (or an Edge-TTL override) would otherwise keep serving the
+ * previous version of /api/content for minutes or hours after the admin saved — "I edited it and the site
+ * did not change". Functions ignore the query; writes (PUT) are never cached.
+ */
+export const contentReadUrl = (): string => `/api/content?_=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
 const runProbe = async (): Promise<boolean> => {
   for (const delay of probeConfig.retryDelaysMs) {
     if (delay) await sleep(delay);
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), probeConfig.timeoutMs) : null;
     try {
-      const r = await fetch('/api/content', { method: 'GET', cache: 'no-store', headers: headers(), signal: controller?.signal });
+      const r = await fetch(contentReadUrl(), { method: 'GET', cache: 'no-store', headers: headers(), signal: controller?.signal });
       // Any real API response (200/401/500 JSON) means functions exist.
       const ct = r.headers.get('Content-Type') || '';
       if (ct.includes('application/json')) {
@@ -136,7 +144,7 @@ export const api = {
       return primed;
     }
     try {
-      const r = await fetch('/api/content', { cache: 'no-store', headers: headers() });
+      const r = await fetch(contentReadUrl(), { cache: 'no-store', headers: headers() });
       if (!r.ok) return null;
       const j = await r.json();
       return j?.ok ? { data: j.data, updatedAt: j.updatedAt } : null;
@@ -226,7 +234,8 @@ export const api = {
     }
   },
 
-  async uploadMedia(file: File, title?: string, alt?: string): Promise<CloudMediaItem | null> {
+  /** Upload an image and report the reason when it fails — the admin must never be left guessing. */
+  async uploadMediaResult(file: File, title?: string, alt?: string): Promise<{ ok: boolean; item?: CloudMediaItem; error?: string }> {
     try {
       // Compress images client-side (fits the free D1 storage path + faster site).
       const prepared = await compressImage(file);
@@ -236,10 +245,17 @@ export const api = {
       if (alt) form.append('alt', alt);
       const r = await fetch('/api/media', { method: 'POST', headers: headers(), body: form });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? j.item : null;
+      if (r.ok && j?.ok && j.item) return { ok: true, item: j.item as CloudMediaItem };
+      if (r.status === 401 || r.status === 403) return { ok: false, error: 'نشست ادمین منقضی شده است؛ دوباره وارد شوید و آپلود را تکرار کنید.' };
+      return { ok: false, error: typeof j?.error === 'string' && j.error ? j.error : `آپلود ناموفق بود (کد ${r.status}).` };
     } catch {
-      return null;
+      return { ok: false, error: 'ارتباط با سرور برقرار نشد؛ اینترنت را بررسی کنید و دوباره تلاش کنید.' };
     }
+  },
+
+  async uploadMedia(file: File, title?: string, alt?: string): Promise<CloudMediaItem | null> {
+    const res = await api.uploadMediaResult(file, title, alt);
+    return res.ok && res.item ? res.item : null;
   },
 
   async deleteMedia(key: string): Promise<boolean> {

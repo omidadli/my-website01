@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { buildSitemapXml } from '../functions/_seo';
 import { BLOG_POSTS } from '../src/data/content';
 
-const base = 'https://omidadli01.site';
+const base = 'https://omidadli.site';
 const locs = (xml: string): string[] => [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
 
 // ---- static pages are always there ----
