@@ -15,8 +15,6 @@ import {
   getTool,
   buildToolSystemPrompt,
   resolveBehavior,
-  callAiProvider,
-  callAiProviderWithFailover,
   testSingleKey,
   localToolAnswer,
   normalizePhone,
@@ -27,10 +25,25 @@ import {
   verifyAccessToken,
   scopeCovers,
   maskKey,
-  createDefaultProductKeys,
-  type AiSettings,
-  type ToolApiKeyEntry,
 } from './lib/tools';
+import {
+  AI_SECTIONS,
+  KEYS_PER_SECTION,
+  SITE_ASSISTANT_SECTION,
+  SEO_SLUG_SECTION,
+  normalizeStoredKeys,
+  mergeSectionKeys,
+  publicKeyInfo,
+  emptyKeyState,
+  applyAttemptToState,
+  classifyAiError,
+  buildSectionStatus,
+  isAiSectionId,
+  type AiKeyEntry,
+  type AiKeyState,
+  type ChatTurn,
+} from './lib/aiKeys';
+import { runSectionAiWithStore, derivedSessionId, type AiKeyStore, type RunSectionAiResult } from './lib/aiSection';
 import { getPlan, resolveFreeTrial } from './lib/toolPlans';
 import { publicContentView } from './lib/contentVisibility';
 import {
@@ -70,6 +83,11 @@ const TOOL_ACCESS_FILE = path.resolve(process.cwd(), '.dev-tool-access.json');
 const TOOL_MSGS_FILE = path.resolve(process.cwd(), '.dev-tool-msgs.json');
 const TOOL_SETTINGS_FILE = path.resolve(process.cwd(), '.dev-tool-settings.json');
 const TOOL_TRIALS_FILE = path.resolve(process.cwd(), '.dev-tool-trials.json');
+const AI_KEYS_FILE = path.resolve(process.cwd(), '.dev-ai-keys.json');
+const AI_STATE_FILE = path.resolve(process.cwd(), '.dev-ai-states.json');
+const AI_MEMORY_FILE = path.resolve(process.cwd(), '.dev-ai-memory.json');
+const AI_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-ai-sessions.json');
+const AI_EVENTS_FILE = path.resolve(process.cwd(), '.dev-ai-events.json');
 const USERS_FILE = path.resolve(process.cwd(), '.dev-users.json');
 const USER_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-user-sessions.json');
 // Dev-only signing secret for AI-tool access tokens (prod uses env.AUTH_SECRET).
@@ -194,6 +212,133 @@ const safeWriteJson = (file: string, data: unknown) => {
   } catch (err) {
     console.warn('[dev-api] Failed to save state to', file, err);
   }
+};
+
+/* =========================================================================
+ * AI key management (dev mirror of functions/api/_shared.ts)
+ * 5 slots per section, health/cooldown, chat memory — stored in .dev-ai-*.json
+ * so the local behaviour matches production exactly.
+ * ========================================================================= */
+
+type DevAiKeysMap = Record<string, AiKeyEntry[]>;
+type DevAiStatesMap = Record<string, Record<string, AiKeyState>>;
+type DevAiMemory = Array<{ id: string; sessionId: string; sectionId: string; role: 'user' | 'model'; content: string; createdAt: string }>;
+type DevAiSessions = Record<string, { sectionId: string; stickyKeyId: string; turns: number; updatedAt: string }>;
+type DevAiEvents = Array<{ id: string; sectionId: string; keyId: string; code: string; status: number; message: string; createdAt: string }>;
+
+const devId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const loadDevSectionKeys = (sectionId: string): AiKeyEntry[] => {
+  const map = safeReadJson<DevAiKeysMap>(AI_KEYS_FILE, {});
+  const stored = map[sectionId];
+  if (Array.isArray(stored) && stored.length) return normalizeStoredKeys(sectionId, stored);
+  // one-time migration of the legacy per-tool settings file (3 keys)
+  const legacy = safeReadJson<any[]>(TOOL_SETTINGS_FILE, []).find((r) => r?.productId === sectionId);
+  if (legacy?.keys || legacy?.apiKey) return normalizeStoredKeys(sectionId, legacy.keys || [{ id: 'key-1', provider: legacy.provider, baseUrl: legacy.baseUrl, model: legacy.model, apiKey: legacy.apiKey }]);
+  return normalizeStoredKeys(sectionId, []);
+};
+
+const saveDevSectionKeys = (sectionId: string, keys: AiKeyEntry[]) => {
+  const map = safeReadJson<DevAiKeysMap>(AI_KEYS_FILE, {});
+  map[sectionId] = keys.slice(0, KEYS_PER_SECTION);
+  safeWriteJson(AI_KEYS_FILE, map);
+};
+
+const loadDevKeyStates = (sectionId: string): Record<string, AiKeyState> => safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {})[sectionId] || {};
+
+const saveDevKeyStates = (sectionId: string, states: AiKeyState[]) => {
+  const map = safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {});
+  map[sectionId] = Object.fromEntries((states || []).map((st) => [st.keyId, st]));
+  safeWriteJson(AI_STATE_FILE, map);
+};
+
+const resetDevKeyStates = (sectionId: string, keyId?: string) => {
+  const map = safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {});
+  if (keyId) {
+    if (map[sectionId]) delete map[sectionId][keyId];
+  } else {
+    delete map[sectionId];
+  }
+  safeWriteJson(AI_STATE_FILE, map);
+};
+
+const devRecall = (sessionId: string, limit = 40): ChatTurn[] => {
+  const rows = safeReadJson<DevAiMemory>(AI_MEMORY_FILE, [])
+    .filter((r) => r.sessionId === sessionId)
+    .slice(-limit)
+    .map((r) => ({ role: r.role, content: r.content }));
+  return rows;
+};
+
+const devRemember = (args: { sessionId: string; sectionId: string; turns: ChatTurn[]; stickyKeyId?: string }) => {
+  const rows = safeReadJson<DevAiMemory>(AI_MEMORY_FILE, []);
+  const now = new Date().toISOString();
+  for (const t of args.turns.slice(-8)) {
+    rows.push({ id: devId('aim'), sessionId: args.sessionId, sectionId: args.sectionId, role: t.role, content: t.content.slice(0, 2000), createdAt: now });
+  }
+  // keep the memory bounded (80 newest per conversation) and the file small
+  const mine = rows.filter((r) => r.sessionId === args.sessionId);
+  const others = rows.filter((r) => r.sessionId !== args.sessionId).slice(-400);
+  safeWriteJson(AI_MEMORY_FILE, [...others, ...mine.slice(-80)]);
+
+  const sessions = safeReadJson<DevAiSessions>(AI_SESSIONS_FILE, {});
+  const prev = sessions[args.sessionId];
+  sessions[args.sessionId] = {
+    sectionId: args.sectionId,
+    stickyKeyId: args.stickyKeyId || prev?.stickyKeyId || '',
+    turns: (prev?.turns || 0) + args.turns.length,
+    updatedAt: now,
+  };
+  safeWriteJson(AI_SESSIONS_FILE, sessions);
+};
+
+const devStickyKey = (sessionId: string): string => safeReadJson<DevAiSessions>(AI_SESSIONS_FILE, {})[sessionId]?.stickyKeyId || '';
+
+const devLogEvents = (sectionId: string, attempts: any[]) => {
+  const interesting = (attempts || []).filter((a) => !a.ok || a.handoff);
+  if (!interesting.length) return;
+  const rows = safeReadJson<DevAiEvents>(AI_EVENTS_FILE, []);
+  const now = new Date().toISOString();
+  for (const a of interesting) {
+    rows.unshift({
+      id: devId('ake'),
+      sectionId,
+      keyId: a.keyId,
+      code: a.ok ? 'handoff' : a.code || 'unknown',
+      status: a.status || 0,
+      message: String(a.error || (a.handoff ? 'ادامه‌ی گفتگو روی کلید پشتیبان' : '')).slice(0, 300),
+      createdAt: now,
+    });
+  }
+  safeWriteJson(AI_EVENTS_FILE, rows.slice(0, 300));
+};
+
+/** File-backed key store — the dev twin of d1KeyStore(). */
+const devKeyStore = (): AiKeyStore => ({
+  loadKeys: async (sectionId) => loadDevSectionKeys(sectionId),
+  loadStates: async (sectionId) => loadDevKeyStates(sectionId),
+  saveStates: async (sectionId, states) => saveDevKeyStates(sectionId, states),
+  saveKeys: async (sectionId, keys) => saveDevSectionKeys(sectionId, keys),
+  recall: async (sessionId) => devRecall(sessionId),
+  stickyKey: async (sessionId) => devStickyKey(sessionId),
+  remember: async (args) => devRemember(args),
+  logEvents: async (sectionId, attempts) => devLogEvents(sectionId, attempts),
+  envFallbackKey: (process.env.GEMINI_API_KEY || '').trim(),
+});
+
+const runDevSectionAi = (args: Parameters<typeof runSectionAiWithStore>[1]): Promise<RunSectionAiResult> =>
+  runSectionAiWithStore(devKeyStore(), args);
+
+const devSectionStatuses = () => {
+  const envKeyPresent = !!(process.env.GEMINI_API_KEY || '').trim();
+  return AI_SECTIONS.map((section) =>
+    buildSectionStatus({
+      sectionId: section.id,
+      keys: loadDevSectionKeys(section.id),
+      states: loadDevKeyStates(section.id),
+      envKeyPresent,
+    })
+  );
 };
 
 const FA_MAP: Record<string, string> = {
@@ -518,6 +663,7 @@ export function cmsDevApiPlugin(): Plugin {
               const body = await readBody();
               const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages : [];
               const question = String(messages[messages.length - 1]?.content || '').trim();
+              const clientIp = String(req.socket?.remoteAddress || 'local').replace(/^::ffff:/, '');
               if (!question) {
                 return sendJson({ ok: false, error: 'سوال خالی است.' }, 400);
               }
@@ -554,60 +700,33 @@ export function cmsDevApiPlugin(): Plugin {
 
               let answer = '';
               let mode: 'ai' | 'local' = 'local';
+              let usedKeySlot = 0;
+              let usedKeyLabel = '';
+              let usedKeySwitched = false;
 
-              const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
-              if (geminiKey) {
-                const history = messages.slice(0, -1).filter((m) => m.role === 'user' || m.role === 'model').map((m) => ({
-                  role: m.role === 'user' ? 'user' : 'model',
-                  parts: [{ text: String(m.content || '').slice(0, 800) }],
-                }));
-
-                const headers: Record<string, string> = {
-                  'Content-Type': 'application/json',
-                  'x-goog-api-key': geminiKey,
-                };
-
-                const candidateModels = [
-                  'gemini-2.5-flash',
-                  'gemini-flash-latest',
-                  'gemini-3.5-flash',
-                  'gemini-3.1-flash-lite',
-                ];
-
-                for (const model of candidateModels) {
-                  try {
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-                    const gRes = await fetch(geminiUrl, {
-                      method: 'POST',
-                      headers,
-                      signal: AbortSignal.timeout(20000),
-                      body: JSON.stringify({
-                        systemInstruction: { parts: [{ text: soulPrompt }] },
-                        contents: [...history, { role: 'user', parts: [{ text: question }] }],
-                        generationConfig: {
-                          temperature: 0.6,
-                          maxOutputTokens: 600,
-                          thinkingConfig: {
-                            thinkingBudget: 0,
-                          },
-                        },
-                      }),
-                    });
-
-                    if (gRes.ok) {
-                      const gj: any = await gRes.json();
-                      const parts = gj?.candidates?.[0]?.content?.parts || [];
-                      const text = parts.find((p: any) => p?.text && !p?.thought)?.text || parts.find((p: any) => p?.text)?.text || parts[0]?.text;
-                      if (text) {
-                        answer = text.trim();
-                        mode = 'ai';
-                        break;
-                      }
-                    }
-                  } catch {
-                    // Gracefully continue to fallback model or local engine without raising warnings
-                  }
-                }
+              // 5 keys of the «دستیار هوشمند» section + auto-rotation + memory.
+              const siteSessionId = String(body?.sessionId || '').trim().slice(0, 120) || derivedSessionId(SITE_ASSISTANT_SECTION, `ip:${clientIp}`);
+              const history: ChatTurn[] = messages
+                .slice(0, -1)
+                .filter((m) => m.role === 'user' || m.role === 'model')
+                .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
+              const ai = await runDevSectionAi({
+                sectionId: SITE_ASSISTANT_SECTION,
+                systemPrompt: soulPrompt,
+                history,
+                question,
+                temperature: 0.6,
+                maxOutputTokens: 600,
+                sessionId: siteSessionId,
+                scope: `ip:${clientIp}`,
+                fallback: () => localAnswer(question, digest, cfg.ctaText, sources),
+              });
+              if (ai.text) {
+                answer = ai.text;
+                mode = ai.usedFallback ? 'local' : 'ai';
+                usedKeySlot = ai.usedSlot || 0;
+                usedKeyLabel = ai.usedKeyLabel || '';
+                usedKeySwitched = ai.switched;
               }
 
               if (!answer) {
@@ -638,7 +757,14 @@ export function cmsDevApiPlugin(): Plugin {
                 act = undefined;
               }
 
-              return sendJson({ ok: true, answer, act, mode, sources: sources.map(({ title, url }) => ({ title, url })) });
+              return sendJson({
+                ok: true,
+                answer,
+                act,
+                mode,
+                sources: sources.map(({ title, url }) => ({ title, url })),
+                key: usedKeySlot ? { slot: usedKeySlot, label: usedKeyLabel, switched: usedKeySwitched } : undefined,
+              });
             }
           }
 
@@ -652,9 +778,6 @@ export function cmsDevApiPlugin(): Plugin {
               const since = new Date(sinceIso).getTime();
               return safeReadJson<any[]>(TOOL_MSGS_FILE, []).filter((m) => m.phone === phone && m.productId === productId && new Date(m.createdAt).getTime() >= since).length;
             };
-            type DevKeyEntry = { id: string; label: string; provider: 'gemini' | 'openai'; baseUrl: string; model: string; apiKey: string; enabled: boolean };
-            type DevSettings = { productId: string; provider?: string; baseUrl?: string; model?: string; apiKey?: string; keys?: DevKeyEntry[] };
-            const readSettings = () => safeReadJson<DevSettings[]>(TOOL_SETTINGS_FILE, []);
             const contentData = () => (safeReadJson<{ data: any } | null>(CONTENT_FILE, null)?.data || seedData);
             const publicTool = (id: string) => {
               const t = getTool(id);
@@ -662,50 +785,6 @@ export function cmsDevApiPlugin(): Plugin {
               const b = resolveBehavior(t, contentData());
               return { id: t.id, name: t.name, welcome: b.welcome, suggestions: b.suggestions, placeholder: b.placeholder };
             };
-
-            const getProductKeys = (productId: string): DevKeyEntry[] => {
-              const rows = readSettings();
-              const row = rows.find((s) => s.productId === productId);
-              const defaults: DevKeyEntry[] = [
-                { id: 'key-1', label: 'کلید اصلی (Primary)', provider: 'gemini', model: 'gemini-2.5-flash', baseUrl: '', apiKey: '', enabled: true },
-                { id: 'key-2', label: 'کلید پشتیبان اول (Backup 1)', provider: 'gemini', model: 'gemini-flash-latest', baseUrl: '', apiKey: '', enabled: true },
-                { id: 'key-3', label: 'کلید پشتیبان دوم (Backup 2)', provider: 'openai', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', apiKey: '', enabled: true },
-              ];
-              if (row?.keys && Array.isArray(row.keys) && row.keys.length > 0) {
-                const res: DevKeyEntry[] = [];
-                for (let i = 0; i < 3; i++) {
-                  const item = row.keys.find((k) => k.id === `key-${i + 1}`) || row.keys[i];
-                  res.push({
-                    id: `key-${i + 1}`,
-                    label: item?.label || defaults[i].label,
-                    provider: item?.provider === 'openai' ? 'openai' : 'gemini',
-                    baseUrl: String(item?.baseUrl || defaults[i].baseUrl || '').trim(),
-                    model: String(item?.model || defaults[i].model || '').trim(),
-                    apiKey: String(item?.apiKey || '').trim(),
-                    enabled: item?.enabled !== false,
-                  });
-                }
-                return res;
-              }
-              // Legacy single key migration
-              if (row && (row.apiKey || row.provider || row.model)) {
-                return [
-                  {
-                    id: 'key-1',
-                    label: 'کلید اصلی (Primary)',
-                    provider: row.provider === 'openai' ? 'openai' : 'gemini',
-                    baseUrl: row.baseUrl || '',
-                    model: row.model || (row.provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash'),
-                    apiKey: row.apiKey || '',
-                    enabled: true,
-                  },
-                  defaults[1],
-                  defaults[2],
-                ];
-              }
-              return defaults;
-            };
-
             if (method === 'GET') {
               if (!isAdmin) return sendJson({ ok: false, error: 'فقط ادمین.' }, 401);
               const view = url.searchParams.get('view');
@@ -713,36 +792,40 @@ export function cmsDevApiPlugin(): Plugin {
                 const msgs = safeReadJson<any[]>(TOOL_MSGS_FILE, []);
                 return sendJson({ ok: true, items: msgs.slice(0, 200).map((m) => ({ id: m.id, phone: m.phone, product_id: m.productId, question: m.question, answer: m.answer, created_at: m.createdAt })) });
               }
-              if (view === 'settings') {
-                const rows = readSettings();
+              if (view === 'settings' || view === 'keys') {
                 const envKey = (process.env.GEMINI_API_KEY || '').trim();
-                const items = TOOLS.map((t) => {
-                  const row = rows.find((x) => x.productId === t.id);
-                  const keys = getProductKeys(t.id);
-                  const publicKeys = keys.map((k) => ({
-                    id: k.id,
-                    label: k.label,
-                    provider: k.provider,
-                    baseUrl: k.baseUrl,
-                    model: k.model,
-                    hasKey: !!(k.apiKey || '').trim(),
-                    keyMask: maskKey(k.apiKey || ''),
-                    enabled: k.enabled,
+                const sections = devSectionStatuses();
+                const items = sections
+                  .filter((sec) => sec.kind === 'product')
+                  .map((sec) => ({
+                    productId: sec.sectionId,
+                    name: sec.name,
+                    provider: sec.keys[0]?.provider || 'gemini',
+                    baseUrl: sec.keys[0]?.baseUrl || '',
+                    model: sec.keys[0]?.model || '',
+                    hasKey: sec.configuredCount > 0,
+                    keyMask: sec.keys.find((k) => k.hasKey)?.keyMask || '',
+                    usingEnvFallback: sec.configuredCount === 0 && !!envKey,
+                    keys: sec.keys.map((k) => ({
+                      id: k.id,
+                      label: k.label,
+                      provider: k.provider,
+                      baseUrl: k.baseUrl,
+                      model: k.model,
+                      hasKey: k.hasKey,
+                      keyMask: k.keyMask,
+                      enabled: k.enabled,
+                    })),
                   }));
-                  const hasAnyKey = publicKeys.some((k) => k.hasKey && k.enabled);
-                  return {
-                    productId: t.id,
-                    name: t.name,
-                    provider: keys[0]?.provider || 'gemini',
-                    baseUrl: keys[0]?.baseUrl || '',
-                    model: keys[0]?.model || '',
-                    hasKey: hasAnyKey,
-                    keyMask: publicKeys[0]?.keyMask || '',
-                    usingEnvFallback: !hasAnyKey && !!envKey,
-                    keys: publicKeys,
-                  };
-                });
-                return sendJson({ ok: true, items, envKeyPresent: !!envKey });
+                return sendJson({ ok: true, sections, items, envKeyPresent: !!envKey, keysPerSection: KEYS_PER_SECTION, sectionsMeta: AI_SECTIONS });
+              }
+              if (view === 'keyEvents') {
+                const limit = parseInt(url.searchParams.get('limit') || '60', 10);
+                // same snake_case shape as the D1 rows in production
+                const items = safeReadJson<any[]>(AI_EVENTS_FILE, [])
+                  .slice(0, Math.max(1, Math.min(200, limit)))
+                  .map((e) => ({ id: e.id, section_id: e.sectionId, key_id: e.keyId, code: e.code, status: e.status, message: e.message, created_at: e.createdAt }));
+                return sendJson({ ok: true, items });
               }
               return sendJson({ ok: true, items: grants.map((g) => ({ ...g, devicesUsed: g.devices.length })) });
             }
@@ -752,129 +835,100 @@ export function cmsDevApiPlugin(): Plugin {
               const action = String(body?.action || '');
 
               // ---- ADMIN ----
-              if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'setProductKeys' || action === 'testKey' || action === 'clearKey') {
+              if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'setProductKeys' || action === 'setSectionKeys' || action === 'testKey' || action === 'testAllKeys' || action === 'resetKeyState' || action === 'clearKey') {
                 if (!isAdmin) return sendJson({ ok: false, error: 'فقط ادمین.' }, 401);
 
+                const sectionIdOf = (): string => {
+                  const raw = String(body?.sectionId || body?.productId || '').trim();
+                  if (raw && (isAiSectionId(raw) || getTool(raw))) return raw;
+                  return '';
+                };
+                const clampSlot = (raw: unknown): number => {
+                  const n = parseInt(String(raw ?? '0'), 10);
+                  if (!Number.isFinite(n)) return 1;
+                  return Math.max(1, Math.min(KEYS_PER_SECTION, n >= 1 ? n : n + 1));
+                };
+
                 if (action === 'testKey') {
-                  const productId = String(body.productId || '');
-                  const keyIndex = parseInt(String(body.keyIndex ?? '0'), 10);
-                  const existingKeys = getProductKeys(productId);
-                  const currentKey = existingKeys[keyIndex] || existingKeys[0];
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const existingKeys = loadDevSectionKeys(sectionId);
+                  const slot = clampSlot(body.keyIndex);
+                  const currentKey = existingKeys[slot - 1] || existingKeys[0];
                   const provider = body.provider === 'openai' ? 'openai' : (body.provider === 'gemini' ? 'gemini' : (currentKey?.provider || 'gemini'));
                   const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : currentKey?.baseUrl;
                   const model = typeof body.model === 'string' ? body.model.trim() : currentKey?.model;
                   const apiKey = (typeof body.apiKey === 'string' && body.apiKey.trim()) ? body.apiKey.trim() : (currentKey?.apiKey || '');
-
-                  if (!apiKey) {
-                    return sendJson({ ok: false, error: 'کلید API برای این اسلات تنظیم نشده است.' }, 400);
-                  }
-                  const result = await testSingleKey({ provider, apiKey, baseUrl, model });
-                  return sendJson(result);
+                  if (!apiKey) return sendJson({ ok: false, error: 'کلید API برای این اسلات تنظیم نشده است.' }, 400);
+                  return sendJson(await testSingleKey({ provider, apiKey, baseUrl, model }));
                 }
 
-                if (action === 'setProductKeys') {
-                  const productId = String(body.productId || '');
-                  if (!getTool(productId)) return sendJson({ ok: false, error: 'محصول نامعتبر است.' }, 400);
-                  const incomingKeys: any[] = Array.isArray(body.keys) ? body.keys : [];
-                  const existingKeys = getProductKeys(productId);
-                  const nextKeys: DevKeyEntry[] = [];
-                  for (let i = 0; i < 3; i++) {
-                    const inc: any = incomingKeys.find((k: any) => k.id === `key-${i + 1}`) || incomingKeys[i] || {};
-                    const ext: Partial<DevKeyEntry> = existingKeys[i] || {};
-                    const newKey = typeof inc.apiKey === 'string' ? inc.apiKey.trim() : '';
-                    const apiKey = inc.clearKey ? '' : (newKey || ext.apiKey || '');
-                    nextKeys.push({
-                      id: `key-${i + 1}`,
-                      label: String(inc.label || ext.label || (i === 0 ? 'کلید اصلی (Primary)' : `کلید پشتیبان ${i}`)),
-                      provider: inc.provider === 'openai' ? 'openai' : 'gemini',
-                      baseUrl: String(inc.baseUrl ?? ext.baseUrl ?? '').trim().slice(0, 200),
-                      model: String(inc.model ?? ext.model ?? '').trim().slice(0, 80),
-                      apiKey,
-                      enabled: inc.enabled !== false,
-                    });
+                if (action === 'testAllKeys') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const keys = loadDevSectionKeys(sectionId);
+                  const states = loadDevKeyStates(sectionId);
+                  const results: any[] = [];
+                  for (const k of keys) {
+                    if (!(k.apiKey || '').trim()) {
+                      results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: false, ok: false, error: 'کلید ثبت نشده است.' });
+                      continue;
+                    }
+                    const r = await testSingleKey({ provider: k.provider, apiKey: k.apiKey, baseUrl: k.baseUrl, model: k.model });
+                    const prev = states[k.id] || emptyKeyState(k.id);
+                    const now = Date.now();
+                    states[k.id] = r.ok
+                      ? { ...prev, keyId: k.id, status: 'healthy', cooldownUntil: 0, lastError: '', lastStatusCode: 200, lastUsedAt: now, lastLatencyMs: r.latencyMs, successCount: prev.successCount + 1 }
+                      : applyAttemptToState(prev, k.id, { ok: false, code: classifyAiError({ message: r.error }), status: 0, latencyMs: r.latencyMs, error: r.error }, now);
+                    results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: true, provider: k.provider, model: r.model || k.model, ok: r.ok, latencyMs: r.latencyMs, reply: r.reply, error: r.error });
                   }
-                  const rows = readSettings();
-                  const idx = rows.findIndex((s) => s.productId === productId);
-                  const next: DevSettings = {
-                    productId,
-                    provider: nextKeys[0].provider,
-                    baseUrl: nextKeys[0].baseUrl,
-                    model: nextKeys[0].model,
-                    apiKey: nextKeys[0].apiKey,
-                    keys: nextKeys,
-                  };
-                  if (idx >= 0) rows[idx] = next; else rows.push(next);
-                  safeWriteJson(TOOL_SETTINGS_FILE, rows);
-                  return sendJson({
-                    ok: true,
-                    keys: nextKeys.map((k) => ({
-                      id: k.id,
-                      label: k.label,
-                      provider: k.provider,
-                      baseUrl: k.baseUrl,
-                      model: k.model,
-                      hasKey: !!k.apiKey,
-                      keyMask: maskKey(k.apiKey || ''),
-                      enabled: k.enabled,
-                    })),
-                  });
+                  saveDevKeyStates(sectionId, Object.values(states));
+                  return sendJson({ ok: true, sectionId, results, passed: results.filter((r) => r.ok).length, total: results.length });
+                }
+
+                if (action === 'resetKeyState') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const hasSlot = body.keyIndex !== undefined && body.keyIndex !== null && body.keyIndex !== '';
+                  resetDevKeyStates(sectionId, hasSlot ? `key-${clampSlot(body.keyIndex)}` : undefined);
+                  return sendJson({ ok: true });
+                }
+
+                if (action === 'setProductKeys' || action === 'setSectionKeys') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const incomingKeys: any[] = Array.isArray(body.keys) ? body.keys : [];
+                  const nextKeys = mergeSectionKeys(sectionId, incomingKeys, loadDevSectionKeys(sectionId));
+                  saveDevSectionKeys(sectionId, nextKeys);
+                  return sendJson({ ok: true, sectionId, keys: nextKeys.map(publicKeyInfo) });
                 }
 
                 if (action === 'setKey') {
-                  const productId = String(body.productId || '');
-                  if (!getTool(productId)) return sendJson({ ok: false, error: 'محصول نامعتبر است.' }, 400);
-                  const keyIndex = Math.max(0, Math.min(2, parseInt(String(body.keyIndex ?? '0'), 10)));
-                  const existingKeys = getProductKeys(productId);
-                  const provider = body.provider === 'openai' ? 'openai' : 'gemini';
-                  const baseUrl = String(body.baseUrl || '').trim().slice(0, 200);
-                  const model = String(body.model || '').trim().slice(0, 80);
-                  const newKey = String(body.apiKey || '').trim();
-                  const target = existingKeys[keyIndex];
-                  const apiKey = newKey || target.apiKey || '';
-                  target.provider = provider;
-                  target.baseUrl = baseUrl;
-                  target.model = model;
-                  target.apiKey = apiKey;
-                  if (typeof body.enabled === 'boolean') target.enabled = body.enabled;
-                  if (body.label) target.label = String(body.label);
-
-                  const rows = readSettings();
-                  const idx = rows.findIndex((s) => s.productId === productId);
-                  const next: DevSettings = {
-                    productId,
-                    provider: existingKeys[0].provider,
-                    baseUrl: existingKeys[0].baseUrl,
-                    model: existingKeys[0].model,
-                    apiKey: existingKeys[0].apiKey,
-                    keys: existingKeys,
-                  };
-                  if (idx >= 0) rows[idx] = next; else rows.push(next);
-                  safeWriteJson(TOOL_SETTINGS_FILE, rows);
-                  return sendJson({ ok: true, hasKey: !!apiKey, keyMask: maskKey(apiKey) });
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const slot = clampSlot(body.keyIndex);
+                  const patch = [{ id: `key-${slot}`, provider: body.provider, baseUrl: body.baseUrl, model: body.model, apiKey: body.apiKey, label: body.label, enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined }];
+                  const nextKeys = mergeSectionKeys(sectionId, patch, loadDevSectionKeys(sectionId));
+                  saveDevSectionKeys(sectionId, nextKeys);
+                  const saved = nextKeys[slot - 1];
+                  return sendJson({ ok: true, hasKey: !!saved.apiKey, keyMask: maskKey(saved.apiKey || ''), slot });
                 }
+
                 if (action === 'clearKey') {
-                  const productId = String(body.productId || '');
-                  const keyIndex = body.keyIndex !== undefined ? parseInt(String(body.keyIndex), 10) : -1;
-                  if (keyIndex >= 0 && keyIndex < 3) {
-                    const existingKeys = getProductKeys(productId);
-                    existingKeys[keyIndex].apiKey = '';
-                    const rows = readSettings();
-                    const idx = rows.findIndex((s) => s.productId === productId);
-                    const next: DevSettings = {
-                      productId,
-                      provider: existingKeys[0].provider,
-                      baseUrl: existingKeys[0].baseUrl,
-                      model: existingKeys[0].model,
-                      apiKey: existingKeys[0].apiKey,
-                      keys: existingKeys,
-                    };
-                    if (idx >= 0) rows[idx] = next; else rows.push(next);
-                    safeWriteJson(TOOL_SETTINGS_FILE, rows);
-                    return sendJson({ ok: true });
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const hasSlot = body.keyIndex !== undefined && body.keyIndex !== null && body.keyIndex !== '';
+                  const existingKeys = loadDevSectionKeys(sectionId);
+                  if (hasSlot) {
+                    const slot = clampSlot(body.keyIndex);
+                    saveDevSectionKeys(sectionId, mergeSectionKeys(sectionId, [{ id: `key-${slot}`, clearKey: true }], existingKeys));
+                    return sendJson({ ok: true, slot });
                   }
-                  safeWriteJson(TOOL_SETTINGS_FILE, readSettings().filter((s) => s.productId !== productId));
+                  saveDevSectionKeys(sectionId, mergeSectionKeys(sectionId, existingKeys.map((k) => ({ id: k.id, clearKey: true })), existingKeys));
+                  resetDevKeyStates(sectionId);
                   return sendJson({ ok: true });
                 }
+
                 if (action === 'grant') {
                   const phone = normalizePhone(String(body.phone || ''));
                   if (!isValidIranMobile(phone)) return sendJson({ ok: false, error: 'شماره موبایل معتبر نیست (مثال: 09xxxxxxxxx).' }, 400);
@@ -996,25 +1050,28 @@ export function cmsDevApiPlugin(): Plugin {
 
                 const behavior = resolveBehavior(tool, data);
                 const systemPrompt = buildToolSystemPrompt(tool, data);
-                const productKeys = getProductKeys(productId);
-                const envKey = (process.env.GEMINI_API_KEY || '').trim();
-                const history = messages.slice(0, -1)
+                const history: ChatTurn[] = messages
+                  .slice(0, -1)
                   .filter((m) => m.role === 'user' || m.role === 'model')
                   .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
-                let answer = '';
-                let mode: 'ai' | 'local' = 'local';
-                const aiResult = await callAiProviderWithFailover({
+                const productSessionId = String(body?.sessionId || '').trim().slice(0, 120) ||
+                  derivedSessionId(productId, paid && payload ? `phone:${payload.phone}` : `device:${deviceId || 'local'}`);
+
+                // 5 keys → sticky key first → next healthy key on limit/error,
+                // reviewing the previous chats before answering (continuity).
+                const aiResult = await runDevSectionAi({
+                  sectionId: productId,
                   systemPrompt,
                   history,
                   question,
                   temperature: behavior.temperature,
-                  keys: productKeys,
                   preferredModel: behavior.model,
-                  envFallbackKey: envKey,
+                  maxOutputTokens: 900,
+                  sessionId: productSessionId,
+                  fallback: () => localToolAnswer(tool, question),
                 });
-                if (aiResult.text) { answer = aiResult.text; mode = 'ai'; }
-                if (!answer) answer = localToolAnswer(tool, question);
-
+                const answer = aiResult.text || localToolAnswer(tool, question);
+                const mode: 'ai' | 'local' = aiResult.usedFallback || !aiResult.text ? 'local' : 'ai';
                 if (!paid && deviceId) {
                   const trials = safeReadJson<DevTrial[]>(TOOL_TRIALS_FILE, []);
                   const idx = trials.findIndex((x) => x.deviceId === deviceId && x.productId === productId);
@@ -1030,7 +1087,15 @@ export function cmsDevApiPlugin(): Plugin {
                   const used = usageSinceDev(payload!.phone, productId, grant.createdAt);
                   quotaInfo = { limit: grant.messageQuota, used, remaining: Math.max(0, grant.messageQuota - used) };
                 }
-                return sendJson({ ok: true, answer, mode, trial: trialInfo, coins: coinInfo, quota: quotaInfo });
+                return sendJson({
+                  ok: true,
+                  answer,
+                  mode,
+                  trial: trialInfo,
+                  coins: coinInfo,
+                  quota: quotaInfo,
+                  key: { slot: aiResult.usedSlot, label: aiResult.usedKeyLabel, provider: aiResult.usedProvider, switched: aiResult.switched, recalled: aiResult.recalledCount, attempts: aiResult.attempts.length },
+                });
               }
 
               return sendJson({ ok: false, error: 'اکشن نامعتبر است.' }, 400);
@@ -1043,56 +1108,21 @@ export function cmsDevApiPlugin(): Plugin {
             const title = String(body.title || '').trim();
             if (!title) return sendJson({ ok: false, error: 'عنوان خالی است.' }, 400);
 
-            const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
-            if (geminiKey) {
-              const headers: Record<string, string> = {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': geminiKey,
-              };
-
-              const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite'];
-
-              for (const model of candidateModels) {
-                try {
-                  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-                  const gRes = await fetch(geminiUrl, {
-                    method: 'POST',
-                    headers,
-                    signal: AbortSignal.timeout(8000),
-                    body: JSON.stringify({
-                      contents: [
-                        {
-                          role: 'user',
-                          parts: [
-                            {
-                              text: `Translate this Persian page or post title into a short, concise, URL-safe English slug (lowercase English words joined by dashes, max 5 words, no punctuation, no explanations). Reply with ONLY the slug itself:\n\nTitle: ${title}`,
-                            },
-                          ],
-                        },
-                      ],
-                      generationConfig: {
-                        temperature: 0.1,
-                        maxOutputTokens: 150,
-                        thinkingConfig: {
-                          thinkingBudget: 0,
-                        },
-                      },
-                    }),
-                  });
-                  if (gRes.ok) {
-                    const gj: any = await gRes.json();
-                    const parts = gj?.candidates?.[0]?.content?.parts || [];
-                    const slugCandidate = parts.find((p: any) => p?.text)?.text?.trim();
-                    const cleaned = cleanSlug(slugCandidate || '');
-                    if (cleaned) {
-                      return sendJson({ ok: true, slug: cleaned, source: 'gemini' });
-                    }
-                  }
-                } catch {
-                  // Fall back smoothly to next model or transliteration without console noise
-                }
-              }
-            }
+            // 5 keys of the «تولید اسلاگ سئو» section + automatic rotation.
+            const aiSlugRes = await runDevSectionAi({
+              sectionId: SEO_SLUG_SECTION,
+              systemPrompt:
+                'You are an SEO slug generator. Convert the Persian page/post title you receive into a short, SEO-friendly English URL slug.\n' +
+                'Rules: lowercase English words only, joined by single dashes, max 6 words, no dates, no stop words at the start, translate the meaning (do not transliterate).\n' +
+                'Respond with ONLY the slug, nothing else.',
+              history: [],
+              question: title,
+              temperature: 0.1,
+              maxOutputTokens: 150,
+              remember: false,
+            });
+            const aiSlug = cleanSlug(String(aiSlugRes.text || '').replace(/^["'`\s]+|["'`\s]+$/g, ''));
+            if (aiSlug) return sendJson({ ok: true, slug: aiSlug, source: 'ai', key: { slot: aiSlugRes.usedSlot, label: aiSlugRes.usedKeyLabel } });
 
             const fallbackSlug = cleanSlug(transliterate(title)) || 'post';
             return sendJson({ ok: true, slug: fallbackSlug, source: 'translit' });

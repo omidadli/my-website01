@@ -23,6 +23,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from '../../services/api';
+import { getChatSessionId, resetChatSession } from '../../utils/chatStorage';
 import { AiToolMeta } from '../../data/tools';
 import { PERSONAL_INFO } from '../../data/content';
 import {
@@ -189,7 +190,10 @@ export const ToolChatModal: React.FC<Props> = ({
   };
 
   const resetChat = () => {
-    if (!sending) setMessages([{ role: 'assistant', content: welcomeMsg || trialWelcome }]);
+    if (sending) return;
+    // a brand-new chat = a brand-new conversation memory on the server
+    resetChatSession(tool.id);
+    setMessages([{ role: 'assistant', content: welcomeMsg || trialWelcome }]);
   };
 
   const selPlan = plans.find((p) => p.id === selectedPlan);
@@ -319,7 +323,10 @@ export const ToolChatModal: React.FC<Props> = ({
       role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model',
       content: m.content,
     }));
-    const r = await api.toolChat({ token: token || undefined, productId: tool.id, deviceId, messages: history });
+    // stable conversation id per product → the server keeps the chat memory,
+    // reviews it before answering and continues the same thread across key switches
+    const sessionId = getChatSessionId(tool.id);
+    const r = await api.toolChat({ token: token || undefined, productId: tool.id, deviceId, sessionId, messages: history });
     setSending(false);
 
     if (r.ok && r.answer) {

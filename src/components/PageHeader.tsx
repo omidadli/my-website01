@@ -32,6 +32,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
     projects: 'پروژه‌های جاری و سابق',
     products: 'محصولات و ابزارها',
     admin: 'پیشخوان مدیریت محتوا (CMS)',
+    profile: 'پروفایل کاربری',
   };
 
   return (
