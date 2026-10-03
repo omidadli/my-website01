@@ -42,7 +42,13 @@ npx wrangler d1 execute <DATABASE_NAME> --remote --file=./schema.sql
 > ```bash
 > npx wrangler d1 execute <DATABASE_NAME> --remote --file=./migrations/0003_ai_tool_access.sql
 > npx wrangler d1 execute <DATABASE_NAME> --remote --file=./migrations/0004_tool_plans_trials.sql
+> npx wrangler d1 execute <DATABASE_NAME> --remote --file=./migrations/0005_ai_section_keys.sql
 > ```
+>
+> **کلیدهای API (۵ اسلات برای هر بخش):** جدول‌های `ai_section_keys`، `ai_key_state`،
+> `ai_chat_memory`، `ai_chat_session` و `ai_key_events` هم داخل `schema.sql` هستند و
+> هم در مایگریشن ۰۰۰۵؛ API در صورت نبودشان خودکار می‌سازدشان. راهنمای کامل:
+> `docs/API-KEYS.md`.
 >
 > **قیمت‌گذاریِ پلکانی و بازی‌وارسازی:** هر ابزار سه پلن بر اساس میزانِ مصرف دارد (پایه / حرفه‌ای / VIP) که در `lib/toolPlans.ts` تعریف شده و همه از ۴۰۰٬۰۰۰ تومان به بالا هستند؛ برچسبِ قیمتِ هر پلن از پنل ادمین قابل بازنویسی است (`AI_TOOLS_CONFIG.tools[id].planPrices`). هر پلن یک «سهمیه‌ی پیام» (`message_quota`) و مدت اعتبار دارد، پس کاربرِ پرمصرف و کم‌مصرف یکسان پرداخت نمی‌کنند. برای جذبِ کاربر، هر ابزار **N پیام رایگانِ آزمایشی** دارد که بر پایه‌ی شناسه‌ی دستگاه در جدول `tool_trials` شمرده می‌شود؛ تعدادش از `AI_TOOLS_CONFIG.freeTrialCount` تنظیم می‌شود (۰ = بدون تست، کاملاً قفل).
 

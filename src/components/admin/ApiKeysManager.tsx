@@ -136,6 +136,12 @@ export const ApiKeysManager: React.FC<Props> = ({ onToast, initialSectionId }) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Jump to the section requested by a deep link (?section=…) even when the tab
+  // was already mounted (e.g. the «مدیریت ۵ کلید» button inside the toolaccess tab).
+  useEffect(() => {
+    if (initialSectionId) setActiveId(initialSectionId);
+  }, [initialSectionId]);
+
   const patchDraft = (keyId: string, patch: Partial<KeyDraft>) => {
     setDrafts((prev) => ({
       ...prev,

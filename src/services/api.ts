@@ -517,18 +517,7 @@ export const api = {
     }
   },
 
-  /** Admin: set the AI connection (provider/model/key) for one tool. */
-  async setToolKey(payload: { productId: string; provider: string; baseUrl?: string; model?: string; apiKey?: string; keyIndex?: number }): Promise<{ ok: boolean; error?: string }> {
-    try {
-      const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'setKey', ...payload }) });
-      const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
-    } catch {
-      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
-    }
-  },
-
-  /** Admin: clear the AI connection (falls back to the shared GEMINI_API_KEY). */
+  /** Admin: clear one key slot (keyIndex) or all of them (omit it) — falls back to GEMINI_API_KEY. */
   async clearToolKey(productId: string, keyIndex?: number): Promise<boolean> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers() }, body: JSON.stringify({ action: 'clearKey', productId, keyIndex }) });

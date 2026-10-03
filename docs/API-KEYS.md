@@ -147,9 +147,21 @@ POST /api/tools { action:"clearKey", sectionId, [keyIndex] }   // بدون keyIn
 | Production | `ai_key_events` | رویدادهای لیمیت/جابه‌جایی |
 | Development | `.dev-ai-keys.json`, `.dev-ai-states.json`, `.dev-ai-memory.json`, `.dev-ai-sessions.json`, `.dev-ai-events.json` | همان‌ها برای اجرای محلی |
 
-جدول‌ها در اولین درخواست خودکار ساخته می‌شوند (`ensureCoreTables`)، پس نیازی به
-اجرای دستی migration نیست. فایل‌های `.dev-ai-*.json` در `.gitignore` هستند و
-هرگز commit نمی‌شوند.
+جدول‌ها در اولین درخواست خودکار ساخته می‌شوند (`ensureCoreTables`)، پس اجرای
+دستی migration لازم نیست؛ ولی برای شفافیت و نصبِ تکرارپذیر، هر ۵ جدول و هر دو
+ستونِ `chat_messages` داخل `schema.sql` و در فایل مستقل
+`migrations/0005_ai_section_keys.sql` هم آمده‌اند:
+
+```bash
+# فقط روی دیتابیسِ موجود (نصبِ از صفر با schema.sql کامل است)
+npx wrangler d1 execute omidadli01-site-db --remote --file=./migrations/0005_ai_section_keys.sql
+```
+
+> اگر API قبلاً جدول‌ها را خودکار ساخته باشد، دو دستور `ALTER TABLE` انتهای این
+> فایل خطای «duplicate column name» می‌دهند که بی‌خطر است (بقیه‌ی دستورها
+> `IF NOT EXISTS` هستند).
+
+فایل‌های `.dev-ai-*.json` در `.gitignore` هستند و هرگز commit نمی‌شوند.
 
 ---
 

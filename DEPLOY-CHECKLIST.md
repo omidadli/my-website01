@@ -26,7 +26,15 @@ npx wrangler login                 # ورود به حساب Cloudflare
 npx wrangler d1 execute omidadli01-site-db --remote --file=./schema.sql
 ```
 > نکته: توابع سایت جدول‌های لازم را در زمان اجرا هم خودکار می‌سازند، ولی اجرای
-> بالا تضمین می‌کند همه‌چیز از ابتدا آماده باشد.
+> بالا تضمین می‌کند همه‌چیز از ابتدا آماده باشد. (`schema.sql` شاملِ جدول‌های
+> کلیدهای API هم هست: `ai_section_keys`، `ai_key_state`، `ai_chat_memory`،
+> `ai_chat_session`، `ai_key_events`.)
+>
+> اگر دیتابیس را **قبلاً** ساخته‌ای، به‌جای `schema.sql` این دو را اجرا کن:
+> ```bash
+> npx wrangler d1 execute omidadli01-site-db --remote --file=./migrations/0004_tool_plans_trials.sql
+> npx wrangler d1 execute omidadli01-site-db --remote --file=./migrations/0005_ai_section_keys.sql
+> ```
 
 ## قدم ۳ — پروژه‌ی Pages را بساز و به گیت‌هاب وصل کن
 در داشبورد → **Workers & Pages → Create → Pages → Connect to Git**.

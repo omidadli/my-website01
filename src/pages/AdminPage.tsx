@@ -167,6 +167,12 @@ const newPost = () => ({
 
 /* ------------------------------------------------------------------ */
 
+const ADMIN_TAB_IDS = [
+  'dashboard', 'posts', 'comments', 'services', 'portfolio', 'products', 'projects',
+  'about', 'home', 'pages', 'media', 'seo', 'chat', 'leads', 'toolaccess', 'apikeys',
+  'appearance', 'settings',
+] as const;
+
 export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   const {
     data, isAdmin, persistence, pinCode, changePin, loginAdmin, logoutAdmin,
@@ -180,6 +186,22 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
 
   type TabId = 'dashboard' | 'posts' | 'comments' | 'services' | 'portfolio' | 'products' | 'projects' | 'about' | 'home' | 'pages' | 'media' | 'seo' | 'chat' | 'leads' | 'toolaccess' | 'apikeys' | 'appearance' | 'settings';
   const [activeTab, setActiveTab] = usePreservedState<TabId>('admin_active_tab', 'dashboard');
+  // Deep link support: /admin?tab=apikeys&section=business-therapist opens the key
+  // manager straight on one section (used by the «مدیریت ۵ کلید» button below and
+  // by support/runbook links). Only read on mount; every later change goes through
+  // the normal tab navigation.
+  const [keySection, setKeySection] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    const section = params.get('section');
+    if (tab && (ADMIN_TAB_IDS as readonly string[]).includes(tab)) setActiveTab(tab as TabId);
+    if (section) {
+      setKeySection(section);
+      setActiveTab('apikeys');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -1371,7 +1393,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => setActiveTab('apikeys')} className="nd-btn nd-btn-accent px-5 py-2.5 text-[12px] cursor-pointer">
+                  <button onClick={() => { setKeySection(selectedTool); setActiveTab('apikeys'); }} className="nd-btn nd-btn-accent px-5 py-2.5 text-[12px] cursor-pointer">
                     <KeyRound className="w-4 h-4" /><span>مدیریت ۵ کلید در تب «کلیدهای API»</span>
                   </button>
                   <p className="text-[10.5px] nd-faint leading-relaxed">🔒 کلیدها فقط روی سرور ذخیره می‌شوند و هرگز کامل به مرورگر برنمی‌گردند (فقط ماسک‌شده). با لیمیت‌خوردن هر کلید، خودکار روی کلید سالم بعدی سوئیچ می‌شود و گفتگو از همان‌جا ادامه پیدا می‌کند.</p>
@@ -1527,7 +1549,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
           {/* ---------------- APPEARANCE ---------------- */}
           {/* ---------------- API KEYS (6 sections × 5 slots) ---------------- */}
           {activeTab === 'apikeys' && (
-            <ApiKeysManager onToast={showToast} />
+            <ApiKeysManager onToast={showToast} initialSectionId={keySection ?? undefined} />
           )}
 
           {activeTab === 'appearance' && (
