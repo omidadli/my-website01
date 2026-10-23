@@ -73,6 +73,23 @@ export const probe = async (): Promise<boolean> => {
   return cloudAvailable;
 };
 
+/** Result shape for every mutating API call. */
+export type SaveResult =
+  | { ok: true; updatedAt: string | null }
+  | {
+      ok: false;
+      code: 'conflict' | 'unauthorized' | 'server' | 'client' | 'network';
+      error: string;
+      updatedAt?: string | null;
+      conflict?: boolean;
+      unauthorized?: boolean;
+    };
+
+/** Result of an admin login attempt. */
+export type LoginResult =
+  | { ok: true }
+  | { ok: false; code: 'service' | 'rate_limit' | 'unauthorized' | 'network'; error: string };
+
 export const api = {
   probe,
   getToken,
@@ -103,7 +120,7 @@ export const api = {
   async saveContent(
     data: any,
     baseUpdatedAt?: string | null
-  ): Promise<{ ok: boolean; updatedAt?: string | null; conflict?: boolean; error?: string }> {
+  ): Promise<SaveResult> {
     try {
       const body: Record<string, unknown> = { data };
       if (typeof baseUpdatedAt === 'string') body.baseUpdatedAt = baseUpdatedAt;
@@ -114,14 +131,44 @@ export const api = {
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j?.ok) return { ok: true, updatedAt: j.updatedAt || null };
-      if (r.status === 409) return { ok: false, conflict: true, updatedAt: j?.updatedAt || null, error: j?.error || 'محتوا در جای دیگری تغییر کرده است.' };
-      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+      if (r.status === 401) {
+        return {
+          ok: false,
+          code: 'unauthorized',
+          error: 'نشست شما منقضی شده؛ دوباره وارد شوید.',
+          unauthorized: true,
+        };
+      }
+      if (r.status === 409) {
+        return {
+          ok: false,
+          code: 'conflict',
+          conflict: true,
+          updatedAt: j?.updatedAt || null,
+          error: j?.error || 'محتوا در جای دیگری تغییر کرده است.',
+        };
+      }
+      if (r.status >= 500) {
+        return {
+          ok: false,
+          code: 'server',
+          error: j?.error || `خطای سرور (${r.status})`,
+        };
+      }
+      if (r.status >= 400) {
+        return {
+          ok: false,
+          code: 'client',
+          error: j?.error || `خطای درخواست (${r.status})`,
+        };
+      }
+      return { ok: false, code: 'network', error: 'پاسخ نامعتبر از سرور.' };
     } catch {
-      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+      return { ok: false, code: 'network', error: 'اتصال به سرور برقرار نشد.' };
     }
   },
-
-  async login(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  
+  async login(username: string, password: string): Promise<LoginResult> {
     try {
       const r = await fetch('/api/auth', {
         method: 'POST',
@@ -133,9 +180,18 @@ export const api = {
         setToken(j.token);
         return { ok: true };
       }
-      return { ok: false, error: j?.error || 'ورود ناموفق بود.' };
+      if (r.status === 503) {
+        return { ok: false, code: 'service', error: j?.error || 'سرویس ورود تنظیم نشده است.' };
+      }
+      if (r.status === 429) {
+        return { ok: false, code: 'rate_limit', error: j?.error || 'تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید.' };
+      }
+      if (r.status === 401) {
+        return { ok: false, code: 'unauthorized', error: j?.error || 'نام کاربری یا رمز عبور اشتباه است.' };
+      }
+      return { ok: false, code: 'network', error: j?.error || 'ارتباط با سرور برقرار نشد.' };
     } catch {
-      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+      return { ok: false, code: 'network', error: 'اتصال به سرور برقرار نشد.' };
     }
   },
 
