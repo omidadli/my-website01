@@ -95,22 +95,51 @@ export const onRequestPut: PagesFunction<Env> = async ({ request, env }) => {
 
   await ensureCoreTablesSafe(env);
 
-  if (typeof payload?.baseUpdatedAt === 'string') {
-    const cur = await env.DB.prepare(`SELECT updated_at FROM content WHERE id = 1`).first<{ updated_at: string }>();
-    const current = cur?.updated_at || '';
-    if (current !== payload.baseUpdatedAt) {
-      return json(
-        { ok: false, code: 'conflict', error: 'محتوا از زمانی که آن را خوانده‌اید تغییر کرده است؛ دوباره بخوانید و تغییر را اعمال کنید.', updatedAt: current || null },
-        { status: 409 }
-      );
-    }
-  }
-
   const now = new Date().toISOString();
   const serialized = JSON.stringify(data);
   if (new TextEncoder().encode(serialized).byteLength > MAX_CONTENT_BYTES) {
     return json({ ok: false, error: CONTENT_TOO_LARGE_MESSAGE }, { status: 413 });
   }
+
+  // Optimistic concurrency with atomic write (no SELECT → UPDATE race window).
+  if (typeof payload?.baseUpdatedAt === 'string') {
+    const baseUpdatedAt = payload.baseUpdatedAt;
+    if (baseUpdatedAt === '') {
+      // Brand-new insert (no row exists yet): only succeed if nothing is there.
+      const res = await env.DB.prepare(
+        `INSERT INTO content (id, data, updated_at) VALUES (1, ?1, ?2) ON CONFLICT(id) DO NOTHING`
+      ).bind(serialized, now).run();
+      const changes = res.meta?.changes ?? 0;
+      if (changes === 0) {
+        const cur = await env.DB.prepare(`SELECT updated_at FROM content WHERE id = 1`).first<{ updated_at: string }>();
+        return json(
+          { ok: false, code: 'conflict', error: 'محتوا از زمانی که آن را خوانده‌اید تغییر کرده است؛ دوباره بخوانید و تغییر را اعمال کنید.', updatedAt: cur?.updated_at || null },
+          { status: 409 }
+        );
+      }
+      return json({ ok: true, updatedAt: now });
+    }
+
+    // Existing row: update only if updated_at still matches the base the client read.
+    let nextUpdatedAt = now;
+    if (nextUpdatedAt === baseUpdatedAt) {
+      nextUpdatedAt = new Date(Date.now() + 1).toISOString();
+    }
+    const res = await env.DB.prepare(
+      `UPDATE content SET data = ?1, updated_at = ?2 WHERE id = 1 AND updated_at = ?3`
+    ).bind(serialized, nextUpdatedAt, baseUpdatedAt).run();
+    const changes = res.meta?.changes ?? 0;
+    if (changes === 0) {
+      const cur = await env.DB.prepare(`SELECT updated_at FROM content WHERE id = 1`).first<{ updated_at: string }>();
+      return json(
+        { ok: false, code: 'conflict', error: 'محتوا از زمانی که آن را خوانده‌اید تغییر کرده است؛ دوباره بخوانید و تغییر را اعمال کنید.', updatedAt: cur?.updated_at || null },
+        { status: 409 }
+      );
+    }
+    return json({ ok: true, updatedAt: nextUpdatedAt });
+  }
+
+  // No baseUpdatedAt: last-writer-wins (backwards compat for MCP / CI).
   await env.DB.prepare(
     `INSERT INTO content (id, data, updated_at) VALUES (1, ?1, ?2)
      ON CONFLICT(id) DO UPDATE SET data = ?1, updated_at = ?2`
