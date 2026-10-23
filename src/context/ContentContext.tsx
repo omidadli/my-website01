@@ -26,6 +26,8 @@ const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
 const LOCAL_STORAGE_PIN_KEY = 'OMID_ADLI_ADMIN_PIN_CODE';
 const DEFAULT_PIN = '1234';
 
+type SyncStatus = 'idle' | 'saving' | 'synced' | 'error';
+
 /**
  * Background load of the generated article batches (batch01+batch02). The
  * network request starts as soon as this module evaluates — parallel to first
@@ -249,6 +251,16 @@ interface ContentContextType {
   persistence: 'local' | 'cloud';
   /** True once the mount probe finished (cloud content adopted, or confirmed local-only). */
   contentReady: boolean;
+  /** Cloud sync status: 'idle' | 'saving' | 'synced' | 'error'. */
+  syncStatus: SyncStatus;
+  /** Human-readable timestamp of the last successful cloud sync. */
+  lastSyncedAt: string | null;
+  /** Last cloud sync error message, if any. */
+  syncError: string | null;
+  /** Save immediately to Cloudflare D1 (bypasses the 1.2s debounce). Returns true on success. */
+  saveToCloudNow: () => Promise<boolean>;
+  /** Reload the latest content from Cloudflare D1. Returns true on success. */
+  refreshFromCloud: () => Promise<boolean>;
   logoutAdmin: () => void;
   updateField: (path: string, newValue: any) => void;
   addItem: (arrayPath: string, templateItem?: any) => void;
@@ -399,6 +411,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // ---------- Cloud (Cloudflare D1) persistence ----------
   const [persistence, setPersistence] = useState<'local' | 'cloud'>('local');
   const [contentReady, setContentReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const cloudReady = useRef(false);
   /** Version stamp of the content this tab last read from / saved to the cloud (optimistic concurrency). */
   const remoteUpdatedAt = useRef<string | null>(null);
@@ -432,6 +447,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     remoteUpdatedAt.current = remote.updatedAt || null;
     lastSyncedJson.current = JSON.stringify(merged);
     setData(merged);
+    setSyncStatus('synced');
+    setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+    setSyncError(null);
     return true;
   };
 
@@ -476,16 +494,22 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const t = setTimeout(async () => {
       const json = JSON.stringify(data);
       if (json === lastSyncedJson.current) return; // nothing new to save
+      setSyncStatus('saving');
       const res = await api.saveContent(data, remoteUpdatedAt.current);
       if (res.ok) {
         remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
         lastSyncedJson.current = json;
+        setSyncStatus('synced');
+        setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+        setSyncError(null);
         return;
       }
       if (res.conflict) {
         console.warn('Cloud save skipped: content changed elsewhere — reloading the latest version.');
         remoteUpdatedAt.current = res.updatedAt || ''; // resync the stamp even if the reload below finds no content
         await adoptRemote();
+        setSyncStatus('synced');
+        setLastSyncedAt(new Date().toLocaleString('fa-IR'));
         window.dispatchEvent(
           new CustomEvent('nd:content-conflict', {
             detail: { message: 'محتوا هم‌زمان از جای دیگری (مثلاً کلاد یا تب دیگر) تغییر کرده بود؛ آخرین نسخه بارگذاری شد. لطفاً آخرین تغییرت را دوباره اعمال کن.' },
@@ -493,10 +517,78 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         );
         return;
       }
+      setSyncStatus('error');
+      setSyncError(res.error || 'خطای نامشخص در ذخیره‌سازی ابری');
       console.warn('Cloud save failed:', res.error);
     }, 1200);
     return () => clearTimeout(t);
   }, [data, persistence, isAdmin]);
+
+  /** Save immediately to Cloudflare D1 (manual override of the 1.2s debounce). */
+  const saveToCloudNow = async (): Promise<boolean> => {
+    if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) return false;
+    setSyncStatus('saving');
+    const json = JSON.stringify(data);
+    const res = await api.saveContent(data, remoteUpdatedAt.current);
+    if (res.ok) {
+      remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
+      lastSyncedJson.current = json;
+      setSyncStatus('synced');
+      setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+      setSyncError(null);
+      // Notify other tabs to refresh
+      try {
+        const bc = new BroadcastChannel('omid-adli-cms-sync');
+        bc.postMessage({ type: 'content-saved', at: remoteUpdatedAt.current });
+        bc.close();
+      } catch { /* broadcast channel not available */ }
+      return true;
+    }
+    if (res.conflict) {
+      await adoptRemote();
+      setSyncStatus('synced');
+      setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+      setSyncError(null);
+      return true;
+    }
+    setSyncStatus('error');
+    setSyncError(res.error || 'خطای نامشخص در ذخیره‌سازی ابری');
+    return false;
+  };
+
+  /** Refresh content from Cloudflare D1 (bypasses local cache). */
+  const refreshFromCloud = async (): Promise<boolean> => {
+    if (persistence !== 'cloud') return false;
+    setSyncStatus('saving');
+    const hadRemote = await adoptRemote().catch(() => false);
+    if (hadRemote) {
+      setSyncStatus('synced');
+      setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+      setSyncError(null);
+      return true;
+    }
+    setSyncStatus('error');
+    setSyncError(hadRemote ? null : 'محتوای ابری یافت نشد.');
+    return false;
+  };
+
+  // Listen for sync events from other tabs (cross-tab sync).
+  useEffect(() => {
+    if (persistence !== 'cloud') return;
+    let bc: BroadcastChannel;
+    try {
+      bc = new BroadcastChannel('omid-adli-cms-sync');
+      bc.onmessage = (event) => {
+        if (event.data?.type === 'content-saved') {
+          // Another tab saved content — reload the latest version from cloud.
+          void refreshFromCloud();
+        }
+      };
+    } catch {
+      return; // BroadcastChannel not available
+    }
+    return () => { try { bc.close(); } catch {} };
+  }, [persistence]);
 
   // Activity logger helper
   const logActivity = (action: string, details?: string) => {
@@ -1069,6 +1161,12 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logoutAdmin,
         persistence,
         contentReady,
+        syncStatus,
+        lastSyncedAt,
+        syncError,
+        saveChanges,
+        saveToCloudNow,
+        refreshFromCloud,
         updateField,
         addItem,
         removeItem,
@@ -1080,7 +1178,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         openEditModal,
         closeEditModal,
         hasUnsavedChanges,
-        saveChanges,
         duplicateItem,
         duplicateSection,
         duplicatePage,

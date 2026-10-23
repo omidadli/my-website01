@@ -39,7 +39,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
     const admin = await requireAuth(request, env);
     const row = await env.DB.prepare(`SELECT data, updated_at FROM content WHERE id = 1`).first<{ data: string; updated_at: string }>();
     if (!row) {
-      return json({ ok: true, data: null, updatedAt: null }, { headers: { 'Cache-Control': 'public, max-age=30' } });
+      return json({ ok: true, data: null, updatedAt: null }, { headers: { 'Cache-Control': 'public, max-age=5' } });
     }
     const data = JSON.parse(row.data);
     // Merge cloud comments (canonical source) into the content payload.
@@ -52,7 +52,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         // Admin responses contain pending comments + emails → never cache them.
-        'Cache-Control': admin ? 'no-store' : 'public, max-age=30',
+        // Public responses: short 5s edge cache so admin changes appear quickly.
+        'Cache-Control': admin ? 'no-store' : 'public, max-age=5',
       },
     });
   } catch (e) {
