@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Save, Download, Upload, RotateCcw, Lock, Edit3, CheckCircle, Sparkles, Cloud, RefreshCw, AlertCircle } from 'lucide-react';
+import { Save, Download, Upload, RotateCcw, Lock, Edit3, CheckCircle, Cloud, RefreshCw, AlertCircle } from 'lucide-react';
 import { useContent } from '../../context/ContentContext';
 
 export const AdminFloatingBar: React.FC = () => {
@@ -15,11 +15,14 @@ export const AdminFloatingBar: React.FC = () => {
     syncStatus,
     lastSyncedAt,
     syncError,
+    isRefreshing,
+    hasUnsyncedCloudChanges,
     saveToCloudNow,
-    refreshFromCloud
+    refreshFromCloud,
   } = useContent();
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (msg: string, ms = 3000) => {
@@ -28,8 +31,7 @@ export const AdminFloatingBar: React.FC = () => {
   };
 
   // A conditional cloud save was rejected because the content changed elsewhere
-  // (Claude MCP, another tab, Git sync) — the context already reloaded the latest
-  // version; tell the admin so they can re-apply their last change.
+  // (Claude MCP, another tab, Git sync).
   useEffect(() => {
     const onConflict = (e: Event) => {
       const msg = (e as CustomEvent<{ message?: string }>).detail?.message;
@@ -43,20 +45,30 @@ export const AdminFloatingBar: React.FC = () => {
 
   const handleSave = async () => {
     saveChanges();
-    const ok = await saveToCloudNow();
-    if (ok) {
-      showToast('تغییرات در ابری Cloudflare ذخیره شد! ✨', 4000);
+    const result = await saveToCloudNow();
+    if (result.status === 'saved') {
+      showToast(result.message || 'تغییرات در ابری Cloudflare ذخیره شد! ✨', 4000);
+    } else if (result.status === 'conflict') {
+      setConflictOpen(true);
+    } else if (result.status === 'unauthorized') {
+      showToast(result.message || 'نشست منقضی شده. لطفاً دوباره وارد شوید.', 5000);
     } else {
-      showToast('ذخیره در ابری با مشکل مواجه شد؛ تغییرات در مرورگر ذخیره شده‌اند.', 5000);
+      showToast(result.message || 'ذخیره در ابری با مشکل مواجه شد؛ تغییرات در مرورگر ذخیره شده‌اند.', 5000);
     }
   };
 
   const handleSaveToCloud = async () => {
-    const ok = await saveToCloudNow();
-    if (ok) {
-      showToast('بازنهاً در ابری ذخیره شد! ✨', 4000);
+    const result = await saveToCloudNow();
+    if (result.status === 'saved') {
+      showToast(result.message || 'با موفقیت در ابری ذخیره شد ✨', 4000);
+    } else if (result.status === 'conflict') {
+      setConflictOpen(true);
+    } else if (result.status === 'unauthorized') {
+      showToast(result.message || 'نشست منقضی شده. لطفاً دوباره وارد شوید.', 5000);
+    } else if (result.status === 'skipped') {
+      showToast(result.message || 'تغییراتی برای ذخیره‌سازی وجود ندارد.', 3000);
     } else {
-      showToast('ذخیره در ابری ناموفق بود.', 5000);
+      showToast(result.message || 'ذخیره در ابری ناموفق بود.', 5000);
     }
   };
 
@@ -95,6 +107,57 @@ export const AdminFloatingBar: React.FC = () => {
     }
   };
 
+  const keepMyVersion = async () => {
+    // Re-save with the new baseUpdatedAt so local changes win.
+    const result = await saveToCloudNow();
+    setConflictOpen(false);
+    if (result.status === 'saved') {
+      showToast('نسخه شما با موفقیت ذخیره شد.', 4000);
+    } else {
+      showToast(result.message || 'ذخیره نسخه شما ناموفق بود.', 5000);
+    }
+  };
+
+  const loadCloudVersion = async () => {
+    setConflictOpen(false);
+    const ok = await refreshFromCloud();
+    if (ok) {
+      showToast('نسخه ابری بارگذاری شد. تغییرات محلی شما در state باقی مانده‌اند.', 4000);
+    } else {
+      showToast('بارگذاری نسخه ابری ناموفق بود.', 5000);
+    }
+  };
+
+  const statusLabel = () => {
+    switch (syncStatus) {
+      case 'synced': return 'همگام‌سازی ابری انجام شد';
+      case 'saving': return 'در حال ذخیره‌سازی ابری…';
+      case 'error': return 'خطا در ذخیره‌سازی ابری';
+      case 'conflict': return 'سنگین شدن نسخه (Conflict)';
+      default: return 'هنوز به‌روزرسانی نشده';
+    }
+  };
+
+  const statusDotColor = () => {
+    switch (syncStatus) {
+      case 'synced': return 'bg-[color:var(--nd-success)]';
+      case 'saving': return 'bg-[color:var(--nd-accent)] animate-pulse';
+      case 'error': return 'bg-[#dc2626]';
+      case 'conflict': return 'bg-[#d97706]';
+      default: return 'bg-[color:var(--nd-line-strong)]';
+    }
+  };
+
+  const statusTextColor = () => {
+    switch (syncStatus) {
+      case 'synced': return 'text-[color:var(--nd-success)]';
+      case 'saving': return 'text-[color:var(--nd-accent)]';
+      case 'error': return 'text-[#dc2626]';
+      case 'conflict': return 'text-[#d97706]';
+      default: return 'text-[color:var(--nd-ink-2)]';
+    }
+  };
+
   return (
     <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-[10000] w-[95%] max-w-4xl dir-rtl">
       {/* Toast Notification */}
@@ -114,22 +177,31 @@ export const AdminFloatingBar: React.FC = () => {
           </span>
           <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
             <Edit3 className="w-4 h-4" />
-            <span className={`text-[color:var(--nd-${syncStatus === 'saving' ? 'accent' : 'success'})]`}>حالت ویرایش زنده فعال است</span>
+            <span className={statusTextColor()}>حالت ویرایش زنده فعال است</span>
           </div>
         </div>
 
         {/* Cloud Sync Status */}
         {persistence === 'cloud' && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] text-[color:var(--nd-ink-2)] text-xs font-extrabold">
-            <span className={`w-2 h-2 rounded-full ${syncStatus === 'synced' ? 'bg-[color:var(--nd-success)]' : syncStatus === 'saving' ? 'bg-[color:var(--nd-accent)] animate-pulse' : 'bg-[color:var(--nd-line-strong)]'}`}></span>
-            <span>{syncStatus === 'synced' ? 'همگام‌سازی ابری انجام شد' : syncStatus === 'saving' ? 'در حال ذخیره‌سازی ابری…' : 'هنوز به‌روزرسانی نشده'}</span>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] text-xs font-extrabold">
+            <span className={`w-2 h-2 rounded-full ${statusDotColor()}`}></span>
+            <span className={statusTextColor()}>{statusLabel()}</span>
             {lastSyncedAt && (
               <span className="text-[color:var(--nd-faint)]">· آخرین sync: {lastSyncedAt}</span>
             )}
             {syncError && (
-              <span className="text-[#dc2626]" title={syncError}><AlertCircle className="w-3 h-3" /></span>
+              <span className="text-[#dc2626]" title={syncError}>
+                <AlertCircle className="w-3 h-3" />
+              </span>
             )}
           </div>
+        )}
+
+        {/* Unsynced changes warning */}
+        {persistence === 'cloud' && hasUnsyncedCloudChanges && (
+          <span className="text-xs font-extrabold text-[#d97706] bg-[#fef3c7] px-2 py-1 rounded-lg border border-[#d97706]/30">
+            تغییرات ذخیره‌نشده در ابری
+          </span>
         )}
 
         {/* Action Buttons */}
@@ -138,8 +210,9 @@ export const AdminFloatingBar: React.FC = () => {
           <button
             type="button"
             onClick={handleSave}
+            disabled={syncStatus === 'saving' || isRefreshing}
             className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-lg cursor-pointer ${
-              hasUnsavedChanges || syncStatus === 'saving'
+              (hasUnsavedChanges || hasUnsyncedCloudChanges || syncStatus === 'saving')
                 ? 'bg-[color:var(--nd-accent)] text-white hover:opacity-90 scale-105 animate-pulse'
                 : 'bg-[color:var(--nd-accent)] text-white hover:opacity-90'
             }`}
@@ -153,7 +226,7 @@ export const AdminFloatingBar: React.FC = () => {
             <button
               type="button"
               onClick={handleSaveToCloud}
-              disabled={syncStatus === 'saving'}
+              disabled={syncStatus === 'saving' || isRefreshing}
               title="ذخیره فوری در Cloudflare D1 (بدون انتظار ۱.۲ ثانیه)"
               className={`px-3 py-2 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-lg cursor-pointer disabled:opacity-50 ${
                 syncStatus === 'synced'
@@ -171,8 +244,8 @@ export const AdminFloatingBar: React.FC = () => {
             <button
               type="button"
               onClick={handleRefreshFromCloud}
-              disabled={syncStatus === 'saving'}
-              title="بازخوانی آخرین نسخه از Cloudflare D1 (بypass کردن cache)"
+              disabled={syncStatus === 'saving' || isRefreshing}
+              title="بازخوانی آخرین نسخه از Cloudflare D1 (بیگذر از کش)"
               className={`px-3 py-2 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-lg cursor-pointer disabled:opacity-50 ${
                 syncStatus === 'synced'
                   ? 'bg-[color:var(--nd-accent)] text-white hover:opacity-90'
@@ -235,6 +308,40 @@ export const AdminFloatingBar: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Conflict resolution modal */}
+      {conflictOpen && (
+        <div className="fixed inset-0 z-[20000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" role="dialog" aria-modal>
+          <div className="bg-[color:var(--nd-surface)] border border-[color:var(--nd-line)] rounded-2xl p-6 sm:p-8 w-full max-w-md dir-rtl shadow-2xl">
+            <h3 className="nd-h2 text-base mb-2 text-[color:var(--nd-ink)]">سنگین شدن نسخه — تغییرات Concurrent</h3>
+            <p className="text-xs nd-muted mb-4 leading-relaxed">
+              محتوای ابری از زمان اینکه شما تغییرات را خوانده‌اید، تغییر کرده است. لطفاً انتخاب کنید:
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={keepMyVersion}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[color:var(--nd-accent)] text-white font-bold text-sm hover:opacity-90 transition-colors"
+              >
+                <Save className="w-4 h-4" />
+                <span>نسخه من بماند (ذخیره مجدد)</span>
+              </button>
+              <button
+                onClick={loadCloudVersion}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-[color:var(--nd-line)] bg-[color:var(--nd-bg-soft)] text-[color:var(--nd-ink-2)] font-bold text-sm hover:bg-[color:var(--nd-line)] transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>نسخه ابری بیاید (بازنویسی)</span>
+              </button>
+            </div>
+            <button
+              onClick={() => setConflictOpen(false)}
+              className="w-full py-2 rounded-xl text-[color:var(--nd-faint)] text-xs font-bold hover:text-[color:var(--nd-ink)] transition-colors"
+            >
+            لغو
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

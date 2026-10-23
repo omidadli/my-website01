@@ -176,6 +176,7 @@ const ADMIN_TAB_IDS = [
 export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   const {
     data, isAdmin, persistence, pinCode, changePin, loginAdmin, logoutAdmin,
+    lastLoginError,
     updateField, addItem, removeItem, moveItem, duplicateItem,
     exportJSON, importJSON, createSnapshot, rollbackSnapshot, deleteSnapshot,
     resetToDefaults, addMediaItem, removeMediaItem, logActivity,
@@ -308,7 +309,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       setLoginPass('');
       showToast('خوش آمدید! ورود به پیشخوان مدیریت با موفقیت انجام شد.');
     } else {
-      setLoginError(persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز محلی وارد شده اشتباه است.');
+      setLoginError(lastLoginError || (persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز محلی وارد شده اشتباه است.'));
     }
   };
 
@@ -1160,7 +1161,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
               <ACard>
                 <ASectionTitle
                   title="رفتار دستیار هوشمند"
-                  desc="شخصیت، لحن و قوانین پاسخ‌دهی AI مشاور — ответы همیشه از داده‌های خود سایت ساخته می‌شوند"
+                  desc="شخصیت، لحن و قوانین پاسخ‌دهی AI مشاور — پاسخ همیشه از داده‌های خود سایت ساخته می‌شود"
                   action={
                     <button
                       onClick={async () => { setChatLog(await api.listChats()); showToast('تاریخچه گفتگوها دریافت شد.'); }}
