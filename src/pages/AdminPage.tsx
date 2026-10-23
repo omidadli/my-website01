@@ -77,6 +77,10 @@ const POST_FIELDS: FieldDef[] = [
   { key: 'viewsCount', label: 'تعداد بازدید', type: 'number', half: true, min: 0 },
   { key: 'featured', label: 'مقاله ویژه', type: 'toggle' },
   { key: 'isPopular', label: '«محبوب‌ترین مقاله» باشد', type: 'toggle', hint: 'فقط یک مقاله را انتخاب کنید' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
 ];
 
 const SERVICE_FIELDS: FieldDef[] = [
@@ -95,6 +99,10 @@ const SERVICE_FIELDS: FieldDef[] = [
     { key: 'badge', label: 'نشان (اختیاری)', placeholder: 'پیشنهادی' },
     { key: 'description', label: 'توضیح پکیج', type: 'textarea', rows: 2 },
     { key: 'isPopular', label: 'پکیج محبوب (هایلایت شود)', type: 'toggle' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
   ] },
 ];
 
@@ -141,6 +149,10 @@ const CASE_FIELDS: FieldDef[] = [
   { key: 'tags', label: 'برچسب‌ها', type: 'tags' },
   { key: 'date', label: 'تاریخ' },
   { key: 'featured', label: 'در صفحه اصلی نمایش داده شود', type: 'toggle' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
 ];
 
 const newPost = () => ({
