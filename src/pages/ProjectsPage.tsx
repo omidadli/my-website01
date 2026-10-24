@@ -17,6 +17,13 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ theme = 'dark', onNa
   const isDark = theme === 'dark';
   const { data } = useContent();
   const projectsData = data.PROJECTS_PAGE_DATA;
+  // «وضعیت ظرفیت پذیرش پروژه» from the admin; 'active' keeps the original green look.
+  const capacityChipStyle: React.CSSProperties =
+    projectsData.capacityStatus === 'limited'
+      ? { background: 'var(--nd-peach-soft)', color: '#d97706', borderColor: 'transparent' }
+      : projectsData.capacityStatus === 'full'
+        ? { background: 'rgba(239, 68, 68, 0.12)', color: '#dc2626', borderColor: 'transparent' }
+        : { background: 'var(--nd-mint-soft)', color: 'var(--nd-success)', borderColor: 'transparent' };
   const projectsList = Array.isArray(data.ONGOING_PROJECTS)
     ? data.ONGOING_PROJECTS.filter((project) => project && typeof project === 'object')
     : [];
@@ -31,7 +38,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ theme = 'dark', onNa
         badge={projectsData.badge}
         onNavigate={onNavigate}
       >
-        <div className="nd-chip bg-[color:var(--nd-mint-soft)] text-[color:var(--nd-success)] px-5 py-2.5 text-xs font-extrabold inline-flex items-center gap-2" style={{ background: 'var(--nd-mint-soft)', color: 'var(--nd-success)', borderColor: 'transparent' }}>
+        <div className="nd-chip bg-[color:var(--nd-mint-soft)] text-[color:var(--nd-success)] px-5 py-2.5 text-xs font-extrabold inline-flex items-center gap-2" style={capacityChipStyle}>
           <span className="w-2 h-2 rounded-full bg-current animate-pulse" />
           <EditableText path="PROJECTS_PAGE_DATA.capacityText">{projectsData.capacityText}</EditableText>
         </div>
@@ -47,7 +54,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ theme = 'dark', onNa
           {projectsList.map((proj, idx) => {
             const isOngoing = proj.status === 'در حال اجرا';
             return (
-              <div key={proj.id || idx} className="nd-card nd-card-hover p-6 space-y-4">
+              <div key={proj.id || idx} className={`nd-card nd-card-hover p-6 space-y-4 ${proj.isPlaceholder ? 'opacity-50' : ''}`}>
                 <div className="flex items-center justify-between gap-3">
                   <span className={`font-extrabold text-base ${isDark ? 'text-white' : ''}`}>
                     <EditableText path={`ONGOING_PROJECTS.${idx}.title`}>{proj.title}</EditableText>

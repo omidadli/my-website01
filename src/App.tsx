@@ -1,3 +1,4 @@
+import { themeOverrides, THEME_VARS } from './utils/themeConfig';
 import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page, CaseStudy } from './types';
@@ -129,6 +130,15 @@ function MainLayout({
       window.removeEventListener('hashchange', syncFromUrl);
     };
   }, [data.CUSTOM_PAGES]);
+
+  // THEME_CONFIG from the admin («رنگ‌ها و ظاهر»): only values changed from the shipped default are applied
+  useEffect(() => {
+    const root = document.documentElement;
+    const { vars, rootFontSize } = themeOverrides(data.THEME_CONFIG);
+    for (const name of THEME_VARS) root.style.removeProperty(name);
+    for (const [name, value] of Object.entries(vars)) root.style.setProperty(name, value);
+    root.style.fontSize = rootFontSize ?? '';
+  }, [data.THEME_CONFIG]);
 
   // Theme root attributes — drives the ND token system + legacy branches
   useEffect(() => {
