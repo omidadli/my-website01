@@ -1,5 +1,6 @@
+/// <reference types="vite/client" />
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo } from 'react';
-import { api } from '../services/api';
+import { api, type SaveResult, type LoginResult } from '../services/api';
 // NOTE: the eager import goes to contentCore (WITHOUT the 748 kB of generated
 // article batches) so the first-paint bundle stays small. The batches load in
 // the background via the dynamic import below and are merged in as defaults.
@@ -25,6 +26,8 @@ import { publicContentView } from '../../lib/contentVisibility';
 const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
 const LOCAL_STORAGE_PIN_KEY = 'OMID_ADLI_ADMIN_PIN_CODE';
 const DEFAULT_PIN = '1234';
+
+type SyncStatus = 'idle' | 'saving' | 'synced' | 'error' | 'conflict';
 
 /**
  * Background load of the generated article batches (batch01+batch02). The
@@ -249,6 +252,22 @@ interface ContentContextType {
   persistence: 'local' | 'cloud';
   /** True once the mount probe finished (cloud content adopted, or confirmed local-only). */
   contentReady: boolean;
+  /** Last admin login error message (for display in login forms). */
+  lastLoginError: string | null;
+  /** Cloud sync status: 'idle' | 'saving' | 'synced' | 'error' | 'conflict'. */
+  syncStatus: SyncStatus;
+  /** Human-readable timestamp of the last successful cloud sync. */
+  lastSyncedAt: string | null;
+  /** Last cloud sync error message, if any. */
+  syncError: string | null;
+  /** True when a cloud refresh is in progress (distinct from saving). */
+  isRefreshing: boolean;
+  /** True when local edits exist that have not been successfully synced to the cloud. */
+  hasUnsyncedCloudChanges: boolean;
+  /** Save immediately to Cloudflare D1 (bypasses the 1.2s debounce). */
+  saveToCloudNow: () => Promise<{ status: 'saved' | 'conflict' | 'unauthorized' | 'error' | 'skipped'; message?: string }>;
+  /** Reload the latest content from Cloudflare D1. */
+  refreshFromCloud: () => Promise<boolean>;
   logoutAdmin: () => void;
   updateField: (path: string, newValue: any) => void;
   addItem: (arrayPath: string, templateItem?: any) => void;
@@ -399,7 +418,22 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // ---------- Cloud (Cloudflare D1) persistence ----------
   const [persistence, setPersistence] = useState<'local' | 'cloud'>('local');
   const [contentReady, setContentReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastLoginError, setLastLoginError] = useState<string | null>(null);
   const cloudReady = useRef(false);
+  /** True when local edits exist that have not been successfully synced to the cloud. */
+  const [hasUnsyncedCloudChanges, setHasUnsyncedCloudChanges] = useState(false);
+  /** Guards against overlapping save requests. */
+  const inFlight = useRef(false);
+  /** Trailing save to perform after current in-flight save completes. */
+  const pendingSave = useRef<{ reason: 'auto' | 'manual'; data: string; baseUpdatedAt: string | null } | null>(null);
+  /** Retry backoff state. */
+  const retryCount = useRef(0);
+  /** Abort controller for in-flight fetch (retries). */
+  const abortCtrl = useRef<AbortController | null>(null);
   /** Version stamp of the content this tab last read from / saved to the cloud (optimistic concurrency). */
   const remoteUpdatedAt = useRef<string | null>(null);
   /** Serialized snapshot of what the cloud currently holds — lets us skip no-op saves. */
@@ -432,6 +466,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     remoteUpdatedAt.current = remote.updatedAt || null;
     lastSyncedJson.current = JSON.stringify(merged);
     setData(merged);
+    setSyncStatus('synced');
+    setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+    setSyncError(null);
     return true;
   };
 
@@ -467,36 +504,234 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
+  // ---------- Core single save path ----------
+
+  const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
+
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  const broadcastSaved = (updatedAt: string | null) => {
+    try {
+      const bc = new BroadcastChannel('omid-adli-cms-sync');
+      bc.postMessage({ type: 'content-saved', at: updatedAt });
+      bc.close();
+    } catch { /* broadcast channel not available */ }
+  };
+
+  const applySaveSuccess = (res: { ok: true; updatedAt: string | null }, json: string) => {
+    remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
+    lastSyncedJson.current = json;
+    setSyncStatus('synced');
+    setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+    setSyncError(null);
+    setHasUnsyncedCloudChanges(false);
+    broadcastSaved(res.updatedAt);
+  };
+
+  const applySaveConflict = (updatedAt: string | null) => {
+    remoteUpdatedAt.current = updatedAt || remoteUpdatedAt.current;
+    setSyncStatus('conflict');
+    setHasUnsyncedCloudChanges(true);
+    setSyncError('محتوا از زمان خواندن شما تغییر کرده است. لطفاً یک نسخه را انتخاب کنید.');
+  };
+
+  const applySaveError = (code: string, error: string) => {
+    setSyncStatus('error');
+    setSyncError(error);
+    setHasUnsyncedCloudChanges(true);
+    console.warn(`Cloud save failed (${code}):`, error);
+  };
+
+  const performSave = async (reason: 'auto' | 'manual'): Promise<void> => {
+    // If a save is already in flight, queue this as a trailing save.
+    if (inFlight.current) {
+      pendingSave.current = { reason, data: JSON.stringify(data), baseUpdatedAt: remoteUpdatedAt.current };
+      return;
+    }
+
+    inFlight.current = true;
+    retryCount.current = 0;
+
+    const runSave = async (): Promise<void> => {
+      const json = JSON.stringify(data);
+      if (json === lastSyncedJson.current) {
+        // Nothing new since last successful sync.
+        setSyncStatus('synced');
+        setHasUnsyncedCloudChanges(false);
+        inFlight.current = false;
+        // Process any trailing save.
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        if (next) {
+          return runSave();
+        }
+        return;
+      }
+
+      let res: SaveResult;
+      try {
+        res = await api.saveContent(data, remoteUpdatedAt.current);
+      } catch {
+        applySaveError('network', 'اتصال به سرور برقرار نشد.');
+        inFlight.current = false;
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        if (next) {
+          return runSave();
+        }
+        return;
+      }
+
+      if (!res.ok) {
+        // res is now the error variant; narrow manually.
+        const err = res as Extract<SaveResult, { ok: false }>;
+        if (err.code === 'unauthorized') {
+          applySaveError('unauthorized', err.error);
+          inFlight.current = false;
+          api.logout();
+          setIsAdmin(false);
+          return;
+        }
+        if (err.code === 'conflict') {
+          applySaveConflict(err.updatedAt || null);
+          inFlight.current = false;
+          return;
+        }
+        if (err.code === 'client') {
+          // 4xx other than 401/409 — no retry.
+          applySaveError(err.code, err.error);
+          inFlight.current = false;
+          return;
+        }
+
+        // network or server — retry with backoff.
+        if (retryCount.current < BACKOFF_MS.length) {
+          retryCount.current += 1;
+          await sleep(BACKOFF_MS[retryCount.current - 1]);
+          return runSave();
+        }
+
+        applySaveError(err.code, err.error);
+        inFlight.current = false;
+        return;
+      }
+
+      // res.ok === true
+      applySaveSuccess(res, json);
+      retryCount.current = 0;
+      inFlight.current = false;
+      // Process any trailing save.
+      const next = pendingSave.current;
+      pendingSave.current = null;
+      if (next) {
+        return runSave();
+      }
+      return;
+    };
+
+    await runSave();
+  };
+
   // Debounced push of every content change to D1 (only while logged in).
-  // The save is conditional on the version this tab last saw: if the site was
-  // edited elsewhere in the meantime (Claude MCP, another tab, the Git sync) the
-  // API answers 409 → we reload the latest version instead of overwriting it.
   useEffect(() => {
     if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) return;
-    const t = setTimeout(async () => {
-      const json = JSON.stringify(data);
-      if (json === lastSyncedJson.current) return; // nothing new to save
-      const res = await api.saveContent(data, remoteUpdatedAt.current);
-      if (res.ok) {
-        remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
-        lastSyncedJson.current = json;
-        return;
-      }
-      if (res.conflict) {
-        console.warn('Cloud save skipped: content changed elsewhere — reloading the latest version.');
-        remoteUpdatedAt.current = res.updatedAt || ''; // resync the stamp even if the reload below finds no content
-        await adoptRemote();
-        window.dispatchEvent(
-          new CustomEvent('nd:content-conflict', {
-            detail: { message: 'محتوا هم‌زمان از جای دیگری (مثلاً کلاد یا تب دیگر) تغییر کرده بود؛ آخرین نسخه بارگذاری شد. لطفاً آخرین تغییرت را دوباره اعمال کن.' },
-          })
-        );
-        return;
-      }
-      console.warn('Cloud save failed:', res.error);
+    const t = setTimeout(() => {
+      void performSave('auto');
     }, 1200);
     return () => clearTimeout(t);
   }, [data, persistence, isAdmin]);
+
+  /** Save immediately to Cloudflare D1 (manual override of the debounce). */
+  const saveToCloudNow = async (): Promise<{ status: 'saved' | 'conflict' | 'unauthorized' | 'error' | 'skipped'; message?: string }> => {
+    if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) {
+      return { status: 'skipped', message: 'ذخیره ابری فقط در حالت ابری و هنگام ورود ادمین ممکن است.' };
+    }
+    const json = JSON.stringify(data);
+    if (json === lastSyncedJson.current) {
+      return { status: 'skipped', message: 'تغییراتی برای ذخیره‌سازی وجود ندارد.' };
+    }
+    setSyncStatus('saving');
+    // Cancel any pending debounce save — manual takes priority.
+    inFlight.current = false;
+    pendingSave.current = null;
+    await performSave('manual');
+    // After performSave, syncStatus reflects the outcome.
+    if (syncStatus === 'synced') {
+      return { status: 'saved', message: 'با موفقیت در ابری ذخیره شد.' };
+    }
+    if (syncStatus === 'conflict') {
+      return { status: 'conflict', message: syncError };
+    }
+    if (syncStatus === 'error') {
+      return { status: 'error', message: syncError };
+    }
+    // 'unauthorized' is not a SyncStatus value; it is set via applySaveError.
+    return { status: 'error', message: syncError || 'خطای نامشخص در ذخیره‌سازی ابری.' };
+  };
+
+  /** Refresh content from Cloudflare D1 (bypasses local cache). */
+  const refreshFromCloud = async (): Promise<boolean> => {
+    if (persistence !== 'cloud') return false;
+    if (hasUnsyncedCloudChanges) {
+      const ok = window.confirm('تغییرات ذخیره‌نشده شما از بین می‌روند. آیا بازنویسی از ابری را تایید می‌کنید؟');
+      if (!ok) return false;
+    }
+    setIsRefreshing(true);
+    setSyncStatus('saving');
+    try {
+      const hadRemote = await adoptRemote();
+      if (hadRemote) {
+        setIsRefreshing(false);
+        setSyncStatus('synced');
+        setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+        setSyncError(null);
+        setHasUnsyncedCloudChanges(false);
+        return true;
+      }
+      setIsRefreshing(false);
+      setSyncStatus('error');
+      setSyncError('محتوای ابری یافت نشد.');
+      setHasUnsyncedCloudChanges(true);
+      return false;
+    } catch {
+      setIsRefreshing(false);
+      setSyncStatus('error');
+      setSyncError('خطا در بارگذاری از ابری.');
+      setHasUnsyncedCloudChanges(true);
+      return false;
+    }
+  };
+
+  // Listen for sync events from other tabs (cross-tab sync).
+  useEffect(() => {
+    if (persistence !== 'cloud') return;
+    let bc: BroadcastChannel;
+    try {
+      bc = new BroadcastChannel('omid-adli-cms-sync');
+      bc.onmessage = (event) => {
+        if (event.data?.type === 'content-saved') {
+          // Another tab saved content — reload the latest version from cloud.
+          void refreshFromCloud();
+        }
+      };
+    } catch {
+      return; // BroadcastChannel not available
+    }
+    return () => { try { bc.close(); } catch {} };
+  }, [persistence]);
+
+  // Warn before unload if there are unsynced cloud changes.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (persistence === 'cloud' && isAdmin && hasUnsyncedCloudChanges) {
+        e.preventDefault();
+        e.returnValue = 'تغییرات ذخیره‌نشده شما از بین می‌روند.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [persistence, isAdmin, hasUnsyncedCloudChanges]);
 
   // Activity logger helper
   const logActivity = (action: string, details?: string) => {
@@ -603,7 +838,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // login: adopt the latest cloud version first; only seed when the cloud is empty.
         const hadRemote = await adoptRemote().catch(() => false);
         if (!hadRemote) {
-          const seeded = await api.saveContent(data, remoteUpdatedAt.current ?? '');
+          const seeded = await api.saveContent(data, remoteUpdatedAt.current ?? null);
           if (seeded.ok) {
             remoteUpdatedAt.current = seeded.updatedAt || null;
             lastSyncedJson.current = JSON.stringify(data);
@@ -613,11 +848,31 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logActivity('ورود موفق', `کاربر «${username}» از طریق سرویس ابری وارد پیشخوان شد.`);
         return true;
       }
-      logActivity('ورود ناموفق', 'نام کاربری یا رمز عبور اشتباه بود (سرویس ابری).');
+      let userMessage = 'نام کاربری یا رمز عبور اشتباه است.';
+      if (!res.ok) {
+        const err = res as Extract<typeof res, { ok: false }>;
+        switch (err.code) {
+          case 'service':
+            userMessage = 'سرویس ورود تنظیم نشده است.';
+            break;
+          case 'rate_limit':
+            userMessage = 'تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید.';
+            break;
+          case 'unauthorized':
+            userMessage = 'نام کاربری یا رمز عبور اشتباه است.';
+            break;
+          case 'network':
+            userMessage = 'ارتباط با سرور برقرار نشد.';
+            break;
+        }
+      }
+      setLastLoginError(userMessage);
+      logActivity('ورود ناموفق', userMessage);
       return false;
     }
     // Local dev fallback (no Cloudflare backend running): legacy PIN mode.
-    if (!password && username === pinCode) {
+    // Only available in development builds; production never falls back to PIN.
+    if (import.meta.env.DEV && !password && username === pinCode) {
       setIsAdmin(true);
       logActivity('ورود موفق', 'کاربر ادمین وارد پیشخوان شد (حالت محلی).');
       return true;
@@ -1069,6 +1324,15 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logoutAdmin,
         persistence,
         contentReady,
+        syncStatus,
+        lastSyncedAt,
+        syncError,
+        lastLoginError,
+        isRefreshing,
+        hasUnsyncedCloudChanges,
+        saveChanges,
+        saveToCloudNow,
+        refreshFromCloud,
         updateField,
         addItem,
         removeItem,
@@ -1080,7 +1344,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         openEditModal,
         closeEditModal,
         hasUnsavedChanges,
-        saveChanges,
         duplicateItem,
         duplicateSection,
         duplicatePage,

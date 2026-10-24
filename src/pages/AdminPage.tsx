@@ -77,6 +77,10 @@ const POST_FIELDS: FieldDef[] = [
   { key: 'viewsCount', label: 'تعداد بازدید', type: 'number', half: true, min: 0 },
   { key: 'featured', label: 'مقاله ویژه', type: 'toggle' },
   { key: 'isPopular', label: '«محبوب‌ترین مقاله» باشد', type: 'toggle', hint: 'فقط یک مقاله را انتخاب کنید' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
 ];
 
 const SERVICE_FIELDS: FieldDef[] = [
@@ -95,6 +99,10 @@ const SERVICE_FIELDS: FieldDef[] = [
     { key: 'badge', label: 'نشان (اختیاری)', placeholder: 'پیشنهادی' },
     { key: 'description', label: 'توضیح پکیج', type: 'textarea', rows: 2 },
     { key: 'isPopular', label: 'پکیج محبوب (هایلایت شود)', type: 'toggle' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
   ] },
 ];
 
@@ -141,6 +149,10 @@ const CASE_FIELDS: FieldDef[] = [
   { key: 'tags', label: 'برچسب‌ها', type: 'tags' },
   { key: 'date', label: 'تاریخ' },
   { key: 'featured', label: 'در صفحه اصلی نمایش داده شود', type: 'toggle' },
+  { key: 'status', label: 'وضعیت انتشار', type: 'select', options: [
+    { value: 'draft', label: 'پیش‌نویس (مخفی از سایت)' },
+    { value: 'published', label: 'منتشرشده (نمایش در سایت)' },
+  ] },
 ];
 
 const newPost = () => ({
@@ -176,6 +188,7 @@ const ADMIN_TAB_IDS = [
 export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
   const {
     data, isAdmin, persistence, pinCode, changePin, loginAdmin, logoutAdmin,
+    lastLoginError,
     updateField, addItem, removeItem, moveItem, duplicateItem,
     exportJSON, importJSON, createSnapshot, rollbackSnapshot, deleteSnapshot,
     resetToDefaults, addMediaItem, removeMediaItem, logActivity,
@@ -308,7 +321,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
       setLoginPass('');
       showToast('خوش آمدید! ورود به پیشخوان مدیریت با موفقیت انجام شد.');
     } else {
-      setLoginError(persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز محلی وارد شده اشتباه است.');
+      setLoginError(lastLoginError || (persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز محلی وارد شده اشتباه است.'));
     }
   };
 
@@ -1160,7 +1173,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
               <ACard>
                 <ASectionTitle
                   title="رفتار دستیار هوشمند"
-                  desc="شخصیت، لحن و قوانین پاسخ‌دهی AI مشاور — ответы همیشه از داده‌های خود سایت ساخته می‌شوند"
+                  desc="شخصیت، لحن و قوانین پاسخ‌دهی AI مشاور — پاسخ همیشه از داده‌های خود سایت ساخته می‌شود"
                   action={
                     <button
                       onClick={async () => { setChatLog(await api.listChats()); showToast('تاریخچه گفتگوها دریافت شد.'); }}
