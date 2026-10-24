@@ -40,6 +40,7 @@ import { groupOfPost, normalizeCategory } from '../data/blogTaxonomy';
 import { ProductPromo, isProductPromotable } from '../components/ProductPromo';
 import { productsForPage } from '../data/productPromo';
 import { imageFallback } from '../utils/imageFallback';
+import { profilePhotoProps } from '../utils/profilePhoto';
 import { responsiveImageProps } from '../utils/responsiveImage';
 
 interface HomePageProps {
@@ -306,8 +307,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
                 >
                   <img
                     alt={personal.name}
-                    src="/profile-photo-64.webp"
-                    srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                    {...profilePhotoProps(personal.avatar, 'pill')}
                     sizes="28px"
                     referrerPolicy="no-referrer"
                     onError={imageFallback('/profile-photo-web.jpg')}
@@ -436,8 +436,7 @@ export const HomePage: React.FC<HomePageProps> = ({ theme, onNavigate, onSelectC
             >
               <img
                 alt={personal.name}
-                src="/profile-photo-160.webp"
-                srcSet="/profile-photo-64.webp 64w, /profile-photo-160.webp 160w"
+                {...profilePhotoProps(personal.avatar, 'card')}
                 sizes="64px"
                 loading="eager"
                 referrerPolicy="no-referrer"

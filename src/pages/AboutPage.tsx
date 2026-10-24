@@ -9,6 +9,7 @@ import { GraduationCap, Award, Sparkles, Target, Rocket } from 'lucide-react';
 import { motion } from 'motion/react';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { profilePhotoProps } from '../utils/profilePhoto';
 import { responsiveImageProps } from '../utils/responsiveImage';
 import { ProductPromoStrip } from '../components/ProductPromo';
 import { productsForPage } from '../data/productPromo';
@@ -80,8 +81,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ theme, onNavigate }) => {
             <div className="relative w-full aspect-square rounded-[var(--nd-radius-card)] overflow-hidden shadow-md">
               <img
                 alt={personal.name}
-                src="/profile-photo-hero.webp"
-                srcSet="/profile-photo-400.webp 400w, /profile-photo-800.webp 800w, /profile-photo-hero.webp 1254w"
+                {...profilePhotoProps(personal.avatar, 'hero')}
                 sizes="(max-width: 640px) 90vw, 480px"
                 loading="eager"
                 decoding="async"
