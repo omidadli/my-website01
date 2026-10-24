@@ -18,6 +18,7 @@ export const AdminFloatingBar: React.FC = () => {
     isRefreshing,
     hasUnsyncedCloudChanges,
     saveToCloudNow,
+    resolveConflict,
     refreshFromCloud,
   } = useContent();
 
@@ -40,6 +41,11 @@ export const AdminFloatingBar: React.FC = () => {
     window.addEventListener('nd:content-conflict', onConflict);
     return () => window.removeEventListener('nd:content-conflict', onConflict);
   }, []);
+
+  // A conflict can come from the debounced auto-save too, not only from the buttons.
+  useEffect(() => {
+    if (syncStatus === 'conflict') setConflictOpen(true);
+  }, [syncStatus]);
 
   if (!isAdmin) return null;
 
@@ -108,24 +114,15 @@ export const AdminFloatingBar: React.FC = () => {
   };
 
   const keepMyVersion = async () => {
-    // Re-save with the new baseUpdatedAt so local changes win.
-    const result = await saveToCloudNow();
+    const r = await resolveConflict('mine');
     setConflictOpen(false);
-    if (result.status === 'saved') {
-      showToast('نسخه شما با موفقیت ذخیره شد.', 4000);
-    } else {
-      showToast(result.message || 'ذخیره نسخه شما ناموفق بود.', 5000);
-    }
+    showToast(r.message, r.ok ? 4000 : 6000);
   };
 
   const loadCloudVersion = async () => {
+    const r = await resolveConflict('cloud');
     setConflictOpen(false);
-    const ok = await refreshFromCloud();
-    if (ok) {
-      showToast('نسخه ابری بارگذاری شد. تغییرات محلی شما در state باقی مانده‌اند.', 4000);
-    } else {
-      showToast('بارگذاری نسخه ابری ناموفق بود.', 5000);
-    }
+    showToast(r.message, 6000);
   };
 
   const statusLabel = () => {
