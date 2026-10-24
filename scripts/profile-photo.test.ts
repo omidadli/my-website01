@@ -24,4 +24,9 @@ for (const f of ['src/pages/AboutPage.tsx', 'src/pages/HomePage.tsx']) {
   assert.ok(!/src="\/profile-photo-/.test(src), `${f} hard-codes the profile photo again`);
   assert.ok(src.includes('profilePhotoProps(personal.avatar'), `${f} must read PERSONAL_INFO.avatar`);
 }
+// the author box of EVERY post must use the one global photo, not a per-post value
+const detail = readFileSync('src/pages/BlogPostDetailPage.tsx', 'utf8');
+assert.ok(!detail.includes('post.authorAvatar'), 'post pages must not read a per-post author avatar');
+assert.ok(detail.includes('profilePhotoProps(data.PERSONAL_INFO.avatar'), 'post pages must read PERSONAL_INFO.avatar');
+assert.ok(!/key: 'authorAvatar'/.test(readFileSync('src/pages/AdminPage.tsx', 'utf8')), 'admin must not offer a per-post avatar (it would be a dead field)');
 console.log('profile-photo.test.ts: all checks passed');

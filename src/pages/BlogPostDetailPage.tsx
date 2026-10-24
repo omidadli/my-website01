@@ -8,6 +8,7 @@ import { motion } from 'motion/react';
 import { linkProps, postPath } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
 import { imageFallback } from '../utils/imageFallback';
+import { profilePhotoProps } from '../utils/profilePhoto';
 import { responsiveImageProps, BLOG_COVER_SIZES, BLOG_DETAIL_COVER_SIZES } from '../utils/responsiveImage';
 import { RichText } from '../components/RichText';
 import { mdToPlainText } from '../utils/plainText';
@@ -323,10 +324,7 @@ export const BlogPostDetailPage: React.FC<BlogPostDetailPageProps> = ({ theme, p
           <div className={`nd-card p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-5 sm:gap-6 text-center sm:text-right`}>
             <img
               alt={post.author}
-              {...responsiveImageProps(
-                post.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
-                { sizes: '80px', displayWidth: 80, displayHeight: 80 },
-              )}
+              {...profilePhotoProps(data.PERSONAL_INFO.avatar, 'card')}
               className="w-20 h-20 rounded-2xl object-cover shadow-sm shrink-0"
               referrerPolicy="no-referrer"
               onError={imageFallback('/avatar-fallback.svg')}
