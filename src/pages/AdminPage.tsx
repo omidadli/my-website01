@@ -72,7 +72,6 @@ const POST_FIELDS: FieldDef[] = [
   { key: 'readTime', label: 'زمان مطالعه', placeholder: '۵ دقیقه' },
   { key: 'author', label: 'نویسنده' },
   { key: 'authorRole', label: 'سمت نویسنده' },
-  { key: 'authorAvatar', label: 'آواتار نویسنده', type: 'image' },
   { key: 'tags', label: 'برچسب‌ها', type: 'tags' },
   { key: 'viewsCount', label: 'تعداد بازدید', type: 'number', half: true, min: 0 },
   { key: 'featured', label: 'مقاله ویژه', type: 'toggle' },
@@ -908,7 +907,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                   <FieldsForm basePath="PERSONAL_INFO" item={data.PERSONAL_INFO} fields={[
                     { key: 'name', label: 'نام و نام خانوادگی' },
                     { key: 'title', label: 'عنوان شغلی' },
-                    { key: 'avatar', label: 'عکس پروفایل', type: 'image' },
+                    { key: 'avatar', label: 'عکس پروفایل (صفحه‌ی اصلی، درباره من و همه‌ی مقاله‌ها)', type: 'image' },
                     { key: 'tagline', label: 'تگ‌لاین', type: 'textarea', rows: 2 },
                     { key: 'bio', label: 'بیوگرافی کامل', type: 'textarea', rows: 5 },
                     { key: 'shortBio', label: 'بیوگرافی کوتاه', type: 'textarea', rows: 3 },

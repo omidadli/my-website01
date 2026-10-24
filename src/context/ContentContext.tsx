@@ -1391,7 +1391,6 @@ function createDefaultItemForPath(arrayPath: string): any {
       readTime: '۵ دقیقه مطالعه',
       author: 'امید عدلی',
       authorRole: 'استراتژیست رشد و دیجیتال مارکتینگ',
-      authorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
       imageIcon: 'rocket',
       coverImage: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80',
       featured: false,
