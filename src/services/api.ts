@@ -289,7 +289,7 @@ export const api = {
     messages: { role: 'user' | 'model'; content: string }[],
     mascotContext?: { name?: string; page?: string; daypart?: string; bodyState?: string },
     sessionId?: string
-  ): Promise<{ ok: boolean; answer?: string; act?: { pose?: string; hold?: number; bubble?: string; then?: string }; mode?: 'ai' | 'local'; error?: string }> {
+  ): Promise<{ ok: boolean; answer?: string; act?: { pose?: string; hold?: number; bubble?: string; then?: string }; mode?: 'ai' | 'local'; code?: string; error?: string }> {
     try {
       const r = await fetch('/api/chat', {
         method: 'POST',
@@ -297,7 +297,7 @@ export const api = {
         body: JSON.stringify({ messages, mascot: mascotContext, sessionId }),
       });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? { ok: true, answer: j.answer, act: j.act, mode: j.mode } : { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+      return r.ok && j?.ok && typeof j.answer === 'string' && j.answer.trim() ? { ok: true, answer: j.answer, act: j.act, mode: j.mode } : { ok: false, code: j?.code, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
     }
@@ -385,11 +385,11 @@ export const api = {
   },
 
   /** Public: re-validate a stored session token. */
-  async toolSession(payload: { token: string; productId: string; deviceId: string }): Promise<{ ok: boolean; tool?: any; error?: string }> {
+  async toolSession(payload: { token: string; productId: string; deviceId: string }): Promise<{ ok: boolean; tool?: any; status?: number; error?: string }> {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'session', ...payload }) });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok ? { ok: true, tool: j.tool } : { ok: false, error: j?.error };
+      return r.ok && j?.ok ? { ok: true, tool: j.tool } : { ok: false, status: r.status, error: j?.error };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
     }
@@ -400,7 +400,7 @@ export const api = {
     try {
       const r = await fetch('/api/tools', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'chat', ...payload }) });
       const j = await r.json().catch(() => ({}));
-      return r.ok && j?.ok
+      return r.ok && j?.ok && typeof j.answer === 'string' && j.answer.trim()
         ? { ok: true, answer: j.answer, mode: j.mode, trial: j.trial, coins: j.coins, quota: j.quota, key: j.key }
         : { ok: false, error: j?.error || `خطای سرور (${r.status})`, code: j?.code, trial: j?.trial, coins: j?.coins, quota: j?.quota };
     } catch {
