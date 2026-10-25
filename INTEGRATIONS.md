@@ -11,7 +11,7 @@ This document explains the three ways the site can be driven programmatically:
 
 ## 1. HTTP API
 
-Base URL = your site origin (e.g. `https://omidadli01.site`).
+Base URL = your site origin (e.g. `https://omidadli.site`).
 
 ### Auth
 
@@ -138,7 +138,7 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 |--------|---------|-------|
 | `CLOUDFLARE_API_TOKEN` | deploy | Cloudflare token with *Pages: Edit* + *D1: Edit* |
 | `CLOUDFLARE_ACCOUNT_ID` | deploy | your Cloudflare account id |
-| `SITE_URL` | content sync | live site URL, e.g. `https://omidadli01.site` |
+| `SITE_URL` | content sync | live site URL, e.g. `https://omidadli.site` |
 | `ADMIN_USERNAME` | content sync | same as the Pages secret |
 | `ADMIN_PASSWORD` | content sync | same as the Pages secret |
 

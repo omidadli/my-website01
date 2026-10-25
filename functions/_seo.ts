@@ -1,4 +1,4 @@
-import { CANONICAL_SITE_URL, type SeoGlobalLike, type SeoPageLike, type SeoPostLike } from '../lib/seoDefaults';
+import { CANONICAL_SITE_URL, resolveCanonicalOrigin, type SeoGlobalLike, type SeoPageLike, type SeoPostLike } from '../lib/seoDefaults';
 import { BLOG_POSTS as DEFAULT_BLOG_POSTS } from '../src/data/content';
 
 /**
@@ -53,13 +53,11 @@ export const loadPublicContent = async (env: SeoEnv): Promise<{ data: PublicSite
 
 /** Canonical origin: CMS setting → request origin (custom domain) → default. */
 export const resolveBaseUrl = (request: Request, content: PublicSiteContent | null): string => {
-  const fromCms = String(content?.GLOBAL_SEO?.canonicalBaseUrl || '').trim();
-  if (/^https?:\/\//i.test(fromCms)) return fromCms.replace(/\/+$/, '');
+  let host = '';
   try {
-    const origin = new URL(request.url).origin;
-    if (/^https?:\/\//i.test(origin) && !/localhost|127\.0\.0\.1/.test(origin)) return origin;
+    host = new URL(request.url).host;
   } catch { /* ignore */ }
-  return DEFAULT_SITE_URL;
+  return resolveCanonicalOrigin(content?.GLOBAL_SEO?.canonicalBaseUrl, host);
 };
 
 export const defaultRobotsTxt = (baseUrl: string): string =>

@@ -1,8 +1,8 @@
-# omidadli01.site — personal site + CMS
+# omidadli.site — personal site + CMS
 
 Persian (RTL) personal-brand site for **Omid Adli** (performance marketing & CRO),
 built with React + Vite and hosted on **Cloudflare Pages** (Pages Functions + D1).
-Live: https://omidadli01.site
+Live: https://omidadli.site
 
 | Doc | What it covers |
 |-----|----------------|

@@ -54,11 +54,46 @@ export interface SeoPostLike {
  * The one and only canonical origin of the site.
  *
  * It used to be spelled out literally in the edge helpers, the SPA context, the
- * SEO box and this file — which is how the docs drifted to `omidadli.site` while
- * every canonical/og/sitemap URL said `omidadli01.site`. Change it here and every
- * consumer follows.
+ * SEO box and this file, and the copies drifted apart (omidadli.com / omidadli01.site /
+ * omidadli.site). Change it here and every consumer follows.
  */
-export const CANONICAL_SITE_URL = 'https://omidadli01.site';
+export const CANONICAL_SITE_URL = 'https://omidadli.site';
+
+/** Hosts that were advertised as canonical in the past (or alias this deployment): never honoured again. */
+const LEGACY_HOSTS = new Set(['omidadli01.site', 'omidadli.com']);
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+};
+/** Hosts that are never a real public address of the site (previews, local dev). */
+const isPreviewHost = (host: string): boolean => /(^|\.)pages\.dev$|(^|\.)workers\.dev$|^localhost(:|$)|^127\./.test(host);
+
+/**
+ * The origin advertised in canonical links, og:url, sitemap.xml and robots.txt.
+ *
+ * The site is served on omidadli.site (the owner's real domain). The CMS value
+ * (GLOBAL_SEO.canonicalBaseUrl) is honoured only when it is that host, or the public host of the
+ * current request; the stale seed `https://omidadli.com` still stored in the live database and the
+ * old alias `omidadli01.site` are rewritten to the real domain, so no other domain is ever
+ * advertised as the canonical address.
+ */
+export const resolveCanonicalOrigin = (cmsValue: unknown, requestHost?: string): string => {
+  const builtIn = CANONICAL_SITE_URL.replace(/\/+$/, '');
+  const cms = typeof cmsValue === 'string' ? cmsValue.trim().replace(/\/+$/, '') : '';
+  const reqHost = String(requestHost || '').toLowerCase().replace(/^www\./, '');
+  const reqIsPublic = !!reqHost && !isPreviewHost(reqHost);
+
+  if (/^https?:\/\//i.test(cms)) {
+    const h = hostOf(cms);
+    if (h === hostOf(builtIn)) return builtIn; // always https, no trailing slash
+    if (h && !LEGACY_HOSTS.has(h) && reqIsPublic && h === reqHost) return cms;
+  }
+  return builtIn;
+};
 
 /** Resolve a public post by ID or slug; drafts are never routable by public crawlers. */
 export const findPublishedPost = <T extends SeoPostLike>(posts: readonly T[], idOrSlug: string): T | null =>

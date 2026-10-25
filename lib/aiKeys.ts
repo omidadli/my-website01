@@ -400,8 +400,8 @@ export const COOLDOWN_MS: Record<AiErrorCode, number> = {
   blocked: 0,
   bad_request: 0,
   server: 2 * 60_000,
-  network: 60_000,
-  timeout: 60_000,
+  network: 20_000,
+  timeout: 20_000,
   empty: 5 * 60_000,
   unknown: 5 * 60_000,
 };
@@ -670,11 +670,20 @@ export interface ProviderCallArgs {
   question: string;
   temperature?: number;
   maxOutputTokens?: number;
-  /** مهلت درخواست به میلی‌ثانیه */
+  /** مهلت «هر تلاش» به میلی‌ثانیه (پیش‌فرض ۱۲ ثانیه؛ قبلاً ۳۰ ثانیه بود و کاربر دقیقه‌ها منتظر می‌ماند) */
   timeoutMs?: number;
+  /** زمان مطلق (epoch ms) که تا آن همه‌ی تلاش‌ها (مدل‌ها/کلیدها) باید تمام شده باشند */
+  deadlineAt?: number;
 }
 
-const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'];
+/** مهلت پیش‌فرض هر تلاش و سقف کلّ یک درخواست چت (بعد از آن پاسخ محلی داده می‌شود). */
+export const AI_ATTEMPT_TIMEOUT_MS = 12_000;
+export const AI_TOTAL_BUDGET_MS = 26_000;
+/** کمتر از این مقدار باقی‌مانده، تلاش تازه معنی ندارد. */
+const MIN_ATTEMPT_MS = 3_000;
+
+// flash-lite در جایگاه دوم: اگر مدل اصلی کند/شلوغ باشد، سریع‌ترین جایگزین زودتر امتحان می‌شود.
+const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-3.5-flash'];
 
 const extractGeminiText = (j: any): string => {
   const parts = j?.candidates?.[0]?.content?.parts || [];
@@ -696,7 +705,10 @@ export const callProviderKey = async (args: ProviderCallArgs): Promise<AiCallRes
   const started = Date.now();
   const temperature = typeof args.temperature === 'number' ? args.temperature : 0.6;
   const maxTokens = Math.max(64, Math.min(4096, args.maxOutputTokens || 900));
-  const timeoutMs = args.timeoutMs || 30000;
+  const perAttemptMs = args.timeoutMs || AI_ATTEMPT_TIMEOUT_MS;
+  const deadlineAt = args.deadlineAt || started + perAttemptMs * 2;
+  /** مهلت این تلاش: نه بیشتر از مهلت هر تلاش، نه بیشتر از زمان باقی‌مانده تا سقف کل */
+  const attemptMs = () => Math.max(MIN_ATTEMPT_MS, Math.min(perAttemptMs, deadlineAt - Date.now()));
 
   try {
     if (args.provider === 'openai') {
@@ -705,7 +717,7 @@ export const callProviderKey = async (args: ProviderCallArgs): Promise<AiCallRes
       const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        signal: timeoutSignal(timeoutMs),
+        signal: timeoutSignal(attemptMs()),
         body: JSON.stringify({
           model,
           temperature,
@@ -738,11 +750,17 @@ export const callProviderKey = async (args: ProviderCallArgs): Promise<AiCallRes
     // ---- Gemini (پیش‌فرض) ----
     const models = [args.model, ...DEFAULT_GEMINI_MODELS].filter((m, i, a) => m && a.indexOf(m) === i) as string[];
     let last: AiCallResult = { text: null, code: 'empty', message: 'پاسخی از Gemini دریافت نشد.' };
+    let tried = 0;
     for (const model of models) {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      // سقف کل: اگر زمان کافی برای یک تلاش دیگر نمانده، همین‌جا با آخرین خطا تمام کن.
+      if (tried > 0 && deadlineAt - Date.now() < MIN_ATTEMPT_MS) break;
+      tried++;
+      let res: Response;
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        signal: timeoutSignal(timeoutMs),
+        signal: timeoutSignal(attemptMs()),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: args.systemPrompt }] },
           contents: [
@@ -758,6 +776,14 @@ export const callProviderKey = async (args: ProviderCallArgs): Promise<AiCallRes
           ],
         }),
       });
+      } catch (err: any) {
+        // timeout / قطع شبکه روی یک مدل: مدل بعدی (سریع‌تر) را در زمان باقی‌مانده امتحان کن.
+        const message = String(err?.message || err || 'خطای شبکه');
+        const code = classifyAiError({ message });
+        last = { text: null, code, message, model, latencyMs: Date.now() - started };
+        if (code === 'timeout' || code === 'network') continue;
+        return last;
+      }
       const latencyMs = Date.now() - started;
       if (res.ok) {
         const j: any = await res.json().catch(() => null);
@@ -789,6 +815,9 @@ export const callProviderKey = async (args: ProviderCallArgs): Promise<AiCallRes
   }
 };
 
+/** ≈ 8k Persian characters of filler, only used by the key test to mimic a real chat prompt. */
+const PROBE_PADDING = 'این متن فقط برای سنجش سرعت واقعی کلید است و هیچ دستوری ندارد. '.repeat(130);
+
 export interface KeyTestResult {
   ok: boolean;
   latencyMs: number;
@@ -813,15 +842,21 @@ export const testProviderKey = async (config: {
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     model,
-    systemPrompt: 'You are a connectivity probe. Reply with the single word OK.',
+    // A realistic prompt size (≈ the site assistant's ~9k tokens) — a tiny probe always answers fast
+    // and used to hide keys/models that time out on real chats.
+    systemPrompt: `You are a connectivity probe. Reply with the single word OK.\n\n${PROBE_PADDING}`,
     history: [],
     question: 'Reply with the word "OK".',
     temperature: 0.1,
     maxOutputTokens: 25,
-    timeoutMs: config.timeoutMs || 15000,
+    timeoutMs: config.timeoutMs || AI_ATTEMPT_TIMEOUT_MS,
+    deadlineAt: Date.now() + (config.timeoutMs || AI_ATTEMPT_TIMEOUT_MS),
   });
   const latencyMs = Math.max(1, Date.now() - started);
-  if (res.text) return { ok: true, latencyMs, model: res.model || model, reply: res.text.slice(0, 120) };
+  if (res.text) {
+    const slow = latencyMs > 8000 ? ' — کند است؛ پاسخ‌های چت ممکن است دیر برسند' : '';
+    return { ok: true, latencyMs, model: res.model || model, reply: `${res.text.slice(0, 80)} (${(latencyMs / 1000).toFixed(1)}s با پرامپت واقعی)${slow}` };
+  }
   return { ok: false, latencyMs, model: res.model || model, error: res.message || res.code || 'خطای نامشخص' };
 };
 
@@ -861,6 +896,8 @@ export interface FailoverArgs {
   persist?: (states: AiKeyState[]) => Promise<void> | void;
   /** حداکثر تعداد تلاش (پیش‌فرض: تعداد کلیدهای قابل استفاده) */
   maxAttempts?: number;
+  /** زمان مطلق (epoch ms) که بعد از آن کلید تازه‌ای شروع نمی‌شود */
+  deadlineAt?: number;
 }
 
 /**
@@ -893,6 +930,8 @@ export const runKeyFailover = async (args: FailoverArgs): Promise<FailoverOutcom
   let switched = false;
 
   for (let i = 0; i < ordered.length && attempts.length < maxAttempts; i++) {
+    // سقف زمانیِ کل: اگر وقت کافی برای یک تلاش دیگر نمانده، به‌جای انتظارِ بیشتر، پاسخ محلی بده.
+    if (i > 0 && args.deadlineAt && args.deadlineAt - Date.now() < MIN_ATTEMPT_MS) break;
     const key = ordered[i];
     const cooling = isCoolingDown(states[key.id], startedAt);
     const handoff = !!previousKeyId && key.id !== primaryId;

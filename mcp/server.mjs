@@ -8,7 +8,7 @@
  * Transport: stdio (works with Claude Desktop and Claude Code).
  *
  * Required environment variables:
- *   SITE_URL         base URL of the site   (e.g. https://omidadli01.site)
+ *   SITE_URL         base URL of the site   (e.g. https://omidadli.site)
  *   ADMIN_USERNAME   admin username
  *   ADMIN_PASSWORD   admin password
  *

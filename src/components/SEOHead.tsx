@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { useContent } from '../context/ContentContext';
 import { Page } from '../types';
 import { pathForPage, postPath } from '../utils/router';
-import { resolveSeo, buildDocumentTitle, buildPostJsonLd, NOT_FOUND_TITLE } from '../../lib/seoDefaults';
+import { resolveSeo, buildDocumentTitle, buildPostJsonLd, resolveCanonicalOrigin, NOT_FOUND_TITLE } from '../../lib/seoDefaults';
 
 interface SEOHeadProps {
   currentPage: Page;
@@ -43,7 +43,7 @@ export const SEOHead: React.FC<SEOHeadProps> = ({ currentPage, blogPostId, notFo
     setMetaProperty('og:locale', 'fa_IR');
 
     // Canonical — real paths (/services, /blog/<slug>), base URL from the CMS.
-    const base = (globalSeo.canonicalBaseUrl || '').replace(/\/$/, '');
+    const base = resolveCanonicalOrigin(globalSeo.canonicalBaseUrl, window.location.host);
     const canonical = notFound
       ? `${base}/`
       : missingPost
