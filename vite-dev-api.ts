@@ -46,6 +46,7 @@ import {
 import { runSectionAiWithStore, derivedSessionId, type AiKeyStore, type RunSectionAiResult } from './lib/aiSection';
 import { getPlan, resolveFreeTrial } from './lib/toolPlans';
 import { publicContentView } from './lib/contentVisibility';
+import { normalizeLoginId, normalizePhone as normalizeAccountPhone, validateFullName, resolveAccountContacts } from './lib/userAuth';
 import {
   PERSONAL_INFO,
   SERVICES,
@@ -142,15 +143,8 @@ interface DevSession {
 
 const randomHex = (bytes = 32): string => randomBytes(bytes).toString('hex');
 
-const normalizeLoginId = (raw: string): { id: string; type: 'email' | 'phone' } => {
-  const v = String(raw || '').trim();
-  const digits = v.replace(/[^\d+]/g, '');
-  if (/^(\+98|0)?9\d{9}$/.test(digits)) {
-    return { id: digits.replace(/^\+98/, '0'), type: 'phone' };
-  }
-  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return { id: v.toLowerCase(), type: 'email' };
-  return { id: v.toLowerCase(), type: /@/.test(v) ? 'email' : 'phone' };
-};
+/* normalizeLoginId / normalizePhone / validate* are shared with the production
+ * API and the React app via lib/userAuth.ts — identical rules everywhere. */
 
 const devHashPassword = (password: string, salt: string): string => {
   // Iterated HMAC-SHA256 — for dev-only persistent storage. Prod uses PBKDF2-SHA256 via WebCrypto.
@@ -192,6 +186,47 @@ const setSessionCookie = (res: import('http').ServerResponse, token: string, exp
 
 const clearSessionCookie = (res: import('http').ServerResponse) => {
   res.setHeader('Set-Cookie', `${USER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`);
+};
+
+/* ---- profile-dashboard file stores (mirrors the D1 user_* tables) ---- */
+const SAVED_FILE = path.resolve(process.cwd(), '.dev-user-saved.json');
+const SUBS_FILE = path.resolve(process.cwd(), '.dev-user-subs.json');
+const CONSULTS_FILE = path.resolve(process.cwd(), '.dev-user-consults.json');
+const ACTIVITIES_FILE = path.resolve(process.cwd(), '.dev-user-activities.json');
+
+/** Public shape of a saved-article row (no userId — same as functions/api/user.ts). */
+const mapDevSaved = (r: any) => ({
+  postId: String(r.postId || r.post_id || ''),
+  notes: r.notes || '',
+  read: !!r.read,
+  savedAt: r.savedAt || r.saved_at || '',
+  readAt: r.readAt || r.read_at || null,
+});
+
+const mapDevSub = (s: any) => ({
+  id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
+  status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
+});
+
+const mapDevConsultation = (c: any) => ({
+  id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
+  status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
+  createdAt: c.createdAt, updatedAt: c.updatedAt,
+});
+
+const mapDevActivity = (a: any) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp });
+
+const loadDevUserData = (userId: string) => ({
+  savedArticles: safeReadJson<any[]>(SAVED_FILE, []).filter((x) => x.userId === userId).map(mapDevSaved),
+  subscriptions: safeReadJson<any[]>(SUBS_FILE, []).filter((x) => x.userId === userId).map(mapDevSub),
+  consultations: safeReadJson<any[]>(CONSULTS_FILE, []).filter((x) => x.userId === userId).map(mapDevConsultation),
+  activities: safeReadJson<any[]>(ACTIVITIES_FILE, []).filter((x) => x.userId === userId).slice(0, 50).map(mapDevActivity),
+});
+
+const logDevActivity = (userId: string, type: string, description: string, relatedId = '') => {
+  const acts = safeReadJson<any[]>(ACTIVITIES_FILE, []);
+  acts.unshift({ id: newDevId(), userId, type, description, relatedId: relatedId || '', timestamp: new Date().toISOString() });
+  safeWriteJson(ACTIVITIES_FILE, acts.slice(0, 1000));
 };
 
 const safeReadJson = <T>(file: string, fallback: T): T => {
@@ -495,10 +530,7 @@ export function cmsDevApiPlugin(): Plugin {
               return sendJson({
                 ok: true,
                 profile: { id: u.id, fullName: u.fullName, email: u.email, phone: u.phone, avatarUrl: u.avatarUrl, bio: u.bio, joinedAt: u.createdAt },
-                savedArticles: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === u.id),
-                subscriptions: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []).filter((x) => x.userId === u.id),
-                consultations: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === u.id),
-                activities: safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []).filter((x) => x.userId === u.id).slice(0, 50),
+                ...loadDevUserData(u.id),
               });
             }
             if (method === 'POST') {
@@ -522,14 +554,19 @@ export function cmsDevApiPlugin(): Plugin {
                 // Support both separate email/phone fields AND the combined emailOrPhone field.
                 const emailVal = String(body.email || '').trim();
                 const phoneVal = String(body.phone || '').trim();
-                const loginRaw = String(body.emailOrPhone || emailVal || phoneVal || '').trim();
+                const combined = String(body.emailOrPhone || '').trim();
                 const password = String(body.password || '');
-                if (!fullName || fullName.length < 2) return sendJson({ ok: false, error: 'لطفاً نام و نام خانوادگی را وارد کنید.' }, 400);
-                if (!loginRaw) return sendJson({ ok: false, error: 'لطفاً ایمیل یا شماره تلفن را وارد کنید.' }, 400);
+                const nameCheck = validateFullName(fullName);
+                if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
+                // Both contacts are stored — the phone is never dropped just
+                // because the account also has an email (shared rules with prod).
+                const contacts = resolveAccountContacts(emailVal, phoneVal, combined);
+                if (!contacts.ok) return sendJson({ ok: false, error: contacts.error }, 400);
                 if (!password || password.length < 6) return sendJson({ ok: false, error: 'رمز ورود باید حداقل ۶ کاراکتر باشد.' }, 400);
-                const { id: loginId, type: loginType } = normalizeLoginId(loginRaw);
+                const { loginId, loginType, email, phone } = contacts;
                 const users = loadDevUsers();
-                if (users.some((u) => u.loginId === loginId)) {
+                // One account per identifier: the login id AND any stored email/phone must be unique.
+                if (users.some((u) => u.loginId === loginId || (email && u.email === email) || (phone && u.phone === phone))) {
                   return sendJson({ ok: false, error: 'این ایمیل یا شماره قبلاً ثبت نام کرده است. لطفاً وارد شوید.' }, 409);
                 }
                 const salt = randomHex(16);
@@ -540,8 +577,8 @@ export function cmsDevApiPlugin(): Plugin {
                   fullName,
                   loginId,
                   loginType,
-                  email: loginType === 'email' ? loginId : '',
-                  phone: loginType === 'phone' ? loginId : '',
+                  email,
+                  phone,
                   passwordHash: devHashPassword(password, salt),
                   passwordSalt: salt,
                   avatarUrl: '',
@@ -551,7 +588,7 @@ export function cmsDevApiPlugin(): Plugin {
                 users.push(user);
                 saveDevUsers(users);
                 // Seed demo sub
-                const subs = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []);
+                const subs = safeReadJson<any[]>(SUBS_FILE, []);
                 subs.unshift({
                   id: newDevId(),
                   userId: uid,
@@ -564,34 +601,18 @@ export function cmsDevApiPlugin(): Plugin {
                   autoRenew: true,
                   features: ['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها'],
                 });
-                safeWriteJson(path.resolve(process.cwd(), '.dev-user-subs.json'), subs);
-                const acts = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []);
-                acts.unshift({ id: newDevId(), userId: uid, type: 'subscription_started', description: 'حساب کاربری شما ایجاد شد', timestamp: now });
-                safeWriteJson(path.resolve(process.cwd(), '.dev-user-activities.json'), acts);
+                safeWriteJson(SUBS_FILE, subs);
+                logDevActivity(uid, 'subscription_started', 'حساب کاربری شما ایجاد شد');
                 const expiresAt = Date.now() + USER_SESSION_TTL_MS;
                 const token = randomHex(32);
                 const sessions = loadDevSessions();
                 sessions.push({ token, userId: uid, createdAt: now, expiresAt });
                 saveDevSessions(sessions);
                 setSessionCookie(res, token, expiresAt);
-                const saved = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === uid);
-                const userSubs = subs.filter((x) => x.userId === uid);
-                const userActs = acts.filter((x) => x.userId === uid);
-                const cons = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === uid);
                 return sendJson({
                   ok: true,
-                  profile: { id: uid, fullName, email: user.email, phone: user.phone, avatarUrl: '', bio: '', joinedAt: now },
-                  savedArticles: saved,
-                  subscriptions: userSubs.map((s) => ({
-                    id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
-                    status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
-                  })),
-                  consultations: cons.map((c) => ({
-                    id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
-                    status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
-                    createdAt: c.createdAt, updatedAt: c.updatedAt,
-                  })),
-                  activities: userActs.map((a) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp })),
+                  profile: { id: uid, fullName, email, phone, avatarUrl: '', bio: '', joinedAt: now },
+                  ...loadDevUserData(uid),
                 });
               }
 
@@ -601,7 +622,11 @@ export function cmsDevApiPlugin(): Plugin {
                 if (!loginRaw || !password) return sendJson({ ok: false, error: 'ایمیل/شماره و رمز عبور را وارد کنید.' }, 400);
                 const { id: loginId } = normalizeLoginId(loginRaw);
                 const users = loadDevUsers();
-                const user = users.find((u) => u.loginId === loginId);
+                // Match the canonical id against login_id AND email/phone so an account
+                // registered with BOTH contacts can log in with either one. The legacy
+                // fallback covers rows written before phone normalisation tightened up.
+                const user = users.find((u) => u.loginId === loginId || u.email === loginId || u.phone === loginId)
+                  || users.find((u) => u.loginId === loginRaw.toLowerCase());
                 if (!user) return sendJson({ ok: false, error: 'کاربری با این ایمیل/شماره یافت نشد.' }, 401);
                 const hash = devHashPassword(password, user.passwordSalt);
                 let diff = 0;
@@ -618,24 +643,10 @@ export function cmsDevApiPlugin(): Plugin {
                 sessions.push({ token, userId: user.id, createdAt: new Date().toISOString(), expiresAt });
                 saveDevSessions(sessions);
                 setSessionCookie(res, token, expiresAt);
-                const saved = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-saved.json'), []).filter((x) => x.userId === user.id);
-                const subs = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-subs.json'), []).filter((x) => x.userId === user.id);
-                const cons = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-consults.json'), []).filter((x) => x.userId === user.id);
-                const acts = safeReadJson<any[]>(path.resolve(process.cwd(), '.dev-user-activities.json'), []).filter((x) => x.userId === user.id).slice(0, 50);
                 return sendJson({
                   ok: true,
                   profile: { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl, bio: user.bio, joinedAt: user.createdAt },
-                  savedArticles: saved,
-                  subscriptions: subs.map((s) => ({
-                    id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
-                    status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
-                  })),
-                  consultations: cons.map((c) => ({
-                    id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
-                    status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
-                    createdAt: c.createdAt, updatedAt: c.updatedAt,
-                  })),
-                  activities: acts.map((a) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp })),
+                  ...loadDevUserData(user.id),
                 });
               }
 
@@ -645,12 +656,98 @@ export function cmsDevApiPlugin(): Plugin {
                 const users = loadDevUsers();
                 const idx = users.findIndex((x) => x.id === u.id);
                 if (idx < 0) return sendJson({ ok: false, error: 'user_not_found' }, 404);
-                users[idx].fullName = String(body.fullName ?? u.fullName).trim();
-                users[idx].phone = body.phone !== undefined ? String(body.phone || '').trim() : u.phone;
-                users[idx].bio = body.bio !== undefined ? String(body.bio || '') : u.bio;
+                const hasName = body.fullName !== undefined;
+                const fullName = hasName ? String(body.fullName || '').trim() : String(u.fullName || '');
+                if (hasName) {
+                  const nameCheck = validateFullName(fullName);
+                  if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
+                }
+                let phone = String(u.phone || '');
+                if (body.phone !== undefined) {
+                  const rawPhone = String(body.phone || '').trim();
+                  if (rawPhone === '') {
+                    phone = '';
+                  } else {
+                    phone = normalizeAccountPhone(rawPhone);
+                    if (!phone) return sendJson({ ok: false, error: 'شماره موبایل باید با 09 شروع شود (مثل 09123456789).' }, 400);
+                    if (phone !== String(u.phone || '') && loadDevUsers().some((x) => x.id !== u.id && x.phone === phone)) {
+                      return sendJson({ ok: false, error: 'این شماره موبایل متعلق به حساب دیگری است.' }, 409);
+                    }
+                  }
+                }
+                users[idx].fullName = fullName;
+                users[idx].phone = phone;
+                users[idx].bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : u.bio;
                 saveDevUsers(users);
                 return sendJson({ ok: true, profile: { id: users[idx].id, fullName: users[idx].fullName, email: users[idx].email, phone: users[idx].phone, avatarUrl: users[idx].avatarUrl, bio: users[idx].bio, joinedAt: users[idx].createdAt } });
               }
+
+              // ---- profile dashboard persistence (saved articles / consultations) ----
+              const requireDevUser = (): DevUser | null => getDevSessionUser(req);
+              const postId = String(body.postId || '').trim().slice(0, 200);
+
+              if (action === 'save_article') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const rows = safeReadJson<any[]>(SAVED_FILE, []);
+                const notes = String(body.notes || '').slice(0, 500);
+                const existing = rows.find((x) => x.userId === u.id && (x.postId || x.post_id) === postId);
+                if (existing) {
+                  existing.notes = notes;
+                } else {
+                  rows.unshift({ id: newDevId(), userId: u.id, postId, notes, read: false, savedAt: new Date().toISOString(), readAt: null });
+                }
+                safeWriteJson(SAVED_FILE, rows.slice(0, 2000));
+                logDevActivity(u.id, 'article_saved', 'مقاله جدیدی ذخیره کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'unsave_article') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const rows = safeReadJson<any[]>(SAVED_FILE, []).filter((x) => !(x.userId === u.id && (x.postId || x.post_id) === postId));
+                safeWriteJson(SAVED_FILE, rows);
+                logDevActivity(u.id, 'article_removed', 'مقاله‌ای را از لیست ذخیره حذف کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'mark_read') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const read = body.read === undefined ? true : !!body.read;
+                const rows = safeReadJson<any[]>(SAVED_FILE, []);
+                const row = rows.find((x) => x.userId === u.id && (x.postId || x.post_id) === postId);
+                if (row) {
+                  row.read = read;
+                  row.readAt = read ? new Date().toISOString() : null;
+                  safeWriteJson(SAVED_FILE, rows);
+                }
+                if (read) logDevActivity(u.id, 'article_read', 'یک مقاله را مطالعه کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'consult') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const subject = String(body.subject || '').trim().slice(0, 200);
+                const message = String(body.message || '').trim().slice(0, 2000);
+                if (!subject || !message) return sendJson({ ok: false, error: 'موضوع و متن درخواست مشاوره را وارد کنید.' }, 400);
+                const now = new Date().toISOString();
+                const id = newDevId();
+                const cons = safeReadJson<any[]>(CONSULTS_FILE, []);
+                cons.unshift({
+                  id, userId: u.id, subject, message, serviceId: String(body.serviceId || '').slice(0, 100), serviceName: String(body.serviceName || '').slice(0, 200),
+                  status: 'pending', adminNotes: '', scheduledDate: '', scheduledTime: '', createdAt: now, updatedAt: now,
+                });
+                safeWriteJson(CONSULTS_FILE, cons.slice(0, 1000));
+                logDevActivity(u.id, 'consultation_sent', `درخواست مشاوره جدید: ${subject}`, id);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              return sendJson({ ok: false, error: 'اکشن نامعتبر است.' }, 400);
             }
           }
 

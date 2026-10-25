@@ -119,6 +119,7 @@ function LoginPrompt() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [emailOrPhone, setEmailOrPhone] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -132,7 +133,7 @@ function LoginPrompt() {
       if (!fullName.trim() || fullName.trim().length < 2) return setError('لطفاً نام و نام خانوادگی را وارد کنید.');
       if (!email.trim() && !phone.trim()) return setError('لطفاً حداقل ایمیل یا شماره تلفن را وارد کنید.');
       if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError('فرمت ایمیل صحیح نیست.');
-      if (phone.trim() && !/^(\+98|0)?9\d{9}$/.test(phone.trim().replace(/[\s-]/g, ''))) return setError('شماره موبایل باید با 09 شروع شود (مثل 09123456789).');
+      if (phone.trim() && !/^(\+98|0098|98|0)?9\d{9}$/.test(phone.trim().replace(/[\s-]/g, ''))) return setError('شماره موبایل باید با 09 شروع شود (مثل 09123456789).');
       if (!password || password.length < 6) return setError('رمز ورود باید حداقل ۶ کاراکتر باشد.');
       setLoading(true);
       const res = await register({
@@ -144,14 +145,13 @@ function LoginPrompt() {
       setLoading(false);
       if (!res.ok) setError(res.error || 'ثبت‌نام ناموفق بود.');
     } else {
-      if (!email.trim() && !phone.trim()) return setError('لطفاً ایمیل یا شماره تلفن را وارد کنید.');
+      const loginValue = emailOrPhone.trim();
+      if (!loginValue) return setError('ایمیل یا شماره موبایل را وارد کنید.');
       if (!password) return setError('رمز ورود را وارد کنید.');
       setLoading(true);
-      const res = await login({
-        email: email.trim(),
-        phone: phone.trim(),
-        password,
-      });
+      // One combined field: the server normalises and matches either identifier,
+      // so it never matters which one the user types into.
+      const res = await login({ emailOrPhone: loginValue, password });
       setLoading(false);
       if (!res.ok) setError(res.error || 'ورود ناموفق بود.');
     }
@@ -210,28 +210,44 @@ function LoginPrompt() {
               />
             </div>
           )}
-          <div>
-            <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">ایمیل {mode === 'register' && <span className="text-[color:var(--nd-faint)] font-normal">(اختیاری، اگر شماره می‌دهید)</span>}</label>
-            <input
-              type="email"
-              dir="ltr"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@example.com"
-              className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">شماره موبایل {mode === 'register' && <span className="text-[color:var(--nd-faint)] font-normal">(اختیاری، اگر ایمیل می‌دهید)</span>}</label>
-            <input
-              type="tel"
-              dir="ltr"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="09123456789"
-              className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
-            />
-          </div>
+          {mode === 'register' ? (
+            <>
+              <div>
+                <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">ایمیل <span className="text-[color:var(--nd-faint)] font-normal">(اختیاری، اگر شماره می‌دهید)</span></label>
+                <input
+                  type="email"
+                  dir="ltr"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@example.com"
+                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">شماره موبایل <span className="text-[color:var(--nd-faint)] font-normal">(اختیاری، اگر ایمیل می‌دهید)</span></label>
+                <input
+                  type="tel"
+                  dir="ltr"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="09123456789"
+                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">ایمیل یا شماره موبایل</label>
+              <input
+                type="text"
+                dir="ltr"
+                value={emailOrPhone}
+                onChange={(e) => setEmailOrPhone(e.target.value)}
+                placeholder="name@example.com یا 09123456789"
+                className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">رمز ورود *</label>
             <input
@@ -305,11 +321,11 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
   const [editPhone, setEditPhone] = useState(profile?.phone || '');
   const [editBio, setEditBio] = useState(profile?.bio || '');
   const [editing, setEditing] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  if (!isLoggedIn || !profile) {
-    return <LoginPrompt />;
-  }
-
+  // NOTE: every hook must run on EVERY render — no early return above useMemo.
+  // (A hooks-order change after login used to crash the whole profile page.)
   const postsById = useMemo(() => {
     const map = new Map();
     (data.BLOG_POSTS || []).forEach((p) => {
@@ -319,12 +335,40 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
     return map;
   }, [data.BLOG_POSTS]);
 
+  if (!isLoggedIn || !profile) {
+    return <LoginPrompt />;
+  }
+
   const readCount = savedArticles.filter((a) => a.read).length;
   const activeSubs = subscriptions.filter((s) => s.status === 'active').length;
   const pendingConsults = consultations.filter((c) => c.status === 'pending' || c.status === 'reviewing').length;
 
-  const handleSaveProfile = () => {
-    updateProfile({ fullName: editName, phone: editPhone, bio: editBio });
+  const startEditing = () => {
+    // Seed the form from the CURRENT profile — the state's initial values were
+    // captured while logged out and would wipe the name on save.
+    setEditName(profile.fullName || '');
+    setEditPhone(profile.phone || '');
+    setEditBio(profile.bio || '');
+    setSaveError('');
+    setEditing(true);
+  };
+
+  const handleSaveProfile = async () => {
+    if (saving) return;
+    setSaveError('');
+    const name = editName.trim();
+    if (name.length < 2) return setSaveError('لطفاً نام و نام خانوادگی را وارد کنید.');
+    const phone = editPhone.trim();
+    if (phone && !/^(\+98|0098|98|0)?9\d{9}$/.test(phone.replace(/[\s-]/g, ''))) {
+      return setSaveError('شماره موبایل باید با 09 شروع شود (مثل 09123456789).');
+    }
+    setSaving(true);
+    const res = await updateProfile({ fullName: name, phone, bio: editBio.trim() });
+    setSaving(false);
+    if (!res.ok) {
+      setSaveError(res.error === 'not_authenticated' ? 'جلسه شما منقضی شده است؛ دوباره وارد شوید.' : (res.error || 'ذخیره تغییرات ناموفق بود.'));
+      return;
+    }
     setEditing(false);
   };
 
@@ -355,10 +399,18 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
           <div className="flex-1 text-center sm:text-right">
             <h1 className="text-2xl sm:text-3xl font-black text-[color:var(--nd-ink)] mb-1">{profile.fullName}</h1>
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 text-sm text-[color:var(--nd-muted)] mb-3">
-              <span className="inline-flex items-center gap-1.5">
-                <Mail className="w-4 h-4" />
-                {profile.email}
-              </span>
+              {profile.email && (
+                <span className="inline-flex items-center gap-1.5">
+                  <Mail className="w-4 h-4" />
+                  {profile.email}
+                </span>
+              )}
+              {profile.phone && (
+                <span className="inline-flex items-center gap-1.5" dir="ltr">
+                  <Phone className="w-4 h-4" />
+                  {profile.phone}
+                </span>
+              )}
               <span className="inline-flex items-center gap-1.5">
                 <Calendar className="w-4 h-4" />
                 عضو از {formatDate(profile.joinedAt)}
@@ -709,17 +761,23 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
               <div className="flex items-center justify-between mb-5">
                 <h3 className="text-base font-black text-[color:var(--nd-ink)]">اطلاعات حساب کاربری</h3>
                 {!editing ? (
-                  <button onClick={() => setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[color:var(--nd-line)] text-xs font-bold text-[color:var(--nd-ink)] hover:bg-[color:var(--nd-accent)] hover:text-white transition-colors">
+                  <button onClick={startEditing} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[color:var(--nd-line)] text-xs font-bold text-[color:var(--nd-ink)] hover:bg-[color:var(--nd-accent)] hover:text-white transition-colors">
                     <Edit3 className="w-3.5 h-3.5" />
                     ویرایش
                   </button>
                 ) : (
-                  <button onClick={handleSaveProfile} className="inline-flex items-center gap-1.5 nd-btn nd-btn-accent px-3 py-1.5 text-xs">
+                  <button onClick={handleSaveProfile} disabled={saving} className="inline-flex items-center gap-1.5 nd-btn nd-btn-accent px-3 py-1.5 text-xs disabled:opacity-60">
                     <Save className="w-3.5 h-3.5" />
-                    ذخیره
+                    {saving ? 'در حال ذخیره…' : 'ذخیره'}
                   </button>
                 )}
               </div>
+
+              {saveError && (
+                <div role="alert" className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs font-bold text-red-500">
+                  {saveError}
+                </div>
+              )}
 
               <div className="space-y-4">
                 <div>

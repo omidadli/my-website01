@@ -662,32 +662,33 @@ export const api = {
     try {
       const r = await fetch('/api/user', { method: 'GET', cache: 'no-store', credentials: 'same-origin' });
       const ct = r.headers.get('Content-Type') || '';
-      // If the server returned HTML (e.g. dev server not ready, SPA fallback), treat as "not reachable"
-      // instead of showing a scary error — we'll silently fall back to anonymous state.
+      // If the server returned HTML (e.g. dev server not ready, SPA fallback), treat as
+      // "not reachable" instead of showing a scary error — the session cache is kept.
       if (!ct.includes('application/json')) {
-        try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
-        return { ok: false, error: 'not_authenticated' };
+        return { ok: false, error: 'network' };
       }
       const j = await r.json().catch(() => ({}));
       if (r.ok && j?.ok) {
         try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
         return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
       }
-      if (r.status === 401 || !r.ok) {
+      if (r.status === 401) {
+        // The session really is gone — drop the cache so the UI can show the login form.
         try { localStorage.removeItem(USER_DATA_CACHE_KEY); } catch {}
         return { ok: false, error: 'not_authenticated' };
       }
-      return { ok: false, error: j?.error || 'not_authenticated' };
+      // 5xx / unknown: keep the cache and let the caller fall back without logging out.
+      return { ok: false, error: 'server' };
     } catch {
-      return { ok: false, error: 'not_authenticated' };
+      return { ok: false, error: 'network' };
     }
   },
 
-  async userRegister(payload: { fullName: string; email?: string; phone?: string; password: string }) {
+  async userRegister(payload: { fullName: string; email?: string; phone?: string; emailOrPhone?: string; password: string }) {
     const body: Record<string, string> = { fullName: payload.fullName, password: payload.password };
     if (payload.email) body.email = payload.email;
     if (payload.phone) body.phone = payload.phone;
-    const loginValue = payload.email || payload.phone || '';
+    const loginValue = payload.emailOrPhone || payload.email || payload.phone || '';
     if (loginValue) body.emailOrPhone = loginValue;
     try {
       const r = await fetch('/api/user?action=register', {
@@ -714,11 +715,11 @@ export const api = {
     }
   },
 
-  async userLogin(payload: { email?: string; phone?: string; password: string }) {
+  async userLogin(payload: { email?: string; phone?: string; emailOrPhone?: string; password: string }) {
     const body: Record<string, string> = { password: payload.password };
     if (payload.email) body.email = payload.email;
     if (payload.phone) body.phone = payload.phone;
-    const loginValue = payload.email || payload.phone || '';
+    const loginValue = payload.emailOrPhone || payload.email || payload.phone || '';
     if (loginValue) body.emailOrPhone = loginValue;
     try {
       const r = await fetch('/api/user?action=login', {
@@ -766,6 +767,40 @@ export const api = {
       return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  // ---- profile dashboard persistence (fire-and-forget from the UI) ----
+
+  async userSaveArticle(postId: string, notes?: string) {
+    return this.userPostAction('save_article', { postId, notes: notes || '' });
+  },
+
+  async userUnsaveArticle(postId: string) {
+    return this.userPostAction('unsave_article', { postId });
+  },
+
+  async userMarkArticleRead(postId: string, read = true) {
+    return this.userPostAction('mark_read', { postId, read });
+  },
+
+  async userAddConsultation(payload: { subject: string; message: string; serviceId?: string; serviceName?: string }) {
+    return this.userPostAction('consult', payload);
+  },
+
+  async userPostAction(action: string, payload: Record<string, unknown>): Promise<{ ok: boolean; error?: string; [k: string]: any }> {
+    try {
+      const r = await fetch(`/api/user?action=${encodeURIComponent(action)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true, ...j };
+      return { ok: false, error: r.status === 401 ? 'not_authenticated' : (j?.error || `خطای سرور (${r.status})`) };
+    } catch {
+      return { ok: false, error: 'network' };
     }
   },
 

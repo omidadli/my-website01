@@ -20,6 +20,7 @@ import {
   type SectionStatus,
 } from '../../lib/aiKeys';
 import { runSectionAiWithStore, type AiKeyStore, type RunSectionAiArgs, type RunSectionAiResult } from '../../lib/aiSection';
+import { normalizeLoginId, normalizePhone, isValidEmail, isValidPhone, validateLoginInput, validateFullName, resolveAccountContacts } from '../../lib/userAuth';
 
 export interface Env {
   DB: D1Database;
@@ -126,19 +127,7 @@ export const randomHex = (bytes = 32): string => {
   return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
-export const normalizeLoginId = (raw: string): { id: string; type: 'email' | 'phone' } => {
-  const v = String(raw || '').trim();
-  // Looks like an Iran mobile (09xx… or +989xx…)
-  const digits = v.replace(/[^\d+]/g, '');
-  if (/^(\+98|0)?9\d{9}$/.test(digits)) {
-    const normalized = digits.replace(/^\+98/, '0');
-    return { id: normalized, type: 'phone' };
-  }
-  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) {
-    return { id: v.toLowerCase(), type: 'email' };
-  }
-  return { id: v.toLowerCase(), type: /@/.test(v) ? 'email' : 'phone' };
-};
+export { normalizeLoginId, normalizePhone, isValidEmail, isValidPhone, validateLoginInput, validateFullName, resolveAccountContacts };
 
 export const newId = (): string => `${Date.now().toString(36)}-${randomHex(6)}`;
 
@@ -170,15 +159,18 @@ export interface SessionCookieOptions {
   expiresAt: number;
   /** Omit to delete the cookie. */
   delete?: boolean;
+  /** Set on https requests so the browser never sends the cookie over plain http. */
+  secure?: boolean;
 }
 
-export const sessionCookie = ({ token, expiresAt, delete: del }: SessionCookieOptions): string => {
+export const sessionCookie = ({ token, expiresAt, delete: del, secure }: SessionCookieOptions): string => {
   const name = USER_SESSION_COOKIE;
   const val = encodeURIComponent(token);
   const expires = new Date(del ? 0 : expiresAt).toUTCString();
   const maxAge = del ? 0 : Math.floor(USER_SESSION_TTL_MS / 1000);
-  // SameSite=Lax so it works across top-level navigations; Secure auto-enabled on https in production.
-  return `${name}=${val}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}; Max-Age=${maxAge}`;
+  // SameSite=Lax so it works across top-level navigations; Secure whenever the
+  // request came over https (production) — not set for plain-http local dev.
+  return `${name}=${val}; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}; Expires=${expires}; Max-Age=${maxAge}`;
 };
 
 export const publicUserShape = (row: Record<string, any>) => ({
