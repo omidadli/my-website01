@@ -60,6 +60,39 @@ export interface SeoPostLike {
  */
 export const CANONICAL_SITE_URL = 'https://omidadli01.site';
 
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+};
+/** Hosts that are never a real public address of the site (previews, local dev). */
+const isPreviewHost = (host: string): boolean => /(^|\.)pages\.dev$|(^|\.)workers\.dev$|^localhost(:|$)|^127\./.test(host);
+
+/**
+ * The origin advertised in canonical links, og:url, sitemap.xml and robots.txt.
+ *
+ * The CMS value (GLOBAL_SEO.canonicalBaseUrl) is honoured only when it is a host that really
+ * serves this site: the built-in canonical host or the host of the current request. A stale or
+ * foreign value — the live database still held the old seed `https://omidadli.com` — is ignored,
+ * so the site never tells Google that some other domain is its canonical address.
+ */
+export const resolveCanonicalOrigin = (cmsValue: unknown, requestHost?: string): string => {
+  const builtIn = CANONICAL_SITE_URL.replace(/\/+$/, '');
+  const cms = typeof cmsValue === 'string' ? cmsValue.trim().replace(/\/+$/, '') : '';
+  const reqHost = String(requestHost || '').toLowerCase().replace(/^www\./, '');
+  const reqIsPublic = !!reqHost && !isPreviewHost(reqHost);
+
+  if (/^https?:\/\//i.test(cms)) {
+    const h = hostOf(cms);
+    if (h && (h === hostOf(builtIn) || (reqIsPublic && h === reqHost))) return cms;
+  }
+  // Another real custom domain pointing at this deployment: use it. Otherwise the built-in origin.
+  if (reqIsPublic && reqHost !== hostOf(builtIn)) return `https://${reqHost}`;
+  return builtIn;
+};
+
 /** Resolve a public post by ID or slug; drafts are never routable by public crawlers. */
 export const findPublishedPost = <T extends SeoPostLike>(posts: readonly T[], idOrSlug: string): T | null =>
   posts.find((post) => post && post.status !== 'draft' && (post.id === idOrSlug || post.slug === idOrSlug)) || null;

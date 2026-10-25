@@ -20,7 +20,7 @@ import {
   BlogComment,
   BlogPost
 } from '../types';
-import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
+import { resolveCanonicalOrigin, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
 import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
 
@@ -1119,7 +1119,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const generateSitemapXml = () => {
-    const baseUrl = (data.GLOBAL_SEO.canonicalBaseUrl || CANONICAL_SITE_URL).replace(/\/$/, '');
+    const baseUrl = resolveCanonicalOrigin(data.GLOBAL_SEO.canonicalBaseUrl, typeof window !== 'undefined' ? window.location.host : '');
     // Real paths (path-based router + Cloudflare Pages SPA fallback).
     const pageUrl = (path: string) => `${baseUrl}/${path}`;
     const pages = [
