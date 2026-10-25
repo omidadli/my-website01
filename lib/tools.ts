@@ -31,6 +31,8 @@ import {
   isDefaultSectionModel,
   sanitizeTurns,
   runKeyFailover,
+  AI_ATTEMPT_TIMEOUT_MS,
+  AI_TOTAL_BUDGET_MS,
   envFallbackKey,
   maskedKey,
   type AiKeyEntry,
@@ -386,7 +388,12 @@ export const callAiProviderWithFailover = async (args: {
   maxOutputTokens?: number;
   /** persist updated key health after each attempt (D1 / dev file) */
   persist?: (states: AiKeyState[]) => Promise<void> | void;
+  /** total time budget for the whole request (all keys and models), default 26s */
+  totalBudgetMs?: number;
+  /** time budget of one attempt, default 12s */
+  attemptTimeoutMs?: number;
 }): Promise<FailoverCallResult> => {
+  const deadlineAt = Date.now() + (args.totalBudgetMs || AI_TOTAL_BUDGET_MS);
   const keys: ToolApiKeyEntry[] = [...(args.keys || [])];
   const envEntry = envFallbackKey(args.envFallbackKey);
   if (envEntry) keys.push(envEntry);
@@ -400,6 +407,7 @@ export const callAiProviderWithFailover = async (args: {
     stickyKeyId: args.stickyKeyId,
     history,
     persist: args.persist,
+    deadlineAt,
     call: async (ctx) => {
       const systemPrompt = buildContinuitySystemPrompt({
         systemPrompt: args.systemPrompt,
@@ -423,6 +431,8 @@ export const callAiProviderWithFailover = async (args: {
         question: args.question,
         temperature: args.temperature,
         maxOutputTokens: args.maxOutputTokens,
+        timeoutMs: args.attemptTimeoutMs || AI_ATTEMPT_TIMEOUT_MS,
+        deadlineAt,
       });
     },
   });
