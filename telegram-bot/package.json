@@ -1,0 +1,14 @@
+{
+  "name": "omidadli-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ربات تلگرام امید عدلی — احراز هویت شماره، تحویل محصولات، پنل ادمین و پل ارتباطی با سایت",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node bot.mjs",
+    "test": "node test.mjs"
+  }
+}
