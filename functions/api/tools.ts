@@ -1,3 +1,5 @@
+import { parseChatMessages, productConversationId } from '../../lib/chatRequest';
+import { planAssistantReply } from '../../lib/assistantStrategy';
 import {
   Env,
   requireAuth,
@@ -19,7 +21,6 @@ import {
   buildToolSystemPrompt,
   resolveBehavior,
   testSingleKey,
-  localToolAnswer,
   normalizePhone,
   isValidIranMobile,
   genCode,
@@ -529,9 +530,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const tool = getTool(productId);
     if (!tool) return json({ ok: false, error: 'محصول نامعتبر است.' }, { status: 400 });
 
-    const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages.slice(-12) : [];
-    const question = String(messages[messages.length - 1]?.content || '').trim().slice(0, 2000);
-    if (!question) return json({ ok: false, error: 'پیام خالی است.' }, { status: 400 });
+    const { messages, question, error: validationError } = parseChatMessages(body?.messages);
+    if (validationError) return json({ ok: false, error: validationError }, { status: 400 });
 
     const data = await loadContent(env);
     const payload = await verifyAccessToken(String(body.token || ''), secret);
@@ -599,7 +599,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     }
 
     const behavior = resolveBehavior(tool, data);
-    const systemPrompt = buildToolSystemPrompt(tool, data);
+    const strategy = planAssistantReply(question, messages.slice(0, -1));
+    const systemPrompt = `${buildToolSystemPrompt(tool, data)}\n\n${strategy.conversationInstruction}`;
     const history: ChatTurn[] = messages
       .slice(0, -1)
       .filter((m) => m.role === 'user' || m.role === 'model')
@@ -619,16 +620,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       history,
       question,
       temperature: behavior.temperature,
-      sessionId,
+      sessionId: productConversationId(productId, sessionId),
       preferredModel: behavior.model,
-      maxOutputTokens: 900,
-      // zero-cost deterministic answer (also stored in the chat memory) when
-      // no key could reply — the flow is always demonstrable
-      fallback: () => localToolAnswer(tool, question),
+      maxOutputTokens: strategy.maxOutputTokens,
+      allowEnvFallback: false,
+
     });
 
-    const answer = aiResult.text || localToolAnswer(tool, question);
-    const mode: 'ai' | 'local' = aiResult.usedFallback || !aiResult.text ? 'local' : 'ai';
+    const answer = aiResult.text;
+    if (!answer) return json({ ok: false, code: 'AI_UNAVAILABLE', error: 'ارتباط با مدل این محصول برقرار نیست. سکه یا سهمیه‌ای کسر نشد؛ لطفاً دوباره تلاش کنید.' }, { status: 503 });
+    const mode = 'ai' as const;
 
     // Persist: trial counter + message log.
     if (!paid && deviceId) {

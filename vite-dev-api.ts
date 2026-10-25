@@ -1,3 +1,5 @@
+import { parseChatMessages, productConversationId } from './lib/chatRequest';
+import { planAssistantReply } from './lib/assistantStrategy';
 import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
@@ -6,7 +8,6 @@ import {
   buildDigest,
   buildSoulPrompt,
   buildSourcesBlock,
-  localAnswer,
   retrieveSources,
   type SourceHit,
 } from './lib/assistant';
@@ -16,7 +17,6 @@ import {
   buildToolSystemPrompt,
   resolveBehavior,
   testSingleKey,
-  localToolAnswer,
   normalizePhone,
   normalizeCode,
   isValidIranMobile,
@@ -661,12 +661,9 @@ export function cmsDevApiPlugin(): Plugin {
             }
             if (method === 'POST') {
               const body = await readBody();
-              const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages : [];
-              const question = String(messages[messages.length - 1]?.content || '').trim();
+              const { messages, question, error: validationError } = parseChatMessages(body?.messages);
               const clientIp = String(req.socket?.remoteAddress || 'local').replace(/^::ffff:/, '');
-              if (!question) {
-                return sendJson({ ok: false, error: 'سوال خالی است.' }, 400);
-              }
+              if (validationError) return sendJson({ ok: false, error: validationError }, 400);
 
               const mc = body?.mascot || {};
               const mcName = String(mc.name || '').trim().slice(0, 40);
@@ -685,7 +682,8 @@ export function cmsDevApiPlugin(): Plugin {
               // The AI's ground truth: digest of ALL site content…
               const digest = buildDigest(data);
               // …plus RAG: full text of the articles this question touches.
-              const sources: SourceHit[] = retrieveSources(data, question, 3);
+              const strategy = planAssistantReply(question, messages.slice(0, -1));
+              const sources: SourceHit[] = retrieveSources(data, strategy.retrievalQuery, 3);
               const sourcesBlock = buildSourcesBlock(sources);
 
               const soulPrompt = buildSoulPrompt({
@@ -712,14 +710,13 @@ export function cmsDevApiPlugin(): Plugin {
                 .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
               const ai = await runDevSectionAi({
                 sectionId: SITE_ASSISTANT_SECTION,
-                systemPrompt: soulPrompt,
+                systemPrompt: `${soulPrompt}\n\n${strategy.conversationInstruction}`,
                 history,
                 question,
-                temperature: 0.6,
-                maxOutputTokens: 600,
+                temperature: strategy.temperature,
+                maxOutputTokens: strategy.maxOutputTokens,
                 sessionId: siteSessionId,
                 scope: `ip:${clientIp}`,
-                fallback: () => localAnswer(question, digest, cfg.ctaText, sources),
               });
               if (ai.text) {
                 answer = ai.text;
@@ -730,10 +727,7 @@ export function cmsDevApiPlugin(): Plugin {
               }
 
               if (!answer) {
-                answer = localAnswer(question, digest, cfg.ctaText, sources);
-              }
-              if (!answer) {
-                answer = `${cfg.fallbackMessage}\n\n${cfg.ctaText}`;
+                return sendJson({ ok: false, code: 'AI_UNAVAILABLE', error: 'الان ارتباط با مدل هوش مصنوعی برقرار نیست. پاسخ آماده‌ای جایگزین نمی‌کنم؛ لطفاً کمی بعد دوباره تلاش کنید.' }, 503);
               }
               if (!answer.includes('[[act:')) {
                 answer += ' [[act:{"pose":"talking"}]]';
@@ -1003,9 +997,8 @@ export function cmsDevApiPlugin(): Plugin {
                 const tool = getTool(productId);
                 if (!tool) return sendJson({ ok: false, error: 'محصول نامعتبر است.' }, 400);
 
-                const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages.slice(-12) : [];
-                const question = String(messages[messages.length - 1]?.content || '').trim().slice(0, 2000);
-                if (!question) return sendJson({ ok: false, error: 'پیام خالی است.' }, 400);
+                const { messages, question, error: validationError } = parseChatMessages(body?.messages);
+                if (validationError) return sendJson({ ok: false, error: validationError }, 400);
 
                 const saved = safeReadJson<{ data: any } | null>(CONTENT_FILE, null);
                 const data = saved?.data || seedData;
@@ -1049,7 +1042,8 @@ export function cmsDevApiPlugin(): Plugin {
                 }
 
                 const behavior = resolveBehavior(tool, data);
-                const systemPrompt = buildToolSystemPrompt(tool, data);
+                const strategy = planAssistantReply(question, messages.slice(0, -1));
+                const systemPrompt = `${buildToolSystemPrompt(tool, data)}\n\n${strategy.conversationInstruction}`;
                 const history: ChatTurn[] = messages
                   .slice(0, -1)
                   .filter((m) => m.role === 'user' || m.role === 'model')
@@ -1066,12 +1060,14 @@ export function cmsDevApiPlugin(): Plugin {
                   question,
                   temperature: behavior.temperature,
                   preferredModel: behavior.model,
-                  maxOutputTokens: 900,
-                  sessionId: productSessionId,
-                  fallback: () => localToolAnswer(tool, question),
+                  maxOutputTokens: strategy.maxOutputTokens,
+                  allowEnvFallback: false,
+                  sessionId: productConversationId(productId, productSessionId),
+
                 });
-                const answer = aiResult.text || localToolAnswer(tool, question);
-                const mode: 'ai' | 'local' = aiResult.usedFallback || !aiResult.text ? 'local' : 'ai';
+                const answer = aiResult.text;
+                if (!answer) return sendJson({ ok: false, code: 'AI_UNAVAILABLE', error: 'ارتباط با مدل این محصول برقرار نیست. سکه یا سهمیه‌ای کسر نشد؛ لطفاً دوباره تلاش کنید.' }, 503);
+                const mode = 'ai' as const;
                 if (!paid && deviceId) {
                   const trials = safeReadJson<DevTrial[]>(TOOL_TRIALS_FILE, []);
                   const idx = trials.findIndex((x) => x.deviceId === deviceId && x.productId === productId);

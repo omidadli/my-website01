@@ -1,3 +1,5 @@
+import { ChatAnswer } from '../mascot/ChatAnswer';
+import { CHAT_MAX_QUESTION } from '../../../lib/chatRequest';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
@@ -20,7 +22,7 @@ import {
   TrendingUp,
   AlertCircle,
   CheckCircle2,
-  Zap,
+  Zap, Maximize2, Minimize2, Minus, Plus, ArrowDown,
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { getChatSessionId, resetChatSession } from '../../utils/chatStorage';
@@ -70,51 +72,6 @@ const getDeviceId = (): string => {
   }
 };
 
-/** Tiny, safe markdown-ish renderer: **bold**, - [ ] checkboxes, bullets, line breaks. */
-const RichText: React.FC<{ text: string }> = ({ text }) => {
-  const lines = (text || '').split('\n');
-  const renderInline = (s: string) => {
-    const parts = s.split(/(\*\*[^*]+\*\*)/g);
-    return parts.map((p, i) =>
-      p.startsWith('**') && p.endsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : <span key={i}>{p}</span>
-    );
-  };
-  return (
-    <div className="space-y-1.5 leading-relaxed">
-      {lines.map((ln, i) => {
-        const t = ln.trim();
-        if (!t) return <div key={i} className="h-1" />;
-        const check = t.match(/^-\s*\[( |x|X)\]\s*(.*)$/);
-        if (check) {
-          const done = check[1].toLowerCase() === 'x';
-          return (
-            <div key={i} className="flex items-start gap-2">
-              <span
-                className={`mt-0.5 w-4 h-4 rounded-[6px] border flex items-center justify-center text-[10px] shrink-0 ${
-                  done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-current opacity-60'
-                }`}
-              >
-                {done ? '✓' : ''}
-              </span>
-              <span>{renderInline(check[2])}</span>
-            </div>
-          );
-        }
-        const bullet = t.match(/^[-•]\s+(.*)$/);
-        if (bullet) {
-          return (
-            <div key={i} className="flex items-start gap-2">
-              <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-current opacity-60 shrink-0" />
-              <span>{renderInline(bullet[1])}</span>
-            </div>
-          );
-        }
-        return <div key={i}>{renderInline(t)}</div>;
-      })}
-    </div>
-  );
-};
-
 export const ToolChatModal: React.FC<Props> = ({
   tool,
   theme,
@@ -126,10 +83,15 @@ export const ToolChatModal: React.FC<Props> = ({
   onClose,
 }) => {
   const isDark = theme === 'dark';
-  const deviceId = getDeviceId();
+  const [deviceId] = useState(getDeviceId);
   const plans = getPlans(tool.id);
   const freeTrialLimit = resolveFreeTrial(data);
   const neuro = getNeuromarketingTrigger(tool.id);
+  const behaviorConfig = data?.AI_TOOLS_CONFIG?.tools?.[tool.id]?.behavior;
+  const suggestions: string[] = Array.isArray(behaviorConfig?.suggestions) && behaviorConfig.suggestions.length
+    ? behaviorConfig.suggestions.filter((s: unknown): s is string => typeof s === 'string' && !!s.trim())
+    : SUGGESTIONS[tool.id] || [];
+  const placeholder = typeof behaviorConfig?.placeholder === 'string' && behaviorConfig.placeholder.trim() ? behaviorConfig.placeholder : tool.placeholder;
 
   const [view, setView] = useState<View>('checking');
   const [paid, setPaid] = useState(false);
@@ -159,7 +121,29 @@ export const ToolChatModal: React.FC<Props> = ({
   const [selectedPlan, setSelectedPlan] = useState<string>(plans.find((p) => p.popular)?.id || plans[0]?.id || '');
 
   // Chat state
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessages] = useState<Msg[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`nd_product_chat_${tool.id}`) || '[]');
+      return Array.isArray(saved) ? saved.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-24) : [];
+    } catch { return []; }
+  });
+  const [chatError, setChatError] = useState('');
+  const [nearBottom, setNearBottom] = useState(true);
+  const [readingMode, setReadingMode] = useState(false);
+  const [textSize, setTextSize] = useState(15);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const sendingRef = useRef(false);
+  const failedQuestion = useRef<string | null>(null);
+  const answerArrived = useRef(false);
+  const lastAnswerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  useEffect(() => {
+    if (view !== 'chat') return;
+    try { localStorage.setItem(`nd_product_chat_${tool.id}`, JSON.stringify(messages.slice(-24))); } catch {}
+  }, [messages, tool.id, view]);
   const [welcomeMsg, setWelcomeMsg] = useState('');
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -174,23 +158,25 @@ export const ToolChatModal: React.FC<Props> = ({
     } catch { /* ignore */ }
   };
 
-  const trialWelcome = `سلام 👋 من «${tool.name}» هستم. ${tool.tagline}
+  const trialWelcome = `سلام، من «${tool.name}» هستم. چطور می‌تونم کمکت کنم؟\n\nاعتبار اولیه: **${toFa(INITIAL_FREE_COINS)} سکه**؛ هزینهٔ هر پاسخ موفق: **${toFa(COINS_PER_MESSAGE)} سکه**. در صورت خطای اتصال، سکه‌ای کسر نمی‌شود.`;
 
-🎁 **${toFa(INITIAL_FREE_COINS)} سکه طلایی هدیه خوش‌آمدگویی** به کیف شما اضافه شد!
-هر تحلیل تخصصی و عمیق، فقط **${toFa(COINS_PER_MESSAGE)} سکه** کسر می‌کند.
-
-دغدغه، سوال یا کمپینت رو مطرح کن تا با هم عمیقاً تحلیلش کنیم:`;
-
-  const copyMsg = (text: string, idx: number) => {
-    try {
-      navigator.clipboard?.writeText(text);
-      setCopiedIdx(idx);
-      setTimeout(() => setCopiedIdx(null), 1500);
-    } catch { /* ignore */ }
+  const copyMsg = async (text: string, idx: number) => {
+    try { await navigator.clipboard.writeText(text); setCopiedIdx(idx); }
+    catch { setChatError('کپی خودکار ممکن نیست؛ متن پاسخ را انتخاب و کپی کنید.'); }
   };
+  useEffect(() => {
+    if (copiedIdx === null) return;
+    const timer = setTimeout(() => setCopiedIdx(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copiedIdx]);
 
   const resetChat = () => {
-    if (sending) return;
+    if (sendingRef.current) return;
+    failedQuestion.current = null;
+    setChatError('');
+    setInput('');
+    setConfirmReset(false);
+    setNearBottom(true);
     // a brand-new chat = a brand-new conversation memory on the server
     resetChatSession(tool.id);
     setMessages([{ role: 'assistant', content: welcomeMsg || trialWelcome }]);
@@ -223,7 +209,7 @@ export const ToolChatModal: React.FC<Props> = ({
         if (r.ok) {
           setPaid(true);
           setWelcomeMsg(r.tool?.welcome || '');
-          setMessages([
+          setMessages(prev => prev.length ? prev : [
             {
               role: 'assistant',
               content: r.tool?.welcome || `سلام 👋 دسترسیت فعاله. با «${tool.name}» چطور می‌تونم کمکت کنم؟`,
@@ -232,14 +218,21 @@ export const ToolChatModal: React.FC<Props> = ({
           setView('chat');
           return;
         }
-        try {
-          localStorage.removeItem(tokenKey(tool.id));
-        } catch {}
+        if (r.status === 401 || r.status === 403) {
+          try { localStorage.removeItem(tokenKey(tool.id)); } catch {}
+        } else {
+          // A network/server outage must not revoke a valid stored subscription.
+          setChatError(r.error || 'بررسی اشتراک ممکن نشد؛ هنگام ارسال دوباره بررسی می‌شود.');
+          setWelcomeMsg(trialWelcome);
+          setMessages(prev => prev.length ? prev : [{ role: 'assistant', content: `گفتگو با ${tool.name}` }]);
+          setView('chat');
+          return;
+        }
       }
       if (!alive) return;
       if (freeTrialLimit > 0) {
         setWelcomeMsg(trialWelcome);
-        setMessages([{ role: 'assistant', content: trialWelcome }]);
+        setMessages(prev => prev.length ? prev : [{ role: 'assistant', content: trialWelcome }]);
         setPaywallReason('trial');
         setView('chat');
       } else {
@@ -255,20 +248,46 @@ export const ToolChatModal: React.FC<Props> = ({
 
   // Escape closes; lock body scroll.
   useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'Tab') {
+        const elements = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || []).filter(el => el.getClientRects().length);
+        const first = elements[0], last = elements[elements.length - 1];
+        if (!first) { e.preventDefault(); return; }
+        if (e.shiftKey && (document.activeElement === first || !dialogRef.current?.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && (document.activeElement === last || !dialogRef.current?.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => {
       window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
+      document.body.style.overflow = overflow;
+      previous?.focus();
     };
   }, [onClose]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, sending]);
+    if (view !== 'chat') return;
+    inputRef.current?.focus();
+  }, [view]);
+
+  useEffect(() => {
+    const fresh = answerArrived.current;
+    answerArrived.current = false;
+    if (!nearBottom) return;
+    const list = scrollRef.current;
+    if (!list) return;
+    const answer = lastAnswerRef.current;
+    const top = fresh && answer ? answer.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 18 : list.scrollHeight;
+    list.scrollTo({ top, behavior: 'auto' });
+  }, [messages, sending, view]);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(150, Math.max(52, el.scrollHeight))}px`; }
+  }, [input, view]);
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,10 +316,12 @@ export const ToolChatModal: React.FC<Props> = ({
 
   const send = async (textArg?: string) => {
     const text = (textArg ?? input).trim();
-    if (!text || sending) return;
+    if (!text || sendingRef.current) return;
+    if (text.length > CHAT_MAX_QUESTION) { setChatError('پیام بیش از حد طولانی است؛ آن را به چند سؤال کوتاه‌تر تقسیم کنید.'); return; }
 
-    // Check coin balance if unauthenticated
-    if (!paid && coins < COINS_PER_MESSAGE) {
+    // Server is authoritative; cached coins must not block an existing access token.
+    const hasStoredToken = (() => { try { return !!localStorage.getItem(tokenKey(tool.id)); } catch { return false; } })();
+    if (!paid && !hasStoredToken && coins < COINS_PER_MESSAGE) {
       setPaywallReason('trial');
       setView('plans');
       return;
@@ -314,7 +335,11 @@ export const ToolChatModal: React.FC<Props> = ({
       }
     })();
 
-    const next = [...messages, { role: 'user' as const, content: text }];
+    sendingRef.current = true;
+    setChatError('');
+    setNearBottom(true);
+    const last = messages[messages.length - 1];
+    const next = failedQuestion.current === text && last?.role === 'user' && last.content === text ? [...messages] : [...messages, { role: 'user' as const, content: text }];
     setMessages(next);
     setInput('');
     setSending(true);
@@ -326,26 +351,31 @@ export const ToolChatModal: React.FC<Props> = ({
     // stable conversation id per product → the server keeps the chat memory,
     // reviews it before answering and continues the same thread across key switches
     const sessionId = getChatSessionId(tool.id);
+    try {
     const r = await api.toolChat({ token: token || undefined, productId: tool.id, deviceId, sessionId, messages: history });
-    setSending(false);
+    if (!aliveRef.current) return;
 
     if (r.ok && r.answer) {
+      failedQuestion.current = null;
+      if (hasStoredToken && !r.trial && !r.coins) setPaid(true);
+      answerArrived.current = true;
       setMessages((prev) => [...prev, { role: 'assistant', content: r.answer! }]);
 
       // Update coin state and trigger burn effect
       if (r.coins) {
         updateCoins(r.coins.balance);
         setBurnedCoins(r.coins.cost || COINS_PER_MESSAGE);
-        setTimeout(() => setBurnedCoins(null), 3000);
+        setTimeout(() => { if (aliveRef.current) setBurnedCoins(null); }, 3000);
       } else if (r.trial) {
         const nextC = calculateRemainingCoins(r.trial.used);
         updateCoins(nextC);
         setBurnedCoins(COINS_PER_MESSAGE);
-        setTimeout(() => setBurnedCoins(null), 3000);
+        setTimeout(() => { if (aliveRef.current) setBurnedCoins(null); }, 3000);
       }
 
       if (r.quota) setQuota(r.quota);
     } else if (r.code === 'trial_ended') {
+      failedQuestion.current = text;
       if (r.coins) {
         updateCoins(r.coins.balance);
       } else {
@@ -354,10 +384,12 @@ export const ToolChatModal: React.FC<Props> = ({
       setPaywallReason('trial');
       setView('plans');
     } else if (r.code === 'quota') {
+      failedQuestion.current = text;
       if (r.quota) setQuota(r.quota);
       setPaywallReason('quota');
       setView('plans');
     } else if (r.code === 'locked' || r.code === 'expired') {
+      failedQuestion.current = text;
       try {
         localStorage.removeItem(tokenKey(tool.id));
       } catch {}
@@ -366,8 +398,13 @@ export const ToolChatModal: React.FC<Props> = ({
       setPaywallReason('locked');
       setView('plans');
     } else {
-      setMessages((prev) => [...prev, { role: 'assistant', content: r.error || 'خطایی رخ داد. دوباره تلاش کن.' }]);
+      failedQuestion.current = text;
+      setChatError(r.error || 'خطایی رخ داد. دوباره تلاش کنید.');
     }
+    } catch {
+      failedQuestion.current = text;
+      if (aliveRef.current) setChatError('ارتباط برقرار نشد؛ دوباره تلاش کنید.');
+    } finally { sendingRef.current = false; if (aliveRef.current) setSending(false); }
   };
 
   const shellBg = isDark ? 'bg-[#15102e] border-white/15 text-white' : 'bg-white border-slate-200 text-slate-900';
@@ -429,8 +466,12 @@ export const ToolChatModal: React.FC<Props> = ({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog" aria-modal="true" aria-labelledby="product-chat-title" dir="rtl" lang="fa"
+        data-chat-theme={theme} data-reading-mode={readingMode}
+        style={{ '--chat-text-size': `${textSize}px` } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-2xl h-[92vh] supports-[height:92dvh]:h-[92dvh] sm:h-[86vh] sm:supports-[height:86dvh]:h-[86dvh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
+        className={`product-chat relative w-full max-w-2xl h-[92vh] supports-[height:92dvh]:h-[92dvh] sm:h-[86vh] sm:supports-[height:86dvh]:h-[86dvh] max-h-[860px] flex flex-col rounded-t-[28px] sm:rounded-[28px] border shadow-2xl overflow-hidden ${shellBg}`}
       >
         {/* Header */}
         <div
@@ -443,7 +484,7 @@ export const ToolChatModal: React.FC<Props> = ({
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div className="min-w-0">
-              <h3 className="font-black text-sm sm:text-base truncate">{tool.name}</h3>
+              <h3 id="product-chat-title" className="font-black text-sm sm:text-base truncate">{tool.name}</h3>
               <p className={`text-[11px] truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{tool.tagline}</p>
             </div>
           </div>
@@ -451,7 +492,8 @@ export const ToolChatModal: React.FC<Props> = ({
             {headerStatus()}
             {view === 'chat' && (
               <button
-                onClick={resetChat}
+                disabled={sending}
+                onClick={() => setConfirmReset(true)}
                 className={`p-2 rounded-full transition-colors ${
                   isDark ? 'hover:bg-white/10 text-slate-300' : 'hover:bg-slate-100 text-slate-600'
                 }`}
@@ -517,38 +559,23 @@ export const ToolChatModal: React.FC<Props> = ({
               </div>
             )}
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-5 py-5 space-y-4">
+            <div className="chat-reading-toolbar" role="group" aria-label="تنظیمات خوانایی">
+              <button type="button" aria-pressed={readingMode} onClick={() => setReadingMode(!readingMode)}>{readingMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}حالت مطالعه</button>
+              <div className="chat-font-controls"><span>اندازهٔ متن</span>
+                <button type="button" disabled={textSize <= 14} aria-label="کوچک‌تر کردن متن" onClick={() => setTextSize(textSize - 1)}><Minus size={14} /></button>
+                <output aria-live="polite">{toFa(textSize)}</output>
+                <button type="button" disabled={textSize >= 19} aria-label="بزرگ‌تر کردن متن" onClick={() => setTextSize(textSize + 1)}><Plus size={14} /></button>
+              </div>
+            </div>
+            {confirmReset && <div className="chat-clear-confirm"><p>گفتگو پاک شود؟ سکه‌ها و سهمیه بازنشانی نمی‌شوند.</p><button type="button" disabled={sending} onClick={resetChat}>پاک کردن گفتگو</button><button type="button" onClick={() => setConfirmReset(false)}>انصراف</button></div>}
+            <div ref={scrollRef} role="log" aria-label={`گفتگو با ${tool.name}`} aria-live="polite" aria-relevant="additions"
+              onScroll={e => { const el = e.currentTarget; setNearBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 90); }}
+              className="product-chat-messages flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5">
               {messages.map((m, i) => (
-                <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-start' : 'items-end'}`}>
-                  <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-[13px] shadow-sm leading-relaxed ${
-                      m.role === 'user'
-                        ? 'bg-[color:var(--nd-accent)] text-white rounded-tr-md'
-                        : isDark
-                        ? 'bg-white/8 text-slate-100 rounded-tl-md border border-white/5'
-                        : 'bg-slate-100 text-slate-800 rounded-tl-md border border-slate-200/60'
-                    }`}
-                  >
-                    <RichText text={m.content} />
-                  </div>
-                  {m.role === 'assistant' && i > 0 && (
-                    <button
-                      onClick={() => copyMsg(m.content, i)}
-                      className={`mt-1 flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                        isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'
-                      }`}
-                    >
-                      {copiedIdx === i ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" /> کپی شد
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" /> کپی
-                        </>
-                      )}
-                    </button>
-                  )}
+                <div key={i} ref={m.role === 'assistant' && i === messages.length - 1 ? lastAnswerRef : undefined} className={`chat-message chat-message--${m.role === 'assistant' ? 'model' : 'user'}`}>
+                  <div className="chat-message-author">{m.role === 'assistant' ? tool.name : 'شما'}</div>
+                  <div className="chat-message-body">{m.role === 'assistant' ? <ChatAnswer text={m.content} /> : m.content}</div>
+                  {m.role === 'assistant' && i > 0 && <button type="button" className="chat-copy" onClick={() => copyMsg(m.content, i)}>{copiedIdx === i ? <Check size={14} /> : <Copy size={14} />}{copiedIdx === i ? 'کپی شد' : 'کپی پاسخ'}</button>}
                 </div>
               ))}
 
@@ -571,7 +598,7 @@ export const ToolChatModal: React.FC<Props> = ({
             {/* Suggestions (only at the very start) */}
             {messages.length <= 1 && (
               <div className="px-4 sm:px-5 pb-2 flex flex-wrap gap-2">
-                {SUGGESTIONS[tool.id]?.map((s) => (
+                {suggestions.map((s) => (
                   <button
                     key={s}
                     onClick={() => send(s)}
@@ -587,6 +614,8 @@ export const ToolChatModal: React.FC<Props> = ({
               </div>
             )}
 
+            {chatError && <div className="chat-error" role="alert"><span>{chatError}</span>{failedQuestion.current && <button type="button" disabled={sending} onClick={() => send(failedQuestion.current!)}>تلاش دوباره</button>}</div>}
+            {!nearBottom && <button type="button" className="product-chat-jump" onClick={() => { setNearBottom(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' }); }}><ArrowDown size={14} />آخرین پیام</button>}
             {/* Input area with animated coin deduction chip */}
             <div className="relative">
               {burnedCoins && (
@@ -607,16 +636,18 @@ export const ToolChatModal: React.FC<Props> = ({
                 }`}
               >
                 <textarea
+                  ref={inputRef}
+                  aria-label="پیام شما" dir="rtl"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       send();
                     }
                   }}
                   rows={1}
-                  placeholder={tool.placeholder || 'پیامت را بنویس…'}
+                  placeholder={placeholder || 'پیامت را بنویس…'}
                   className={`flex-1 resize-none rounded-2xl border px-4 py-3 text-base outline-none max-h-32 transition-colors ${inputCls}`}
                 />
                 <button

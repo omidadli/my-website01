@@ -1,10 +1,11 @@
+import { parseChatMessages } from '../../lib/chatRequest';
+import { planAssistantReply } from '../../lib/assistantStrategy';
 import { Env, requireAuth, json, getClientIp, ensureCoreTablesSafe, runSectionAi, derivedSessionId } from './_shared';
 import { SITE_ASSISTANT_SECTION, type ChatTurn } from '../../lib/aiKeys';
 import {
   buildDigest,
   buildSoulPrompt,
   buildSourcesBlock,
-  localAnswer,
   retrieveSources,
   type SourceHit,
 } from '../../lib/assistant';
@@ -65,9 +66,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return json({ ok: false, error: 'درخواست نامعتبر است.' }, { status: 400 });
   }
 
-  const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages.slice(-8) : [];
-  const question = String(messages[messages.length - 1]?.content || '').trim().slice(0, 1200);
-  if (!question) return json({ ok: false, error: 'سوال خالی است.' }, { status: 400 });
+  const { messages, question, error: validationError } = parseChatMessages(body?.messages);
+  if (validationError) return json({ ok: false, error: validationError }, { status: 400 });
 
   // Mascot context sent by the client: the AI (soul) knows who it is talking to.
   const mc = body?.mascot || {};
@@ -94,7 +94,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const digest = buildDigest(data);
   // 2) …plus RAG: the full text of the articles this question actually touches,
   //    each with its URL so the AI can cite it as the source.
-  const sources: SourceHit[] = retrieveSources(data, question, 3);
+  const strategy = planAssistantReply(question, messages.slice(0, -1));
+  const sources: SourceHit[] = retrieveSources(data, strategy.retrievalQuery, 3);
   const sourcesBlock = buildSourcesBlock(sources);
 
   // The soul protocol: who the mascot is + the act-directive contract.
@@ -124,15 +125,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const ai = await runSectionAi(env, {
     sectionId: SITE_ASSISTANT_SECTION,
-    systemPrompt: soulPrompt,
+    systemPrompt: `${soulPrompt}\n\n${strategy.conversationInstruction}`,
     history,
     question,
-    temperature: 0.6,
-    maxOutputTokens: 600,
+    temperature: strategy.temperature,
+    maxOutputTokens: strategy.maxOutputTokens,
     sessionId,
     scope: `ip:${ip}`,
-    // deterministic matcher answer (also remembered, so the thread survives)
-    fallback: () => localAnswer(question, digest, cfg.ctaText, sources),
   });
   if (ai.text) {
     answer = ai.text;
@@ -142,12 +141,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     usedKeySwitched = ai.switched;
   }
 
-  // 2) Fallback: deterministic matcher over the digest (works with zero keys/costs).
+  // Never disguise a deterministic keyword response as a live conversation.
   if (!answer) {
-    answer = localAnswer(question, digest, cfg.ctaText, sources);
-  }
-  if (!answer) {
-    answer = `${cfg.fallbackMessage}${cfg.ctaText ? '\n\n' + cfg.ctaText : ''}`;
+    return json({ ok: false, code: 'AI_UNAVAILABLE', error: 'الان ارتباط با مدل هوش مصنوعی برقرار نیست. پاسخ آماده‌ای جایگزین نمی‌کنم؛ لطفاً کمی بعد دوباره تلاش کنید.' }, { status: 503 });
   }
   // The body needs a directive even when the local matcher answered.
   if (!answer.includes('[[act:')) {
