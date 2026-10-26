@@ -565,13 +565,29 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
   // ---- commands & menu buttons ----
   if (t === '/start' || t === 'شروع') {
     await upsertBotUser(env, chatId, { first_name: from.first_name || '', username: from.username || '' });
-    await send(env, chatId, [
+    const lines = [
       '🤖 <b>ربات فروش و تحویل محصولات امید عدلی</b>',
       '',
       '📱 شماره خود را تأیید کنید',
       '🛒 اشتراک محصولات هوشمند را بخرید (کارت‌به‌کارت + تأیید خودکار رسید)',
       '🎁 محصول و کد دسترسی را همین‌جا تحویل بگیرید',
-    ].join('\n'), { reply_markup: tg.mainMenuKeyboard() });
+    ];
+
+    // Bootstrap: with no admins configured yet, tell the owner their numeric id
+    // so they don't have to hunt for it in @userinfobot.
+    if (parseAdminIds(env).length === 0) {
+      lines.push(
+        '',
+        '⚙️ <b>راه‌اندازی ادمین</b>',
+        `آیدی عددی شما: <code>${chatId}</code>`,
+        'این عدد را در Cloudflare با نام <code>TELEGRAM_ADMIN_IDS</code> ثبت کنید تا پنل ادمین برایتان باز شود.'
+      );
+      await logEvent(env, 'admin_bootstrap_hint', `tg=${chatId} username=${from.username || ''}`);
+    } else if (isAdmin(env, chatId)) {
+      lines.push('', '🛠 شما ادمین هستید — /admin');
+    }
+
+    await send(env, chatId, lines.join('\n'), { reply_markup: tg.mainMenuKeyboard() });
     return;
   }
   if (t === '/help' || t === '❓ راهنما') return send(env, chatId, HELP_TEXT);
@@ -590,7 +606,12 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
 
   // ---- admin commands ----
   if (t === '/admin' || t === '/stats' || t === '/orders_pending' || t === '/broadcast') {
-    if (!isAdmin(env, chatId)) return send(env, chatId, '⛔ فقط ادمین.');
+    if (!isAdmin(env, chatId)) {
+      if (parseAdminIds(env).length === 0) {
+        return send(env, chatId, `⚙️ هنوز ادمینی تنظیم نشده است.\nآیدی عددی شما: <code>${chatId}</code>\nآن را در Cloudflare با نام <code>TELEGRAM_ADMIN_IDS</code> ثبت کنید.`);
+      }
+      return send(env, chatId, '⛔ فقط ادمین.');
+    }
     if (t === '/broadcast') {
       await upsertBotUser(env, chatId, { pending: { kind: 'admin_broadcast' } });
       return send(env, chatId, '📢 متن پیام همگانی را بنویسید:');
