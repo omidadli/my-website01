@@ -94,7 +94,7 @@ const fmtDate = (iso: string): string => {
   }
 };
 
-const siteUrl = (env: BotEnv): string => String(env.SITE_URL || 'https://omidadli.com').replace(/\/+$/, '');
+const siteUrl = (env: BotEnv): string => String(env.SITE_URL || 'https://omidadli01.site').replace(/\/+$/, '');
 
 const send = (env: BotEnv, chatId: string | number, text: string, extra: Record<string, unknown> = {}) =>
   tg.sendMessage(env.TELEGRAM_BOT_TOKEN || '', chatId, text, extra);
@@ -265,9 +265,12 @@ const runReceiptPipeline = async (
 ): Promise<void> => {
   const details = parsePaymentDetails(captionText);
   let vision: VisionReading | null = null;
-  if (photoFileId && (env.GEMINI_API_KEY || '').trim()) {
+  // Keep compatibility with the existing Cloudflare secret name while preferring
+  // the canonical uppercase variable for new deployments.
+  const visionApiKey = String(env.GEMINI_API_KEY || env.Gemini_api_key || '').trim();
+  if (photoFileId && visionApiKey) {
     const img = await tg.downloadFileBase64(env.TELEGRAM_BOT_TOKEN || '', photoFileId);
-    if (img) vision = await readReceiptWithVision(env.GEMINI_API_KEY!, img.base64, env.TELEGRAM_VISION_MODEL || 'gemini-2.5-flash');
+    if (img) vision = await readReceiptWithVision(visionApiKey, img.base64, env.TELEGRAM_VISION_MODEL || 'gemini-2.5-flash');
   }
 
   const ref = details.ref || vision?.ref || '';
