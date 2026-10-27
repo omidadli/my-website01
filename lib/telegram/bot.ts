@@ -94,7 +94,7 @@ const fmtDate = (iso: string): string => {
   }
 };
 
-const siteUrl = (env: BotEnv): string => String(env.SITE_URL || 'https://omidadli01.site').replace(/\/+$/, '');
+const siteUrl = (env: BotEnv): string => String(env.SITE_URL || 'https://omidadli.site').replace(/\/+$/, '');
 
 const send = (env: BotEnv, chatId: string | number, text: string, extra: Record<string, unknown> = {}) =>
   tg.sendMessage(env.TELEGRAM_BOT_TOKEN || '', chatId, text, extra);
