@@ -44,7 +44,7 @@ export interface TelegramEnv {
   SUPPORT_HANDLE?: string;
 }
 
-const siteBase = (env: TelegramEnv) => String(env.SITE_URL || 'https://omidadli01.site').replace(/\/+$/, '');
+const siteBase = (env: TelegramEnv) => String(env.SITE_URL || 'https://omidadli.site').replace(/\/+$/, '');
 
 /* ------------------------------- webhook ------------------------------- */
 
