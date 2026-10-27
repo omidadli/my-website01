@@ -36,6 +36,8 @@ export interface BotEnv {
   /** 'vision' (default) | 'always' | 'off' — auto-approval policy for receipts */
   TELEGRAM_AUTO_APPROVE?: string;
   GEMINI_API_KEY?: string;
+  /** Legacy Cloudflare secret name; prefer GEMINI_API_KEY for new setups. */
+  Gemini_api_key?: string;
   TELEGRAM_VISION_MODEL?: string;
   SITE_URL?: string;
   SUPPORT_HANDLE?: string;
