@@ -4,6 +4,9 @@ import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import { createHmac, randomBytes } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { handlePaymentRequest } from './lib/payment/http';
+import { createPhoneVerificationToken, completePhoneVerificationToken, type PaymentEnv } from './lib/payment/gateway';
 import {
   buildDigest,
   buildSoulPrompt,
@@ -127,6 +130,9 @@ interface DevUser {
   loginType: 'email' | 'phone';
   email: string;
   phone: string;
+  phoneVerifiedAt?: string;
+  tgUserId?: string;
+  tgUsername?: string;
   passwordHash: string;
   passwordSalt: string;
   avatarUrl: string;
@@ -246,6 +252,267 @@ const safeWriteJson = (file: string, data: unknown) => {
     fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
     console.warn('[dev-api] Failed to save state to', file, err);
+  }
+};
+
+const devPublicUser = (u: DevUser) => ({
+  id: u.id,
+  fullName: u.fullName,
+  email: u.email || '',
+  phone: u.phone || '',
+  phoneVerified: Boolean(u.phoneVerifiedAt),
+  phoneVerifiedAt: u.phoneVerifiedAt || '',
+  tgUserId: u.tgUserId || '',
+  tgUsername: u.tgUsername || '',
+  avatarUrl: u.avatarUrl || '',
+  bio: u.bio || '',
+  joinedAt: u.createdAt,
+});
+
+/* ---------------- SQLite D1-compatible bridge for Dev Payment Gateway ---------------- */
+const GATEWAY_SQLITE_FILE = path.resolve(process.cwd(), '.dev-gateway.sqlite');
+let devGatewaySqlite: DatabaseSync | null = null;
+let devGatewayD1Obj: any = null;
+
+const getDevGatewayEnv = (): PaymentEnv => {
+  if (!devGatewaySqlite) {
+    devGatewaySqlite = new DatabaseSync(GATEWAY_SQLITE_FILE);
+    devGatewaySqlite.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        full_name TEXT NOT NULL DEFAULT '',
+        login_id TEXT NOT NULL DEFAULT '',
+        email TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
+        phone_verified_at TEXT DEFAULT '',
+        tg_user_id TEXT DEFAULT '',
+        tg_username TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS tool_access (
+        id TEXT PRIMARY KEY,
+        phone TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT 'all',
+        code TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        max_devices INTEGER NOT NULL DEFAULT 1,
+        message_quota INTEGER NOT NULL DEFAULT 0,
+        devices TEXT NOT NULL DEFAULT '[]',
+        note TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        expires_at TEXT DEFAULT ''
+      );
+      CREATE TABLE IF NOT EXISTS user_subscriptions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT '',
+        product_name TEXT NOT NULL DEFAULT '',
+        plan_id TEXT NOT NULL DEFAULT '',
+        plan_name TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        price TEXT DEFAULT '',
+        features TEXT NOT NULL DEFAULT '[]',
+        auto_renew INTEGER NOT NULL DEFAULT 0,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_activities (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        related_id TEXT DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    const db = devGatewaySqlite;
+    const makeStmt = (sql: string) => {
+      const normalized = sql.replace(/\?\d+/g, '?');
+      let args: unknown[] = [];
+      const api = {
+        bind(...values: unknown[]) {
+          args = values;
+          return api;
+        },
+        async first<T = any>(): Promise<T | null> {
+          const row = db.prepare(normalized).get(...(args as any[]));
+          return (row as T) ?? null;
+        },
+        async all<T = any>() {
+          return { results: db.prepare(normalized).all(...(args as any[])) as T[] };
+        },
+        async run() {
+          const r = db.prepare(normalized).run(...(args as any[]));
+          return { meta: { changes: Number(r.changes || 0) } };
+        },
+      };
+      return api;
+    };
+
+    devGatewayD1Obj = {
+      prepare: makeStmt,
+      batch: async (list: any[]) => {
+        const out = [];
+        for (const s of list) out.push(await s.run());
+        return out;
+      },
+    };
+  }
+
+  return {
+    DB: devGatewayD1Obj,
+    AUTH_SECRET: DEV_TOOL_SECRET,
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+    TELEGRAM_ADMIN_IDS: process.env.TELEGRAM_ADMIN_IDS || '',
+    TELEGRAM_BOT_USERNAME: process.env.TELEGRAM_BOT_USERNAME || '',
+    TELEGRAM_RECEIPT_GEMINI_API_KEY: process.env.TELEGRAM_RECEIPT_GEMINI_API_KEY || '',
+    BOT_CARD_NUMBER: process.env.BOT_CARD_NUMBER || '6219861034529007',
+    BOT_CARD_HOLDER: process.env.BOT_CARD_HOLDER || 'امید عدلی',
+    SITE_URL: process.env.SITE_URL || 'http://localhost:3000',
+  };
+};
+
+const syncDevFilesIntoGatewaySqlite = () => {
+  getDevGatewayEnv();
+  if (!devGatewaySqlite) return;
+  const users = loadDevUsers();
+  const upUser = devGatewaySqlite.prepare(
+    `INSERT INTO users (id, full_name, login_id, email, phone, phone_verified_at, tg_user_id, tg_username, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       full_name = excluded.full_name,
+       email = excluded.email,
+       phone = excluded.phone,
+       phone_verified_at = excluded.phone_verified_at,
+       tg_user_id = excluded.tg_user_id,
+       tg_username = excluded.tg_username`
+  );
+  for (const u of users) {
+    upUser.run(
+      u.id,
+      u.fullName || '',
+      u.loginId || '',
+      u.email || '',
+      u.phone || '',
+      u.phoneVerifiedAt || '',
+      u.tgUserId || '',
+      u.tgUsername || '',
+      u.createdAt || ''
+    );
+  }
+
+  const grants = safeReadJson<any[]>(TOOL_ACCESS_FILE, []);
+  const upGrant = devGatewaySqlite.prepare(
+    `INSERT INTO tool_access (id, phone, product_id, code, status, max_devices, message_quota, devices, note, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       code = excluded.code,
+       status = excluded.status,
+       max_devices = excluded.max_devices,
+       message_quota = excluded.message_quota,
+       devices = excluded.devices,
+       expires_at = excluded.expires_at`
+  );
+  for (const g of grants) {
+    upGrant.run(
+      g.id,
+      g.phone,
+      g.productId || 'all',
+      g.code,
+      g.status || 'active',
+      Number(g.maxDevices || 1),
+      Number(g.messageQuota || 0),
+      JSON.stringify(Array.isArray(g.devices) ? g.devices : []),
+      g.note || '',
+      g.createdAt || new Date().toISOString(),
+      g.expiresAt || ''
+    );
+  }
+};
+
+const syncGatewaySqliteBackToDevFiles = () => {
+  if (!devGatewaySqlite) return;
+  // 1) Mirror SQLite tool_access -> .dev-tool-access.json
+  const sqlGrants = devGatewaySqlite.prepare(`SELECT * FROM tool_access ORDER BY created_at DESC`).all() as any[];
+  if (sqlGrants.length) {
+    const devGrants = safeReadJson<any[]>(TOOL_ACCESS_FILE, []);
+    for (const r of sqlGrants) {
+      let parsedDevs: string[] = [];
+      try {
+        parsedDevs = JSON.parse(r.devices || '[]');
+      } catch {
+        parsedDevs = [];
+      }
+      const idx = devGrants.findIndex((g) => g.id === r.id || (g.phone === r.phone && g.productId === r.product_id));
+      const mapped = {
+        id: r.id,
+        phone: r.phone,
+        productId: r.product_id,
+        code: r.code,
+        status: r.status,
+        maxDevices: Number(r.max_devices || 1),
+        messageQuota: Number(r.message_quota || 0),
+        devices: Array.isArray(parsedDevs) ? parsedDevs : [],
+        note: r.note || '',
+        createdAt: r.created_at,
+        expiresAt: r.expires_at || '',
+      };
+      if (idx >= 0) devGrants[idx] = mapped;
+      else devGrants.unshift(mapped);
+    }
+    safeWriteJson(TOOL_ACCESS_FILE, devGrants);
+  }
+
+  // 2) Mirror SQLite user_subscriptions -> .dev-user-subs.json
+  const sqlSubs = devGatewaySqlite.prepare(`SELECT * FROM user_subscriptions ORDER BY created_at DESC`).all() as any[];
+  if (sqlSubs.length) {
+    const devSubs = safeReadJson<any[]>(SUBS_FILE, []);
+    for (const s of sqlSubs) {
+      let feats: string[] = [];
+      try {
+        feats = JSON.parse(s.features || '[]');
+      } catch {
+        feats = [];
+      }
+      const idx = devSubs.findIndex((x) => x.id === s.id || (x.userId === s.user_id && s.product_id && x.productId === s.product_id));
+      const mapped = {
+        id: s.id,
+        userId: s.user_id,
+        productId: s.product_id,
+        productName: s.product_name,
+        planId: s.plan_id,
+        planName: s.plan_name,
+        status: s.status,
+        price: s.price,
+        features: feats,
+        autoRenew: !!s.auto_renew,
+        startDate: s.start_date,
+        endDate: s.end_date,
+      };
+      if (idx >= 0) devSubs[idx] = mapped;
+      else devSubs.unshift(mapped);
+    }
+    safeWriteJson(SUBS_FILE, devSubs);
+  }
+
+  // 3) Mirror verified phone flags on users -> .dev-users.json
+  const sqlUsers = devGatewaySqlite.prepare(`SELECT * FROM users WHERE phone_verified_at <> ''`).all() as any[];
+  if (sqlUsers.length) {
+    const devUsers = loadDevUsers();
+    let changed = false;
+    for (const su of sqlUsers) {
+      const target = devUsers.find((u) => u.id === su.id);
+      if (target && target.phoneVerifiedAt !== su.phone_verified_at) {
+        target.phone = su.phone || target.phone;
+        target.phoneVerifiedAt = su.phone_verified_at;
+        target.tgUserId = su.tg_user_id || target.tgUserId;
+        target.tgUsername = su.tg_username || target.tgUsername;
+        changed = true;
+      }
+    }
+    if (changed) saveDevUsers(devUsers);
   }
 };
 
@@ -465,6 +732,48 @@ export function cmsDevApiPlugin(): Plugin {
         };
 
         try {
+          // --- 0. /api/payment & /api/payment/* (Self-Hosted Card-to-Card SMS Gateway) ---
+          if (pathname === '/api/payment' || pathname.startsWith('/api/payment/')) {
+            syncDevFilesIntoGatewaySqlite();
+            const rawBuf = method === 'GET' || method === 'HEAD' || method === 'OPTIONS' ? undefined : await readRawBody();
+            const proto = String(req.headers['x-forwarded-proto'] || 'http');
+            const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000');
+            const fullUrl = `${proto}://${host}${reqUrl}`;
+            const reqHeaders = new Headers();
+            for (const [k, v] of Object.entries(req.headers)) {
+              if (typeof v === 'string') reqHeaders.set(k, v);
+              else if (Array.isArray(v)) reqHeaders.set(k, v.join(', '));
+            }
+            const webReq = new Request(fullUrl, {
+              method,
+              headers: reqHeaders,
+              body: rawBuf && rawBuf.length ? new Uint8Array(rawBuf) : undefined,
+            });
+            const gwEnv = { ...getDevGatewayEnv(), SITE_URL: `${proto}://${host}` };
+            const webRes = await handlePaymentRequest({
+              request: webReq,
+              env: gwEnv,
+              isAdmin: async () => isDevAdminRequest(req),
+              getCurrentUser: async () => {
+                const u = getDevSessionUser(req);
+                if (!u) return null;
+                return {
+                  id: u.id,
+                  phone: u.phone || '',
+                  phone_verified_at: u.phoneVerifiedAt || '',
+                  full_name: u.fullName || '',
+                };
+              },
+              loadCmsData: async () => safeReadJson<{ data: any } | null>(CONTENT_FILE, null)?.data || seedData,
+            });
+            syncGatewaySqliteBackToDevFiles();
+            res.statusCode = webRes.status;
+            webRes.headers.forEach((val, key) => res.setHeader(key, val));
+            const outBuf = Buffer.from(await webRes.arrayBuffer());
+            res.end(outBuf);
+            return;
+          }
+
           // --- 1. /api/content ---
           if (pathname === '/api/content') {
             if (method === 'GET') {
@@ -529,7 +838,8 @@ export function cmsDevApiPlugin(): Plugin {
               if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
               return sendJson({
                 ok: true,
-                profile: { id: u.id, fullName: u.fullName, email: u.email, phone: u.phone, avatarUrl: u.avatarUrl, bio: u.bio, joinedAt: u.createdAt },
+                verified: Boolean(u.phoneVerifiedAt),
+                profile: devPublicUser(u),
                 ...loadDevUserData(u.id),
               });
             }
@@ -611,7 +921,7 @@ export function cmsDevApiPlugin(): Plugin {
                 setSessionCookie(res, token, expiresAt);
                 return sendJson({
                   ok: true,
-                  profile: { id: uid, fullName, email, phone, avatarUrl: '', bio: '', joinedAt: now },
+                  profile: devPublicUser(user),
                   ...loadDevUserData(uid),
                 });
               }
@@ -645,7 +955,7 @@ export function cmsDevApiPlugin(): Plugin {
                 setSessionCookie(res, token, expiresAt);
                 return sendJson({
                   ok: true,
-                  profile: { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl, bio: user.bio, joinedAt: user.createdAt },
+                  profile: devPublicUser(user),
                   ...loadDevUserData(user.id),
                 });
               }
@@ -675,11 +985,58 @@ export function cmsDevApiPlugin(): Plugin {
                     }
                   }
                 }
+                if (phone !== String(u.phone || '')) {
+                  users[idx].phoneVerifiedAt = '';
+                  users[idx].tgUserId = '';
+                  users[idx].tgUsername = '';
+                }
                 users[idx].fullName = fullName;
                 users[idx].phone = phone;
                 users[idx].bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : u.bio;
                 saveDevUsers(users);
-                return sendJson({ ok: true, profile: { id: users[idx].id, fullName: users[idx].fullName, email: users[idx].email, phone: users[idx].phone, avatarUrl: users[idx].avatarUrl, bio: users[idx].bio, joinedAt: users[idx].createdAt } });
+                return sendJson({ ok: true, profile: devPublicUser(users[idx]) });
+              }
+
+              if (action === 'start_phone_verify') {
+                const u = getDevSessionUser(req);
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const phone = normalizeAccountPhone(String(body.phone || u.phone || ''));
+                if (!phone) return sendJson({ ok: false, error: 'لطفاً ابتدا شماره موبایل معتبر وارد کنید.' }, 400);
+                const users = loadDevUsers();
+                if (users.some((x) => x.id !== u.id && x.phone === phone)) {
+                  return sendJson({ ok: false, error: 'این شماره موبایل متعلق به حساب دیگری است.' }, 409);
+                }
+                const idx = users.findIndex((x) => x.id === u.id);
+                if (idx >= 0 && users[idx].phone !== phone) {
+                  users[idx].phone = phone;
+                  users[idx].phoneVerifiedAt = '';
+                  saveDevUsers(users);
+                }
+                syncDevFilesIntoGatewaySqlite();
+                const gwEnv = getDevGatewayEnv();
+                const created = await createPhoneVerificationToken(gwEnv, { userId: u.id, phone, purpose: 'verify_phone' });
+                return sendJson({
+                  ok: true,
+                  token: created.token,
+                  phone,
+                  botUsername: String(gwEnv.TELEGRAM_BOT_USERNAME || '').replace(/^@/, ''),
+                  verifyUrl: created.telegramDeepLink,
+                  command: created.botCommand,
+                  expiresAt: created.expiresAt,
+                  devCanSimulate: !gwEnv.TELEGRAM_BOT_TOKEN,
+                });
+              }
+
+              if (action === 'dev_complete_phone_verify') {
+                const u = getDevSessionUser(req);
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                syncDevFilesIntoGatewaySqlite();
+                const gwEnv = getDevGatewayEnv();
+                const done = await completePhoneVerificationToken(gwEnv, String(body.token || ''), `dev-tg-${u.id}`, u.phone || String(body.phone || ''), 'dev_telegram');
+                if (!done.ok) return sendJson({ ok: false, error: done.error }, 400);
+                syncGatewaySqliteBackToDevFiles();
+                const fresh = loadDevUsers().find((x) => x.id === u.id) || u;
+                return sendJson({ ok: true, profile: devPublicUser(fresh), ...loadDevUserData(u.id) });
               }
 
               // ---- profile dashboard persistence (saved articles / consultations) ----
@@ -1052,6 +1409,35 @@ export function cmsDevApiPlugin(): Plugin {
                   const g = grants.find((x) => x.id === String(body.id || '')); if (g) g.devices = [];
                   safeWriteJson(TOOL_ACCESS_FILE, grants); return sendJson({ ok: true });
                 }
+              }
+
+              // ---- autoUnlock (logged-in verified phone user) ----
+              if (action === 'autoUnlock') {
+                const productId = String(body.productId || '');
+                const deviceId = String(body.deviceId || '').slice(0, 80);
+                if (!deviceId || !getTool(productId)) return sendJson({ ok: false, reason: 'invalid_request' }, 400);
+                const u = getDevSessionUser(req);
+                if (!u || !u.phone || !u.phoneVerifiedAt) return sendJson({ ok: false, reason: 'not_verified' });
+                const phone = normalizePhone(u.phone);
+                const nowMs = Date.now();
+                const grant = grants.find(
+                  (g) =>
+                    g.phone === phone &&
+                    g.status === 'active' &&
+                    scopeCovers(g.productId, productId) &&
+                    (!g.expiresAt || new Date(g.expiresAt).getTime() > nowMs)
+                );
+                if (!grant) return sendJson({ ok: false, reason: 'no_active_grant' });
+                if (!grant.devices.includes(deviceId)) {
+                  if (grant.devices.length >= grant.maxDevices) {
+                    return sendJson({ ok: false, reason: 'device_limit', error: `سقف تعداد دستگاه مجاز (${grant.maxDevices}) تکمیل شده است.` });
+                  }
+                  grant.devices.push(deviceId);
+                  safeWriteJson(TOOL_ACCESS_FILE, grants);
+                }
+                const exp = grant.expiresAt ? Math.min(new Date(grant.expiresAt).getTime(), nowMs + 30 * 86400_000) : nowMs + 30 * 86400_000;
+                const token = await signAccessToken({ phone, scope: grant.productId, did: deviceId, gid: grant.id, exp }, DEV_TOOL_SECRET);
+                return sendJson({ ok: true, autoUnlocked: true, phone, token, expiresAt: new Date(exp).toISOString(), tool: publicTool(productId) });
               }
 
               // ---- unlock ----

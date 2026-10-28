@@ -810,5 +810,190 @@ export const api = {
       return raw ? JSON.parse(raw) : null;
     } catch { return null; }
   },
+
+  // ---------------------------------------------------------------------------
+  // Phone Verification (Website <-> Telegram cryptographic ownership link)
+  // ---------------------------------------------------------------------------
+
+  async startPhoneVerification(phone?: string): Promise<{
+    ok: boolean;
+    token?: string;
+    phone?: string;
+    botUsername?: string;
+    verifyUrl?: string;
+    command?: string;
+    expiresAt?: string;
+    devCanSimulate?: boolean;
+    error?: string;
+  }> {
+    return this.userPostAction('start_phone_verify', phone ? { phone } : {});
+  },
+
+  async devCompletePhoneVerification(token: string, phone?: string): Promise<{ ok: boolean; profile?: any; subscriptions?: any[]; error?: string }> {
+    return this.userPostAction('dev_complete_phone_verify', { token, phone });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Auto-Unlock Paid AI Tool (for logged-in users with verified phone)
+  // ---------------------------------------------------------------------------
+
+  async autoUnlockTool(payload: { productId: string; deviceId: string }): Promise<{
+    ok: boolean;
+    token?: string;
+    expiresAt?: string;
+    phone?: string;
+    tool?: any;
+    reason?: string;
+    error?: string;
+  }> {
+    try {
+      const r = await fetch('/api/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ action: 'autoUnlock', ...payload }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok
+        ? { ok: true, token: j.token, expiresAt: j.expiresAt, phone: j.phone, tool: j.tool }
+        : { ok: false, reason: j?.reason, error: j?.error };
+    } catch {
+      return { ok: false, error: 'network' };
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Self-Hosted Automated Card-to-Card SMS Payment Gateway (`/api/payment/*`)
+  // ---------------------------------------------------------------------------
+
+  async startWebsiteCheckout(payload: { productId: string; planId: string; phone: string }): Promise<{
+    ok: boolean;
+    buyerSecret?: string;
+    data?: {
+      payment_id: string;
+      payment_url: string;
+      payable_amount: number;
+      payable_amount_toman: number;
+      expires_at: string;
+    };
+    error?: string;
+  }> {
+    try {
+      const r = await fetch('/api/payment/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok && j.data?.payment_id) {
+        if (j.buyer_secret) {
+          try {
+            localStorage.setItem(`omidpay_secret_${j.data.payment_id}`, String(j.buyer_secret));
+          } catch {}
+        }
+        return { ok: true, buyerSecret: j.buyer_secret, data: j.data };
+      }
+      return { ok: false, error: j?.error?.message || j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به درگاه پرداخت برقرار نشد.' };
+    }
+  },
+
+  async fetchPaymentClientStatus(paymentId: string, deviceId?: string): Promise<{ ok: boolean; data?: any; error?: string }> {
+    try {
+      let buyerSecret = '';
+      try {
+        buyerSecret = localStorage.getItem(`omidpay_secret_${paymentId}`) || '';
+      } catch {}
+      const h: Record<string, string> = {};
+      if (buyerSecret) h['X-Buyer-Secret'] = buyerSecret;
+      if (deviceId) h['X-Device-Id'] = deviceId;
+
+      const r = await fetch(`/api/payment/v2/payments/${encodeURIComponent(paymentId)}/client`, {
+        method: 'GET',
+        headers: h,
+        credentials: 'same-origin',
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true, data: j.data };
+      return { ok: false, error: j?.error?.message || j?.error || `خطا (${r.status})` };
+    } catch {
+      return { ok: false, error: 'خطا در استعلام وضعیت پرداخت.' };
+    }
+  },
+
+  async submitPaymentReceipt(
+    paymentId: string,
+    payload: { refCode?: string; note?: string; imageBase64?: string }
+  ): Promise<{ ok: boolean; data?: any; error?: string }> {
+    try {
+      const r = await fetch(`/api/payment/v2/payments/${encodeURIComponent(paymentId)}/receipt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          ref_code: payload.refCode || '',
+          note: payload.note || '',
+          image_base64: payload.imageBase64 || '',
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true, data: j.data };
+      return { ok: false, error: j?.error?.message || j?.error || `خطا (${r.status})` };
+    } catch {
+      return { ok: false, error: 'ارسال رسید با خطا مواجه شد.' };
+    }
+  },
+
+  async cancelPaymentSession(paymentId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      let buyerSecret = '';
+      try {
+        buyerSecret = localStorage.getItem(`omidpay_secret_${paymentId}`) || '';
+      } catch {}
+      const h: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (buyerSecret) h['X-Buyer-Secret'] = buyerSecret;
+      const r = await fetch(`/api/payment/v2/payments/${encodeURIComponent(paymentId)}/cancel`, {
+        method: 'POST',
+        headers: h,
+        credentials: 'same-origin',
+        body: '{}',
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? { ok: true } : { ok: false, error: j?.error?.message || 'خطا در لغو تراکنش.' };
+    } catch {
+      return { ok: false, error: 'اتصال برقرار نشد.' };
+    }
+  },
+
+  // ---- Admin Gateway Management ----
+
+  async adminGetGatewayOverview(): Promise<{ ok: boolean; [k: string]: any }> {
+    try {
+      const r = await fetch('/api/payment/admin/overview', { headers: headers() });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? j : { ok: false, error: j?.error || 'خطای دسترسی' };
+    } catch {
+      return { ok: false, error: 'اتصال برقرار نشد.' };
+    }
+  },
+
+  async adminGatewayAction(
+    subRoute: 'cards' | 'devices' | 'keys' | 'payments' | 'simulate-sms',
+    payload: Record<string, unknown>
+  ): Promise<{ ok: boolean; [k: string]: any }> {
+    try {
+      const r = await fetch(`/api/payment/admin/${subRoute}`, {
+        method: 'POST',
+        headers: { ...headers(true), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? j : { ok: false, error: j?.error || 'عملیات ناموفق بود.' };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
 };
 

@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page } from '../types';
 import { useUser } from '../context/UserContext';
 import { useContent } from '../context/ContentContext';
+import { api } from '../services/api';
 import {
   User,
   Mail,
@@ -29,6 +30,11 @@ import {
   Star,
   Zap,
   ArrowUpLeft,
+  ShieldCheck,
+  Copy,
+  Check,
+  Loader2,
+  ExternalLink,
 } from 'lucide-react';
 import { linkProps, pathForPage, postPath } from '../utils/router';
 
@@ -308,6 +314,7 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
     isLoggedIn,
     logout,
     updateProfile,
+    refresh,
     savedArticles,
     subscriptions,
     consultations,
@@ -323,6 +330,30 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
   const [editing, setEditing] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Phone verification flow state (strictly above early return!)
+  const [verifyPhoneInput, setVerifyPhoneInput] = useState(profile?.phone || '');
+  const [verifySession, setVerifySession] = useState<{
+    token: string;
+    verifyUrl?: string;
+    command: string;
+    devCanSimulate?: boolean;
+  } | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  useEffect(() => {
+    if (profile?.phone && !verifyPhoneInput) setVerifyPhoneInput(profile.phone);
+  }, [profile?.phone, verifyPhoneInput]);
+
+  useEffect(() => {
+    if (!verifySession || profile?.phoneVerified) return;
+    const iv = setInterval(() => {
+      refresh().catch(() => {});
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [verifySession, profile?.phoneVerified, refresh]);
 
   // NOTE: every hook must run on EVERY render — no early return above useMemo.
   // (A hooks-order change after login used to crash the whole profile page.)
@@ -422,6 +453,17 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
                 <Star className="w-3.5 h-3.5" />
                 کاربر ویژه
               </div>
+              {profile.phoneVerified ? (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-500 text-[11px] font-bold">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  شماره تأییدشده (تلگرام متصل)
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-500 text-[11px] font-bold">
+                  <Phone className="w-3.5 h-3.5" />
+                  شماره تأیید نشده
+                </div>
+              )}
               {activeSubs > 0 && (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-500 text-[11px] font-bold">
                   <Zap className="w-3.5 h-3.5" />
@@ -439,6 +481,117 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
           </button>
         </div>
       </motion.div>
+
+      {/* Phone Ownership Verification Banner (Connects Website <-> Telegram & Enables Zero-Code Auto-Unlock) */}
+      {!profile.phoneVerified && (
+        <div className="nd-glass rounded-3xl p-5 sm:p-6 mb-6 border border-emerald-500/30 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-black text-[color:var(--nd-ink)] flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                <span>تأیید مالکیت شماره موبایل و اتصال یکپارچه به تلگرام</span>
+              </h3>
+              <p className="text-xs text-[color:var(--nd-muted)] leading-relaxed">
+                با تأیید شماره از طریق تلگرام، تمام خریدهای قبلی و جدید شما به‌طور خودکار به این حساب متصل شده و ابزارهای هوشمند بدون نیاز به وارد کردن کد دسترسی برایتان باز می‌شوند.
+              </p>
+            </div>
+          </div>
+
+          {!verifySession ? (
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <input
+                type="tel"
+                dir="ltr"
+                value={verifyPhoneInput}
+                onChange={(e) => setVerifyPhoneInput(e.target.value)}
+                placeholder="09123456789"
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-emerald-500 outline-none text-sm font-mono text-left text-[color:var(--nd-ink)]"
+              />
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={async () => {
+                  setVerifyError('');
+                  setVerifyLoading(true);
+                  const res = await api.startPhoneVerification(verifyPhoneInput.trim());
+                  setVerifyLoading(false);
+                  if (!res.ok || !res.token) {
+                    setVerifyError(res.error || 'خطا در ایجاد لینک تأیید.');
+                    return;
+                  }
+                  setVerifySession({
+                    token: res.token,
+                    verifyUrl: res.verifyUrl,
+                    command: res.command || `/start verify_${res.token}`,
+                    devCanSimulate: res.devCanSimulate,
+                  });
+                }}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold hover:bg-emerald-500 transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {verifyLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>دریافت لینک تأیید تلگرام</span>
+              </button>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 space-y-3">
+              <div className="text-xs font-bold text-[color:var(--nd-ink)]">
+                گام نهایی: دکمه زیر را بزنید (یا دستور را در ربات تلگرام بفرستید) و دکمه «اشتراک شماره تلفن من» را انتخاب کنید:
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {verifySession.verifyUrl && (
+                  <a
+                    href={verifySession.verifyUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2.5 rounded-xl bg-sky-500 text-white text-xs font-extrabold hover:bg-sky-400 transition inline-flex items-center gap-1.5"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    باز کردن مستقیم در تلگرام
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(verifySession.command);
+                      setCopiedCmd(true);
+                      setTimeout(() => setCopiedCmd(false), 2000);
+                    } catch {}
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl bg-[color:var(--nd-line)] text-[color:var(--nd-ink)] text-xs font-mono font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  dir="ltr"
+                >
+                  {copiedCmd ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  {verifySession.command}
+                </button>
+                {verifySession.devCanSimulate && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const sim = await api.devCompletePhoneVerification(verifySession.token, verifyPhoneInput.trim());
+                      if (sim.ok) {
+                        await refresh();
+                        setVerifySession(null);
+                      } else {
+                        setVerifyError(sim.error || 'خطا در شبیه‌سازی.');
+                      }
+                    }}
+                    className="px-3.5 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-extrabold hover:bg-amber-400 transition cursor-pointer"
+                  >
+                    ⚡ تأیید فوری (شبیه‌ساز محیط توسعه)
+                  </button>
+                )}
+              </div>
+              <div className="text-[11px] opacity-70 flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
+                <span>در انتظار دریافت تأییدیه از ربات تلگرام (به‌روزرسانی خودکار هر ۴ ثانیه)...</span>
+              </div>
+            </div>
+          )}
+
+          {verifyError && <div className="text-xs font-bold text-rose-500">{verifyError}</div>}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1.5 mb-6 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">

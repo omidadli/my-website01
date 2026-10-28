@@ -59,9 +59,24 @@ import {
 } from './store';
 import { grantToolAccess } from './grant';
 import * as tg from './tgApi';
+import {
+  completePhoneVerificationToken,
+  createGatewayPayment,
+  ensurePaymentTables,
+  formatCardNumber,
+  fulfillGatewayPayment,
+  sweepExpiredPayments,
+  type PaymentOrderRow,
+} from '../payment/gateway';
 
-const OTP_TTL_MS = 5 * 60 * 1000;
-const OTP_MAX_TRIES = 3;
+const loadBotCmsData = async (env: BotEnv): Promise<any> => {
+  try {
+    const row = await env.DB.prepare(`SELECT data FROM content WHERE id = 1`).first<{ data: string }>();
+    return row?.data ? JSON.parse(row.data) : null;
+  } catch {
+    return null;
+  }
+};
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -132,16 +147,25 @@ const renderOrderCard = (o: BotOrderRow, extraLines: string[] = []): string =>
 
 /* ------------------------------ verification ------------------------------ */
 
-const startVerification = async (env: BotEnv, chatId: string) => {
-  await upsertBotUser(env, chatId, { pending: { kind: 'verify_menu' } });
-  await send(env, chatId,
-    '📱 <b>احراز هویت شماره تلفن</b>\n\n' +
-    'برای خرید و دریافت محصولات باید شماره شما تأیید شود.\n\n' +
-    'روش ۱ (پیشنهادی): دکمه‌ی «اشتراک شماره تلفن من» را بزنید — تلگرام شماره‌ی شما را تأییدشده می‌فرستد.\n' +
-    'روش ۲: شماره را دستی وارد کنید تا کد تایید در همین چت برایتان ارسال شود.',
+const startVerification = async (env: BotEnv, chatId: string, webVerifyToken = '') => {
+  await upsertBotUser(env, chatId, {
+    pending: webVerifyToken ? { kind: 'verify_web_token', verifyToken: webVerifyToken } : { kind: 'verify_menu' },
+  });
+  await send(
+    env,
+    chatId,
+    '📱 <b>احراز هویت امن شماره موبایل</b>\n\n' +
+      (webVerifyToken
+        ? '🔗 درخواست اتصال و تأیید حساب کاربری وب‌سایت دریافت شد.\n\n'
+        : 'برای خرید و دریافت آنی محصولات باید مالکیت شماره شما تأیید شود.\n\n') +
+      '🔒 برای امنیت حساب و جلوگیری از سوءاستفاده، تأیید شماره منحصراً از طریق دکمه‌ی رسمی تلگرام انجام می‌شود.\n' +
+      '👇 کافی است روی دکمه‌ی <b>«📱 اشتراک شماره تلفن من»</b> در پایین صفحه بزنید:',
     {
       reply_markup: {
-        keyboard: [[{ text: '📱 اشتراک شماره تلفن من', request_contact: true }], [{ text: '⌨️ ورود دستی شماره' }, { text: '❌ انصراف' }]],
+        keyboard: [
+          [{ text: '📱 اشتراک شماره تلفن من', request_contact: true }],
+          [{ text: '❌ انصراف' }],
+        ],
         resize_keyboard: true,
         one_time_keyboard: true,
       },
@@ -149,7 +173,7 @@ const startVerification = async (env: BotEnv, chatId: string) => {
   );
 };
 
-const completeVerification = async (env: BotEnv, chatId: string, phone: string, via: string) => {
+const completeVerification = async (env: BotEnv, chatId: string, phone: string, via: string, tgUsername = '') => {
   const normalized = normalizePhone(phone);
   if (!normalized) {
     await send(env, chatId, '❌ شماره معتبر نیست.');
@@ -163,10 +187,31 @@ const completeVerification = async (env: BotEnv, chatId: string, phone: string, 
     pending: null,
   });
   await logEvent(env, 'phone_verified', `tg=${chatId} phone=${normalized} via=${via}`);
-  await send(env, chatId,
-    `✅ شماره‌ی ${displayPhone(normalized)} با موفقیت تأیید شد.`,
-    { reply_markup: tg.mainMenuKeyboard() }
-  );
+
+  // If this verification was initiated from the website profile (`verify_<token>`), complete website linkage!
+  if (before?.kind === 'verify_web_token' && before.verifyToken) {
+    const linked = await completePhoneVerificationToken(env, String(before.verifyToken), chatId, normalized, tgUsername);
+    if (linked.ok) {
+      await send(
+        env,
+        chatId,
+        `✅ شماره‌ی ${displayPhone(normalized)} تأیید شد و حساب کاربری شما در وب‌سایت با موفقیت متصل گردید!\n` +
+          '🎁 تمام اشتراک‌های فعال شما همگام‌سازی شدند و اکنون بدون نیاز به وارد کردن کد، در سایت فعال هستند.',
+        { reply_markup: tg.mainMenuKeyboard() }
+      );
+    } else {
+      await send(
+        env,
+        chatId,
+        `✅ شماره‌ی ${displayPhone(normalized)} در ربات تأیید شد، اما اتصال به حساب سایت انجام نشد:\n⚠️ ${tg.escapeHtml(linked.error || '')}`,
+        { reply_markup: tg.mainMenuKeyboard() }
+      );
+    }
+  } else {
+    await send(env, chatId, `✅ شماره‌ی ${displayPhone(normalized)} با موفقیت تأیید شد.`, {
+      reply_markup: tg.mainMenuKeyboard(),
+    });
+  }
 
   // Deliver anything that was waiting for verification.
   const queued = [...(await queuedDeliveries(env, chatId)), ...(await queuedDeliveriesByPhone(env, normalized))];
@@ -198,44 +243,60 @@ const showProducts = async (env: BotEnv, chatId: string) => {
 const showPlans = async (env: BotEnv, chatId: string, productId: string) => {
   const product = botProduct(productId);
   if (!product) return send(env, chatId, '❌ محصول پیدا نشد.');
-  const plans = botPlans(productId);
+  const cmsData = await loadBotCmsData(env);
+  const plans = botPlans(productId, cmsData);
   const rows: tg.TgKeyboardButton[][] = plans.map((p) => [
     { text: `${p.name} — ${p.price}`, callback_data: `plan:${productId}:${p.id}` },
   ]);
-  await send(env, chatId,
+  await send(
+    env,
+    chatId,
     `🛒 <b>${tg.escapeHtml(product.name)}</b>\n${tg.escapeHtml(product.tagline)}\n\nپلن را انتخاب کنید:`,
     { reply_markup: tg.inlineKeyboard(rows) }
   );
 };
 
-const createUniquePaymentAmount = async (env: BotEnv, baseToman: number): Promise<number> => {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const candidate = baseToman + 1000 + Math.floor(Math.random() * 9000);
-    const collision = await env.DB.prepare(
-      `SELECT id FROM bot_orders WHERE expected_amount_toman = ?1 AND status IN ('awaiting_payment','receipt_submitted','needs_review') LIMIT 1`
-    ).bind(candidate).first<{ id: string }>();
-    if (!collision) return candidate;
-  }
-  // A low-probability fallback; still preserves the random suffix.
-  return baseToman + 1000 + Math.floor(Math.random() * 9000);
-};
+const fmtRial = (n: number): string => `${faDigits(String(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '٬')} ریال`;
 
 const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow | null, productId: string, planId: string) => {
   const product = botProduct(productId);
-  const plan = botPlan(productId, planId);
+  const cmsData = await loadBotCmsData(env);
+  const plan = botPlan(productId, planId, cmsData);
   if (!product || !plan) return send(env, chatId, '❌ محصول/پلن نامعتبر است.');
 
   const phone = user?.phone || '';
+  const baseToman = plan.amountToman || priceToToman(plan.price);
+  const orderId = newId('ord');
+
+  // Create unified Payexa-v2 SMS card-to-card gateway payment
+  const gw = await createGatewayPayment(env, {
+    amountRial: baseToman * 10,
+    orderId,
+    source: 'telegram',
+    phone,
+    tgUserId: chatId,
+    productId,
+    productName: product.name,
+    planId: plan.id,
+    planName: plan.name,
+    description: `اشتراک ${product.name} — ${plan.name}`,
+    originUrl: siteUrl(env),
+  });
+
+  const expectedToman = gw.ok ? gw.data.payable_amount_toman : Math.max(1000, baseToman - (10 + Math.floor(Math.random() * 89)));
+  const paymentId = gw.ok ? gw.data.payment_id : '';
+
   const order: BotOrderRow = {
-    id: newId('ord'),
+    id: orderId,
     tg_user_id: chatId,
     phone,
     product_id: productId,
     product_name: product.name,
     plan_id: plan.id,
     plan_name: plan.name,
-    amount_toman: plan.amountToman || priceToToman(plan.price),
-    expected_amount_toman: await createUniquePaymentAmount(env, plan.amountToman || priceToToman(plan.price)),
+    amount_toman: baseToman,
+    expected_amount_toman: expectedToman,
+    payment_id: paymentId,
     status: 'awaiting_payment',
     ref_code: '',
     receipt_file_id: '',
@@ -247,26 +308,62 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     delivery_id: '',
   };
   await insertOrder(env, order);
-  await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId: order.id } });
-  await logEvent(env, 'order_created', `${order.id} ${productId}/${planId} price=${order.amount_toman} transfer=${order.expected_amount_toman}`);
+  await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId: order.id, paymentId } });
+  await logEvent(env, 'order_created', `${order.id} gw=${paymentId} ${productId}/${planId} price=${order.amount_toman} payable=${expectedToman}`);
 
+  if (gw.ok) {
+    const d = gw.data;
+    const buttons: tg.TgKeyboardButton[][] = [
+      [{ text: '✅ پرداخت کردم — بررسی وضعیت', callback_data: `chkpay:${d.payment_id}` }],
+    ];
+    if (d.payment_url && /^https:\/\//i.test(d.payment_url)) {
+      buttons.push([{ text: '🌐 باز کردن صفحه پرداخت آنلاین', url: d.payment_url }]);
+    }
+    buttons.push([{ text: '🧾 ارسال تصویر رسید (در صورت تأخیر پیامک)', callback_data: `fbrcpt:${order.id}` }]);
+
+    await send(
+      env,
+      chatId,
+      [
+        '💳 <b>فاکتور پرداخت خودکار کارت‌به‌کارت</b>',
+        '',
+        `📦 محصول: <b>${tg.escapeHtml(product.name)}</b> — ${tg.escapeHtml(plan.name)}`,
+        `📅 مدت اعتبار: ${plan.durationDays} روز${plan.messageQuota ? ` (${plan.messageQuota} پیام)` : ' (نامحدود)'}`,
+        '',
+        `💰 <b>مبلغ دقیق و یکتای قابل پرداخت:</b>`,
+        `👉 <code>${d.payable_amount}</code> ریال  (معادل <b>${fmtToman(d.payable_amount_toman)}</b>)`,
+        '',
+        '🚨 <b>هشدار بسیار مهم:</b> مبلغ بالا را <u>به هیچ‌وجه رُند نکنید</u>! دقیقاً همین مبلغ یکتا را کارت‌به‌کارت کنید تا به محض دریافت پیامک بانک (در چند ثانیه)، کد دسترسی <b>به‌صورت کاملاً خودکار و بدون نیاز به ارسال رسید</b> برایتان صادر شود.',
+        '',
+        `🏦 <b>بانک مقصد:</b> ${tg.escapeHtml(d.card.bank || 'شبکه شتاب')}`,
+        `💳 <b>شماره کارت (ضربه بزنید کپی شود):</b>\n<code>${tg.escapeHtml(d.card.number)}</code>`,
+        `👤 <b>به نام:</b> ${tg.escapeHtml(d.card.holder_name)}`,
+        `⏱ <b>مهلت پرداخت:</b> ۳۰ دقیقه`,
+        `🆔 شناسه پرداخت: <code>${tg.escapeHtml(d.payment_id)}</code>`,
+      ].join('\n'),
+      { reply_markup: tg.inlineKeyboard(buttons) }
+    );
+    return;
+  }
+
+  // Fallback if no active card is configured yet
   const card = String(env.BOT_CARD_NUMBER || '').trim();
   const holder = String(env.BOT_CARD_HOLDER || '').trim();
-  await send(env, chatId, [
-    '🧾 <b>سفارش جدید</b>',
-    '',
-    `📦 ${tg.escapeHtml(product.name)} — ${tg.escapeHtml(plan.name)}`,
-    `💰 مبلغ دقیق قابل پرداخت: <b>${fmtToman(order.expected_amount_toman || order.amount_toman)}</b>`,
-    '⚠️ لطفاً همین مبلغ دقیق را واریز کنید تا سفارش به‌صورت خودکار تطبیق داده شود.',
-    `📅 مدت دسترسی: ${plan.durationDays} روز${plan.messageQuota ? ` — ${plan.messageQuota} پیام` : ' — نامحدود'}`,
-    '',
-    card
-      ? `💳 <b>کارت به کارت:</b>\n<code>${tg.escapeHtml(card)}</code>${holder ? `\nبه نام: ${tg.escapeHtml(holder)}` : ''}`
-      : '💳 شماره کارت بعداً از پشتیبانی اعلام می‌شود.',
-    '',
-    'پس از پرداخت فقط عکس رسید را همین‌جا بفرستید؛ نیازی به تایپ مبلغ یا شماره پیگیری نیست.',
-    `🆔 سفارش: <code>${tg.escapeHtml(order.id)}</code>`,
-  ].join('\n'));
+  await send(
+    env,
+    chatId,
+    [
+      '🧾 <b>سفارش جدید</b>',
+      '',
+      `📦 ${tg.escapeHtml(product.name)} — ${tg.escapeHtml(plan.name)}`,
+      `💰 مبلغ دقیق قابل پرداخت: <b>${fmtToman(expectedToman)}</b> (${fmtRial(expectedToman * 10)})`,
+      '⚠️ لطفاً همین مبلغ دقیق را واریز کنید تا سفارش به‌صورت خودکار تطبیق داده شود.',
+      card
+        ? `💳 <b>کارت به کارت:</b>\n<code>${tg.escapeHtml(card)}</code>${holder ? `\nبه نام: ${tg.escapeHtml(holder)}` : ''}`
+        : '💳 شماره کارت فعال هنوز ثبت نشده است؛ از پشتیبانی راهنمایی بگیرید.',
+      `🆔 سفارش: <code>${tg.escapeHtml(order.id)}</code>`,
+    ].join('\n')
+  );
 };
 
 /* --------------------------- receipt verification --------------------------- */
@@ -511,7 +608,87 @@ const onCallback = async (env: BotEnv, chatId: string, messageId: number, cbId: 
     return showProducts(env, chatId);
   }
 
-  // admin: approve & fulfill
+  // Buyer checks SMS payment status (`chkpay:<paymentId>`)
+  if (data.startsWith('chkpay:')) {
+    const paymentId = data.slice(7);
+    await ensurePaymentTables(env);
+    await sweepExpiredPayments(env);
+    const pRow = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`)
+      .bind(paymentId)
+      .first<PaymentOrderRow>();
+    if (!pRow) return answer('تراکنش یافت نشد.', true);
+
+    if (pRow.status === 'paid') {
+      await answer('✅ پرداخت شما تأیید شد!');
+      await fulfillGatewayPayment(env, paymentId, 'telegram_check');
+      return;
+    }
+    if (pRow.status === 'expired' || pRow.status === 'canceled') {
+      await answer('⌛ مهلت ۳۰ دقیقه‌ای این پرداخت به پایان رسیده است.', true);
+      return send(
+        env,
+        chatId,
+        '⌛ مهلت ۳۰ دقیقه‌ای این فاکتور تمام شده است.\nاگر واریز را انجام داده‌اید، عکس رسید را همین‌جا ارسال کنید؛ در غیر این صورت از «🛒 خرید اشتراک» فاکتور جدید بسازید.'
+      );
+    }
+    const secLeft = Math.max(0, Math.floor((Date.parse(pRow.expires_at) - Date.now()) / 1000));
+    const minLeft = Math.ceil(secLeft / 60);
+    return answer(
+      `⏳ هنوز پیامک واریز دقیق (${pRow.payable_amount_rial.toLocaleString('en-US')} ریال) دریافت نشده است. مهلت باقی‌مانده: ${minLeft} دقیقه.`,
+      true
+    );
+  }
+
+  // Buyer requests manual receipt fallback (`fbrcpt:<orderId>`)
+  if (data.startsWith('fbrcpt:')) {
+    const orderId = data.slice(7);
+    await answer();
+    await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId } });
+    return send(
+      env,
+      chatId,
+      '🧾 اگر مبلغ را اشتباهاً رُند واریز کرده‌اید یا پیامک بانک با تأخیر مواجه شده، همین الان <b>تصویر واضح رسید بانکی</b> خود را ارسال کنید تا بررسی شود.'
+    );
+  }
+
+  // Admin: approve/reject gateway fallback receipt (`payok:<paymentId>` / `payno:<paymentId>`)
+  if (data.startsWith('payok:')) {
+    if (!isAdmin(env, fromId)) return answer('فقط ادمین.', true);
+    const paymentId = data.slice(6);
+    await ensurePaymentTables(env);
+    const now = nowIso();
+    await env.DB.prepare(
+      `UPDATE payment_orders SET status = 'paid', paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END, updated_at = ?2 WHERE id = ?3`
+    )
+      .bind(now, now, paymentId)
+      .run();
+    await fulfillGatewayPayment(env, paymentId, `admin_tg:${fromId}`);
+    await answer('✅ پرداخت تأیید و محصول تحویل شد');
+    return tg.editMessageText(
+      env.TELEGRAM_BOT_TOKEN || '',
+      chatId,
+      messageId,
+      `✅ پرداخت درگاه <code>${tg.escapeHtml(paymentId)}</code> توسط ادمین تأیید و تحویل شد.`
+    );
+  }
+
+  if (data.startsWith('payno:')) {
+    if (!isAdmin(env, fromId)) return answer('فقط ادمین.', true);
+    const paymentId = data.slice(6);
+    await ensurePaymentTables(env);
+    await env.DB.prepare(`UPDATE payment_orders SET status = 'rejected', updated_at = ?1 WHERE id = ?2`)
+      .bind(nowIso(), paymentId)
+      .run();
+    await answer('❌ رسید رد شد');
+    return tg.editMessageText(
+      env.TELEGRAM_BOT_TOKEN || '',
+      chatId,
+      messageId,
+      `❌ رسید پرداخت <code>${tg.escapeHtml(paymentId)}</code> رد شد.`
+    );
+  }
+
+  // admin: approve & fulfill legacy bot order
   if (data.startsWith('aok:')) {
     if (!isAdmin(env, fromId)) return answer('فقط ادمین.', true);
     const order = await getOrder(env, data.slice(4));
@@ -542,34 +719,98 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
   const user = await getBotUser(env, chatId);
   const pending = getPending<any>(user);
 
-  // ---- mid-flow states first ----
-  if (pending?.kind === 'awaiting_otp') {
-    const code = t.replace(/\D/g, '');
-    const now = Date.now();
-    if (now > (pending.expiresAt || 0)) {
-      await upsertBotUser(env, chatId, { pending: null });
-      return send(env, chatId, '⌛ کد منقضی شد. دوباره تلاش کنید.');
-    }
-    if (code !== String(pending.code || '')) {
-      const tries = (pending.tries || 0) + 1;
-      if (tries >= OTP_MAX_TRIES) {
-        await upsertBotUser(env, chatId, { pending: null });
-        return send(env, chatId, '❌ تلاش‌ها تمام شد. دوباره شروع کنید.');
+  // ---- deep-link /start payloads FIRST (so `/start verify_...` or `/start pay_...` always works even mid-flow!) ----
+  const startMatch = t.match(/^\/start\s+([A-Za-z0-9_-]+)$/);
+  if (startMatch) {
+    const startArg = startMatch[1];
+    await upsertBotUser(env, chatId, { first_name: from.first_name || '', username: from.username || '' });
+
+    if (startArg.startsWith('verify_')) {
+      const verifyToken = startArg.slice(7);
+      if (user?.verified_at && user.phone && user.verify_via === 'contact') {
+        const linked = await completePhoneVerificationToken(env, verifyToken, chatId, user.phone, from.username || '');
+        if (linked.ok) {
+          return send(
+            env,
+            chatId,
+            `✅ حساب کاربری وب‌سایت شما با شماره ${displayPhone(user.phone)} متصل و تأیید شد!\n🎁 اشتراک‌های شما در پروفایل سایت همگام‌سازی شدند.`,
+            { reply_markup: tg.mainMenuKeyboard() }
+          );
+        }
+        return send(env, chatId, `❌ خطا در اتصال حساب سایت: ${tg.escapeHtml(linked.error || '')}`, {
+          reply_markup: tg.mainMenuKeyboard(),
+        });
       }
-      await upsertBotUser(env, chatId, { pending: { ...pending, tries } });
-      return send(env, chatId, `❌ کد اشتباه است. (${tries} از ${OTP_MAX_TRIES})`);
+      return startVerification(env, chatId, verifyToken);
     }
-    return completeVerification(env, chatId, pending.phoneCandidate || user?.phone || '', 'otp');
+
+    if (startArg.startsWith('pay_')) {
+      const paymentId = startArg.slice(4);
+      await ensurePaymentTables(env);
+      await sweepExpiredPayments(env);
+      const pRow = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`)
+        .bind(paymentId)
+        .first<PaymentOrderRow>();
+      if (!pRow) {
+        return send(env, chatId, '❌ فاکتور پرداخت یافت نشد یا نامعتبر است.', { reply_markup: tg.mainMenuKeyboard() });
+      }
+      if (!pRow.tg_user_id) {
+        await env.DB.prepare(`UPDATE payment_orders SET tg_user_id = ?1, updated_at = ?2 WHERE id = ?3`)
+          .bind(chatId, nowIso(), paymentId)
+          .run()
+          .catch(() => {});
+      }
+      if (pRow.status === 'paid') {
+        await fulfillGatewayPayment(env, paymentId, 'telegram_deeplink');
+        return send(env, chatId, '✅ این فاکتور پرداخت شده و کد دسترسی برایتان ارسال گردید.', {
+          reply_markup: tg.mainMenuKeyboard(),
+        });
+      }
+      if (pRow.status !== 'pending') {
+        return send(env, chatId, '⌛ مهلت این فاکتور به پایان رسیده است. لطفاً از سایت یا منوی خرید مجدداً اقدام کنید.');
+      }
+      return send(
+        env,
+        chatId,
+        [
+          '💳 <b>ادامه پرداخت در تلگرام</b>',
+          '',
+          `📦 سفارش: <b>${tg.escapeHtml(pRow.description || pRow.order_id)}</b>`,
+          `💰 مبلغ دقیق و یکتای قابل پرداخت:`,
+          `👉 <code>${pRow.payable_amount_rial}</code> ریال  (معادل <b>${fmtToman(Math.floor(pRow.payable_amount_rial / 10))}</b>)`,
+          '',
+          '🚨 <b>مبلغ را رُند نکنید!</b> به محض دریافت پیامک بانک، کد دسترسی همین‌جا برایتان ارسال می‌شود.',
+          '',
+          `🏦 بانک: ${tg.escapeHtml(pRow.card_bank || 'شتاب')}`,
+          `💳 شماره کارت:\n<code>${tg.escapeHtml(formatCardNumber(pRow.card_number))}</code>`,
+          `👤 به نام: ${tg.escapeHtml(pRow.card_holder)}`,
+        ].join('\n'),
+        {
+          reply_markup: tg.inlineKeyboard([
+            [{ text: '✅ پرداخت کردم — بررسی وضعیت', callback_data: `chkpay:${pRow.id}` }],
+          ]),
+        }
+      );
+    }
   }
 
-  if (pending?.kind === 'awaiting_phone') {
-    const phone = normalizePhone(t);
-    if (!phone) return send(env, chatId, '❌ شماره معتبر نیست. مثل 09123456789 وارد کنید:');
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    await upsertBotUser(env, chatId, {
-      pending: { kind: 'awaiting_otp', code, expiresAt: Date.now() + OTP_TTL_MS, tries: 0, phoneCandidate: phone },
-    });
-    return send(env, chatId, `📩 کد تایید (در همین چت):\n\n🔐 <b>${code}</b>\n\nکد را همین‌جا ارسال کنید. (اعتبار ۵ دقیقه)`);
+  // ---- mid-flow states ----
+  if ((pending?.kind === 'verify_menu' || pending?.kind === 'verify_web_token') && t !== '❌ انصراف' && !t.startsWith('/')) {
+    return send(
+      env,
+      chatId,
+      '🔒 برای جلوگیری از ثبت شماره‌ی دیگران، ورود تایپی شماره غیرفعال است.\n👇 لطفاً فقط روی دکمه‌ی <b>«📱 اشتراک شماره تلفن من»</b> در پایین صفحه بزنید.',
+      {
+        reply_markup: {
+          keyboard: [
+            [{ text: '📱 اشتراک شماره تلفن من', request_contact: true }],
+            [{ text: '❌ انصراف' }],
+          ],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      }
+    );
   }
 
   // receipt follow-up: payment details text while an order awaits the receipt
@@ -708,16 +949,15 @@ export const handleBotUpdate = async (env: BotEnv, update: any): Promise<void> =
 
   await upsertBotUser(env, chatId, { first_name: from.first_name || '', username: from.username || '' });
 
-  // contact share (phone verification)
+  // contact share (cryptographically verified by Telegram client)
   if (msg.contact) {
     const contact = msg.contact;
-    if (contact.user_id && String(contact.user_id) !== chatId) {
-      return send(env, chatId, '❌ لطفاً شماره‌ی خودتان را از دکمه‌ی همین چت بفرستید.');
+    if (!contact.user_id || String(contact.user_id) !== chatId) {
+      return send(env, chatId, '❌ لطفاً فقط شماره‌ی حساب تلگرام خودتان را از طریق دکمه‌ی «📱 اشتراک شماره تلفن من» ارسال کنید.');
     }
     const phone = normalizePhone(contact.phone_number || '');
-    if (!phone) return send(env, chatId, '❌ شماره قابل تشخیص نبود.');
-    await completeVerification(env, chatId, phone, 'contact');
-    const pending = getPending<any>(await getBotUser(env, chatId));
+    if (!phone) return send(env, chatId, '❌ شماره قابل تشخیص نبود (فقط شماره‌های موبایل ایران ۰۹xxxxxxxxx پشتیبانی می‌شود).');
+    await completeVerification(env, chatId, phone, 'contact', from.username || '');
     return;
   }
 
@@ -739,4 +979,68 @@ export const handleBotUpdate = async (env: BotEnv, update: any): Promise<void> =
   const text = msg.text || msg.caption || '';
   if (!text) return;
   return onText(env, chatId, text, from);
+};
+
+/**
+ * Push a product delivery (or queue it until the buyer verifies their phone in
+ * Telegram). Shared by `functions/api/tools.ts` (admin grant) and website flows.
+ */
+export const deliverViaTelegram = async (
+  env: BotEnv,
+  args: {
+    phone: string;
+    productId: string;
+    productName: string;
+    planName?: string;
+    code: string;
+    expiresAt: string;
+    note?: string;
+    source?: string;
+  }
+): Promise<{ status: 'delivered' | 'queued'; deliveryId: string }> => {
+  await ensureBotTables(env);
+  const phone = normalizePhone(args.phone);
+  const verifiedUser = phone ? await findVerifiedByPhone(env, phone) : null;
+  const tgUserId = verifiedUser?.tg_user_id || '';
+  const deliveryId = newId('del');
+  const now = nowIso();
+
+  await insertDelivery(env, {
+    id: deliveryId,
+    tg_user_id: tgUserId,
+    phone,
+    product_id: args.productId,
+    product_name: args.productName,
+    plan_name: args.planName || '',
+    order_id: '',
+    status: tgUserId && env.TELEGRAM_BOT_TOKEN ? 'pending_send' : 'queued',
+    source: args.source || 'website',
+    code: args.code,
+    expires_at: args.expiresAt,
+    note: args.note || '',
+    created_at: now,
+    delivered_at: '',
+  });
+
+  if (tgUserId && env.TELEGRAM_BOT_TOKEN) {
+    await send(
+      env,
+      tgUserId,
+      renderDelivery(
+        {
+          id: deliveryId,
+          product_id: args.productId,
+          product_name: args.productName,
+          plan_name: args.planName || '',
+          code: args.code,
+          expires_at: args.expiresAt,
+        },
+        siteUrl(env)
+      ),
+      { reply_markup: tg.mainMenuKeyboard() }
+    );
+    await updateDelivery(env, deliveryId, { status: 'delivered', delivered_at: nowIso() });
+    return { status: 'delivered', deliveryId };
+  }
+  return { status: 'queued', deliveryId };
 };

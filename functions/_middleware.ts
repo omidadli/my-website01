@@ -1,4 +1,5 @@
 import type { Env } from './api/_shared';
+import { runPaymentEndpoint } from './api/payment';
 import { loadPublicContent, resolveBaseUrl, type PublicSiteContent } from './_seo';
 import { parsePath, pathForPage, postPath } from '../lib/routes';
 import { resolveSeo, buildDocumentTitle, buildPostJsonLd, findPublishedPost, NOT_FOUND_TITLE, type SeoPostLike } from '../lib/seoDefaults';
@@ -103,6 +104,9 @@ const isNavigation = (request: Request, pathname: string): boolean => {
 
 export const onRequest: PagesFunction<Env> = async ({ request, env, next }) => {
   const url = new URL(request.url);
+  if (url.pathname === '/api/payment' || url.pathname.startsWith('/api/payment/')) {
+    return runPaymentEndpoint(request, env);
+  }
   if (!isNavigation(request, url.pathname)) return next();
 
   const upstream = await next();

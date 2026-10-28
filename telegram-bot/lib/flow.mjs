@@ -27,42 +27,41 @@ export function startVerification(store, tgUserId) {
   store.upsertUser(tgUserId, { pending: { kind: 'verify_menu' } });
   return {
     text:
-      '📱 «احراز هویت شماره تلفن»\n\n' +
-      'برای دریافت محصولات و پیگیری سفارش‌ها باید شماره تلفن شما تایید شود.\n\n' +
-      'روش ۱ (پیشنهادی): دکمه‌ی «اشتراک شماره تلفن من» را بزنید — تلگرام شماره‌ی شما را تاییدشده می‌فرستد.\n' +
-      'روش ۲: شماره را دستی وارد کنید تا کد تایید برایتان ارسال شود.',
+      '📱 «احراز هویت امن شماره تلفن»\n\n' +
+      'برای جلوگیری از جعل شماره و اتصال یکپارچه با حساب وب‌سایت، تأیید شماره منحصراً از طریق دکمه‌ی رسمی زیر انجام می‌شود:\n\n' +
+      '👇 دکمه‌ی «📱 اشتراک شماره تلفن من» را لمس کنید.',
     keyboard: {
-      keyboard: [[{ text: '📱 اشتراک شماره تلفن من', request_contact: true }], [{ text: '⌨️ ورود دستی شماره' }, { text: '❌ انصراف' }]],
+      keyboard: [[{ text: '📱 اشتراک شماره تلفن من', request_contact: true }], [{ text: '❌ انصراف' }]],
       resize_keyboard: true,
       one_time_keyboard: true,
     },
   };
 }
 
-export function askManualPhone(store, tgUserId) {
-  store.upsertUser(tgUserId, { pending: { kind: 'awaiting_phone' } });
-  return {
-    text: 'شماره موبایل خود را وارد کنید (مثال: 09123456789):',
-    keyboard: { remove_keyboard: true },
-  };
-}
-
-export function handleManualPhone(store, tgUserId, rawPhone, now = Date.now()) {
+/**
+ * Legacy manual OTP helper — disabled for self-chat delivery unless an external
+ * SMS gateway callback (`sendSms`) is explicitly provided by the caller.
+ */
+export function handleManualPhone(store, tgUserId, rawPhone, now = Date.now(), opts = {}) {
+  if (typeof opts?.sendSms !== 'function') {
+    return {
+      ok: false,
+      text: '🔒 به دلایل امنیتی ورود دستی شماره غیرفعال شده است. لطفاً دکمه‌ی «📱 اشتراک شماره تلفن من» را بزنید.',
+    };
+  }
   const phone = normalizePhone(rawPhone);
   if (!phone) {
-    return { ok: false, text: '❌ شماره معتبر نیست. شماره باید موبایل ایران باشد، مثل 09123456789.\nدوباره وارد کنید:' };
+    return { ok: false, text: '❌ شماره معتبر نیست. شماره باید موبایل ایران باشد، مثل 09123456789.' };
   }
   const code = genOtp();
+  opts.sendSms(phone, code);
   store.upsertUser(tgUserId, {
     phoneCandidate: phone,
     pending: { kind: 'awaiting_otp', code, expiresAt: now + OTP_TTL_MS, tries: 0 },
   });
   return {
     ok: true,
-    text:
-      `📩 کد تایید به شماره‌ی ${displayPhone(phone)} (در همین چت) ارسال شد:\n\n` +
-      `🔐 <b>${code}</b>\n\n` +
-      `این کد را همین‌جا ارسال کنید. (اعتبار: ${Math.round(OTP_TTL_MS / 60000)} دقیقه)`,
+    text: `📩 کد تأیید از طریق پیامک به شماره‌ی ${displayPhone(phone)} ارسال شد. کد ۶ رقمی را وارد کنید:`,
   };
 }
 
@@ -113,13 +112,13 @@ export function completeVerification(store, tgUserId, phone, via = 'contact', no
   };
 }
 
-/** Telegram "share contact" update → verify. */
+/** Telegram "share contact" update → verify (strictly requires contact.user_id === tgUserId). */
 export function handleContact(store, tgUserId, contact, now = new Date().toISOString()) {
   const phone = normalizePhone(contact?.phone_number || '');
   if (!phone) return { ok: false, text: '❌ شماره‌ی ارسالی قابل تشخیص نبود. لطفاً دوباره تلاش کنید.' };
-  // The contact's user_id is present when the user shares THEIR OWN number.
-  if (contact.user_id && String(contact.user_id) !== String(tgUserId)) {
-    return { ok: false, text: '❌ لطفاً شماره‌ی خودتان را از دکمه‌ی همین چت ارسال کنید.' };
+  // Strict anti-spoofing check: forwarded/crafted contacts without matching user_id are rejected!
+  if (!contact?.user_id || String(contact.user_id) !== String(tgUserId)) {
+    return { ok: false, text: '❌ لطفاً فقط از دکمه‌ی «📱 اشتراک شماره تلفن من» در همین چت استفاده کنید (ارسال مخاطب دیگران مجاز نیست).' };
   }
   return completeVerification(store, tgUserId, phone, 'contact', now);
 }

@@ -1,0 +1,1 @@
+-keep class site.omidadli.smsuploader.** { *; }

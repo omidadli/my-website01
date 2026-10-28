@@ -8,6 +8,7 @@ import { FieldsForm, FieldDef } from '../components/admin/FieldsForm';
 import { SeoBox } from '../components/admin/SeoBox';
 import { ProductSyncManager } from '../components/admin/ProductSyncManager';
 import { ApiKeysManager } from '../components/admin/ApiKeysManager';
+import { PaymentGatewayManager } from '../components/admin/PaymentGatewayManager';
 import { ACard, ASectionTitle, AInput, ATextarea, ASelect, ALabel, ABadge, AConfirm, AModal } from '../components/admin/ui';
 import {
   LayoutDashboard, BookOpen, MessageSquare, Sparkles, Briefcase, ShoppingBag,
@@ -15,7 +16,7 @@ import {
   Settings, Lock, ShieldCheck, Cloud, HardDrive, ExternalLink, LogOut, Plus, Bot,
   Trash2, ChevronUp, ChevronDown, Download, Copy, CheckCircle2, XCircle, RotateCcw,
   History, Eye, EyeOff, Wand2, Link2, Upload, Reply, Menu, Target,
-  KeyRound, Smartphone, ShieldOff,
+  KeyRound, Smartphone, ShieldOff, CreditCard,
 } from 'lucide-react';
 import { AI_TOOLS } from '../data/tools';
 import type { SectionStatus } from '../../lib/aiKeys';
@@ -180,7 +181,7 @@ const newPost = () => ({
 
 const ADMIN_TAB_IDS = [
   'dashboard', 'posts', 'comments', 'services', 'portfolio', 'products', 'projects',
-  'about', 'home', 'pages', 'media', 'seo', 'chat', 'leads', 'toolaccess', 'apikeys',
+  'about', 'home', 'pages', 'media', 'seo', 'chat', 'leads', 'toolaccess', 'paymentgateway', 'apikeys',
   'appearance', 'settings',
 ] as const;
 
@@ -196,7 +197,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
     toggleCommentApproval, deleteBlogComment, replyBlogComment,
   } = useContent();
 
-  type TabId = 'dashboard' | 'posts' | 'comments' | 'services' | 'portfolio' | 'products' | 'projects' | 'about' | 'home' | 'pages' | 'media' | 'seo' | 'chat' | 'leads' | 'toolaccess' | 'apikeys' | 'appearance' | 'settings';
+  type TabId = 'dashboard' | 'posts' | 'comments' | 'services' | 'portfolio' | 'products' | 'projects' | 'about' | 'home' | 'pages' | 'media' | 'seo' | 'chat' | 'leads' | 'toolaccess' | 'paymentgateway' | 'apikeys' | 'appearance' | 'settings';
   const [activeTab, setActiveTab] = usePreservedState<TabId>('admin_active_tab', 'dashboard');
   // Deep link support: /admin?tab=apikeys&section=business-therapist opens the key
   // manager straight on one section (used by the «مدیریت ۵ کلید» button below and
@@ -371,10 +372,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
     {
       group: 'دستیار و لیدها',
       items: [
-        { id: 'chat', label: 'دستیار هوشمند', icon: Bot },
-        { id: 'apikeys', label: 'کلیدهای API', icon: KeyRound, badge: 5 },
-        { id: 'leads', label: 'لیدها (تماس و رزرو)', icon: Target },
+        { id: 'paymentgateway', label: 'درگاه کارت‌به‌کارت خودکار', icon: CreditCard },
         { id: 'toolaccess', label: 'دسترسی ابزارهای هوشمند', icon: ShieldCheck },
+        { id: 'chat', label: 'دستیار هوشمند', icon: Bot },
+        { id: 'apikeys', label: 'کلیدهای API هوش مصنوعی', icon: KeyRound, badge: 5 },
+        { id: 'leads', label: 'لیدها (تماس و رزرو)', icon: Target },
       ],
     },
     {
@@ -1703,6 +1705,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({ onNavigate }) => {
                 </button>
               </ACard>
             </div>
+          )}
+
+          {activeTab === 'paymentgateway' && (
+            <PaymentGatewayManager onToast={showToast} />
           )}
         </main>
       </div>

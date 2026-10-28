@@ -16,6 +16,7 @@ import {
   publicUserShape,
   USER_SESSION_TTL_MS,
 } from './_shared';
+import { createPhoneVerificationToken, syncPhoneGrantsToUser } from '../../lib/payment/gateway';
 
 const WINDOW_MINUTES = 15;
 const MAX_FAILURES = 10;
@@ -131,14 +132,23 @@ const isSecureRequest = (request: Request): boolean => {
   return url.protocol === 'https:' || String(request.headers.get('X-Forwarded-Proto') || '').toLowerCase() === 'https';
 };
 
-// ---- GET /api/user -> current session profile ----
+// ---- GET /api/user -> current session profile (+ ?action=check_phone_verify) ----
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   await ensureCoreTablesSafe(env);
   const user = await requireUser(request, env);
   if (!user) return json({ ok: false, error: 'not_authenticated' }, { status: 401 });
 
-  const data = await loadUserData(env, user.id);
-  return json({ ok: true, profile: publicUserShape(user), ...data });
+  if (user.phone && user.phone_verified_at) {
+    await syncPhoneGrantsToUser(env, String(user.id), String(user.phone)).catch(() => {});
+  }
+
+  const data = await loadUserData(env, String(user.id));
+  return json({
+    ok: true,
+    verified: Boolean(user.phone_verified_at),
+    profile: publicUserShape(user),
+    ...data,
+  });
 };
 
 // ---- POST /api/user with ?action=register|login|logout|update|save_article|unsave_article|mark_read|consult ----
@@ -207,7 +217,19 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     await logUserActivity(env, uid, 'subscription_started', 'حساب کاربری شما ایجاد شد');
 
     const { token, expiresAt } = await createSession(env, uid, request);
-    const profile = { id: uid, fullName, email, phone, avatarUrl: '', bio: '', joinedAt: now };
+    const profile = {
+      id: uid,
+      fullName,
+      email,
+      phone,
+      phoneVerified: false,
+      phoneVerifiedAt: '',
+      tgUserId: '',
+      tgUsername: '',
+      avatarUrl: '',
+      bio: '',
+      joinedAt: now,
+    };
     const data = await loadUserData(env, uid);
     return json({ ok: true, profile, ...data }, {
       headers: { 'Set-Cookie': sessionCookie({ token, expiresAt, secure }) },
@@ -282,12 +304,63 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       }
     }
 
+    const phoneChanged = phone !== String(user.phone || '');
     const bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : String(user.bio || '');
-    await env.DB.prepare(
-      `UPDATE users SET full_name = ?1, phone = ?2, bio = ?3 WHERE id = ?4`
-    ).bind(fullName, phone, bio, user.id).run();
+    if (phoneChanged) {
+      await env.DB.prepare(
+        `UPDATE users SET full_name = ?1, phone = ?2, bio = ?3, phone_verified_at = '', tg_user_id = '', tg_username = '' WHERE id = ?4`
+      ).bind(fullName, phone, bio, user.id).run();
+    } else {
+      await env.DB.prepare(
+        `UPDATE users SET full_name = ?1, phone = ?2, bio = ?3 WHERE id = ?4`
+      ).bind(fullName, phone, bio, user.id).run();
+    }
     const row = await env.DB.prepare(`SELECT * FROM users WHERE id = ?1`).bind(user.id).first<Record<string, any>>();
     return json({ ok: true, profile: publicUserShape(row!) });
+  }
+
+  if (action === 'start_phone_verify') {
+    const user = await requireUser(request, env);
+    if (!user) return json({ ok: false, error: 'not_authenticated' }, { status: 401 });
+
+    let phone = normalizePhone(String(body.phone || user.phone || ''));
+    if (!phone) {
+      return json({ ok: false, error: 'لطفاً ابتدا شماره موبایل معتبر (مثلاً 09123456789) وارد کنید.' }, { status: 400 });
+    }
+
+    if (phone !== String(user.phone || '')) {
+      const clash = await env.DB.prepare(`SELECT id FROM users WHERE phone = ?1 AND id <> ?2 LIMIT 1`)
+        .bind(phone, user.id)
+        .first<{ id: string }>();
+      if (clash) {
+        return json({ ok: false, error: 'این شماره موبایل متعلق به حساب کاربری دیگری است.' }, { status: 409 });
+      }
+      await env.DB.prepare(
+        `UPDATE users SET phone = ?1, phone_verified_at = '', tg_user_id = '', tg_username = '' WHERE id = ?2`
+      )
+        .bind(phone, user.id)
+        .run();
+    }
+
+    const { token, expiresAt } = await createPhoneVerificationToken(env, {
+      userId: String(user.id),
+      phone,
+      purpose: 'verify_phone',
+    });
+
+    const botUsername = String(env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
+    const verifyUrl = botUsername ? `https://t.me/${botUsername}?start=verify_${token}` : '';
+    const command = `/start verify_${token}`;
+
+    return json({
+      ok: true,
+      token,
+      phone,
+      botUsername,
+      verifyUrl,
+      command,
+      expiresAt,
+    });
   }
 
   // ---- Profile dashboard persistence (saved articles / consultations) ----

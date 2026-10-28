@@ -3,7 +3,7 @@
  * Run: npx tsx scripts/routes.test.ts
  */
 import assert from 'node:assert/strict';
-import { legacyHashToPath, parsePath, pathForPage, pathForPost, postPath, routeToPath } from '../lib/routes';
+import { legacyHashToPath, parsePath, pathForPage, pathForPayment, pathForPost, postPath, routeToPath } from '../lib/routes';
 import { buildDocumentTitle, defaultGlobalSeo, findPublishedPost, resolveSeo } from '../lib/seoDefaults';
 
 // ---- paths ----
@@ -17,6 +17,10 @@ assert.deepEqual(parsePath('/blog/%D9%85%D9%82%D8%A7%D9%84%D9%87'), { page: 'blo
 assert.deepEqual(parsePath('/products'), { page: 'products', postId: null });
 assert.deepEqual(parsePath('/products/business-therapist'), { page: 'products', postId: null, productId: 'business-therapist' });
 assert.deepEqual(parsePath('/product/growth-path'), { page: 'products', postId: null, productId: 'growth-path' });
+assert.deepEqual(parsePath('/pay/pay_abc123'), { page: 'pay', postId: null, paymentId: 'pay_abc123' });
+assert.equal(pathForPayment('pay_abc123'), '/pay/pay_abc123');
+assert.equal(routeToPath({ page: 'pay', postId: null, paymentId: 'pay_abc123' }), '/pay/pay_abc123');
+assert.equal(resolveSeo({ page: 'pay' }).noIndex, true, 'payment pages are never indexed');
 assert.deepEqual(parsePath('/admin/anything'), { page: 'admin', postId: null });
 assert.deepEqual(parsePath('/landing-x', ['landing-x']), { page: 'landing-x', postId: null }, 'custom page');
 assert.equal(parsePath('/landing-x'), null, 'unknown custom page without CMS data');

@@ -17,6 +17,7 @@ import { createStore } from './lib/store.mjs';
 import * as tg from './lib/tg.mjs';
 import { normalizePhone, displayPhone, genId } from './lib/normalize.mjs';
 import * as flow from './lib/flow.mjs';
+import { createPayexaClient, verifyPayexaWebhookSignature } from './lib/payexaClient.mjs';
 
 const problems = assertConfig();
 if (problems.length) {
@@ -26,6 +27,7 @@ if (problems.length) {
 
 const store = createStore(config.dataDir);
 const TOKEN = config.token;
+const payexa = createPayexaClient({ baseUrl: config.siteUrl, apiKey: config.gatewayApiKey });
 
 /* ------------------------------- flood guard ------------------------------- */
 const buckets = new Map();
@@ -360,6 +362,27 @@ async function showPendingOrders(chatId) {
 
 /* ------------------------------ callback queries ------------------------------ */
 async function onCallback(chatId, messageId, cbId, data, fromId) {
+  // user: instant check on automated card-to-card payment (`chkpay:<paymentId>`)
+  if (data.startsWith('chkpay:')) {
+    const paymentId = data.slice(7);
+    const verified = await payexa.verifyPayment(paymentId);
+    if (!verified.ok) {
+      const msg = verified?.error?.message || 'هنوز پیامک واریز از بانک دریافت نشده است. چند ثانیه دیگر دوباره تلاش کنید.';
+      return answer(cbId, msg, true);
+    }
+    answer(cbId, '✅ پرداخت شما تأیید شد!');
+    if (verified.data?.first_verification) {
+      await tg.editMessageText(
+        TOKEN,
+        chatId,
+        messageId,
+        `✅ <b>پرداخت شماره <code>${tg.escapeHtml(paymentId)}</code> تأیید شد!</b>\nکد دسترسی شما صادر و فعال گردید.`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+    return;
+  }
+
   // user: re-deliver
   if (data.startsWith('redeliver:')) {
     const d = store.allDeliveries().find((x) => x.id === data.slice(10));
@@ -489,12 +512,17 @@ async function handleUpdate(u) {
 }
 
 /* -------------------------------- HTTP bridge -------------------------------- */
-function readBody(req) {
+function readRawBody(req) {
   return new Promise((resolve) => {
     let data = '';
     req.on('data', (c) => { data += c; if (data.length > 1_000_000) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+    req.on('end', () => resolve(data));
   });
+}
+
+async function readBody(req) {
+  const raw = await readRawBody(req);
+  try { return JSON.parse(raw || '{}'); } catch { return {}; }
 }
 
 function json(res, code, obj) {
@@ -517,6 +545,31 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, { ok: true });
     handleUpdate(update).catch((e) => console.error('[update]', e));
     return;
+  }
+
+  // Automated Card-to-Card Gateway HMAC Webhook (`POST /api/payexa-webhook`)
+  if (req.method === 'POST' && url.pathname === '/api/payexa-webhook') {
+    const raw = await readRawBody(req);
+    const sig = String(req.headers['x-payexa-signature'] || '');
+    if (!verifyPayexaWebhookSignature(config.gatewayApiKey, raw, sig)) {
+      return json(res, 401, { ok: false, error: 'invalid_signature' });
+    }
+    let event = {};
+    try { event = JSON.parse(raw || '{}'); } catch {}
+    if (event.event === 'payment.paid' && event.payment_id) {
+      const ver = await payexa.verifyPayment(event.payment_id, event.amount);
+      if (ver.ok && ver.data?.first_verification) {
+        const meta = ver.data.metadata || {};
+        const tgUserId = String(meta.tg_user_id || '');
+        if (tgUserId) {
+          await send(
+            tgUserId,
+            `🎉 <b>پرداخت شما به‌صورت خودکار تأیید شد!</b>\n🆔 شناسه: <code>${tg.escapeHtml(event.payment_id)}</code>\nاشتراک شما فعال گردید.`
+          );
+        }
+      }
+    }
+    return json(res, 200, { ok: true });
   }
 
   // Website bridge — authenticated by shared secret

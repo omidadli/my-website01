@@ -16,6 +16,8 @@ export interface Route {
   postId: string | null;
   /** id of the open product (page === 'products' only) */
   productId?: string | null;
+  /** id of the open payment session (page === 'pay' only) */
+  paymentId?: string | null;
 }
 
 const decode = (s: string): string => {
@@ -32,6 +34,8 @@ export const pathForPost = (idOrSlug: string): string => (idOrSlug ? `/blog/${en
 
 export const pathForProduct = (productId: string): string => (productId ? `/products/${encodeURIComponent(productId)}` : '/products');
 
+export const pathForPayment = (paymentId: string): string => (paymentId ? `/pay/${encodeURIComponent(paymentId)}` : '/products');
+
 /** Preferred public URL of a post: slug when it has one, id otherwise. */
 export const postPath = (post: { id: string; slug?: string } | null | undefined): string =>
   post ? pathForPost(post.slug || post.id) : '/blog';
@@ -39,6 +43,7 @@ export const postPath = (post: { id: string; slug?: string } | null | undefined)
 export const routeToPath = (route: Route): string => {
   if (route.page === 'blog' && route.postId) return pathForPost(route.postId);
   if (route.page === 'products' && route.productId) return pathForProduct(route.productId);
+  if (route.page === 'pay' && route.paymentId) return pathForPayment(route.paymentId);
   return pathForPage(route.page);
 };
 
@@ -60,6 +65,10 @@ export const parsePath = (pathname: string, customSlugs: readonly string[] = [])
   if (head === 'products' || head === 'product') {
     if (parts.length === 1) return { page: 'products', postId: null };
     if (parts.length === 2 && second) return { page: 'products', postId: null, productId: second };
+    return null;
+  }
+  if (head === 'pay') {
+    if (parts.length === 2 && second) return { page: 'pay', postId: null, paymentId: second };
     return null;
   }
   if (parts.length !== 1) return null;

@@ -33,6 +33,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
     products: 'محصولات و ابزارها',
     admin: 'پیشخوان مدیریت محتوا (CMS)',
     profile: 'پروفایل کاربری',
+    pay: 'درگاه پرداخت امن کارت‌به‌کارت',
   };
 
   return (

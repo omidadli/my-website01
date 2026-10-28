@@ -9,6 +9,11 @@ import path from 'node:path';
 import { normalizePhone, displayPhone, genOtp, isValidPhone } from './lib/normalize.mjs';
 import { createStore } from './lib/store.mjs';
 import * as flow from './lib/flow.mjs';
+import {
+  buildPayexaWebhookSignature,
+  createPayexaClient,
+  verifyPayexaWebhookSignature,
+} from './lib/payexaClient.mjs';
 
 /* ------------------------- normalize (same rules as the site) ------------------------- */
 assert.equal(normalizePhone('09123456789'), '09123456789');
@@ -27,10 +32,15 @@ console.log('✓ phone normalisation matches the website rules');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-test-'));
 const store = createStore(dir);
 
-// 1. manual phone -> OTP -> verified
+// 1. self-chat manual OTP is blocked without an external SMS gateway; works when SMS sender is provided
 const step1 = flow.startVerification(store, '111');
 assert.ok(step1.text.includes('احراز هویت'));
-const step2 = flow.handleManualPhone(store, '111', '+98 912 345 6789');
+assert.equal(flow.handleManualPhone(store, '111', '+98 912 345 6789').ok, false, 'self-chat OTP must be blocked');
+
+let smsSentCode = '';
+const step2 = flow.handleManualPhone(store, '111', '+98 912 345 6789', Date.now(), {
+  sendSms: (_p, c) => { smsSentCode = c; },
+});
 assert.equal(step2.ok, true);
 const user = store.getUser('111');
 assert.equal(user.pending.kind, 'awaiting_otp');
@@ -42,24 +52,48 @@ assert.equal(flow.handleOtp(store, '111', '000000').ok, false);
 assert.equal(flow.handleOtp(store, '111', '000000').ok, false);
 assert.equal(store.getUser('111').pending, null);
 
-// fresh OTP verifies
-flow.handleManualPhone(store, '111', '09123456789');
-const code = store.getUser('111').pending.code;
-const done = flow.handleOtp(store, '111', code);
+// fresh OTP via external SMS verifies
+flow.handleManualPhone(store, '111', '09123456789', Date.now(), {
+  sendSms: (_p, c) => { smsSentCode = c; },
+});
+const done = flow.handleOtp(store, '111', smsSentCode);
 assert.equal(done.ok, true);
 assert.equal(done.verifiedPhone, '09123456789');
 assert.ok(store.getUser('111').verifiedAt);
-console.log('✓ manual OTP verification works (with retry limits)');
+console.log('✓ self-chat OTP blocked & external SMS OTP works (with retry limits)');
 
 // 2. contact share verification (strong path)
 const viaContact = flow.handleContact(store, '222', { phone_number: '989123456789', user_id: 222 });
 assert.equal(viaContact.ok, true);
 assert.equal(store.getUser('222').verifyVia, 'contact');
 assert.equal(store.getUser('222').phone, '09123456789');
-// someone else's contact is rejected
+// someone else's contact or forwarded contact without user_id is rejected
 const foreign = flow.handleContact(store, '333', { phone_number: '09123456789', user_id: 999 });
 assert.equal(foreign.ok, false);
-console.log('✓ contact-share verification works and rejects foreign contacts');
+const missingUid = flow.handleContact(store, '333', { phone_number: '09123456789' });
+assert.equal(missingUid.ok, false, 'contact missing user_id must be rejected');
+console.log('✓ contact-share verification works and rejects foreign/spoofed contacts');
+
+// 2b. Payexa API v2 HMAC webhook verification & client
+const sampleBody = JSON.stringify({ event: 'payment.paid', payment_id: 'pay_99', amount: 5900000 });
+const sig = buildPayexaWebhookSignature('omid_live_secret123', sampleBody, 1700000000);
+assert.equal(verifyPayexaWebhookSignature('omid_live_secret123', sampleBody, sig, 1700000100), true);
+assert.equal(verifyPayexaWebhookSignature('omid_live_wrong', sampleBody, sig, 1700000100), false);
+assert.equal(verifyPayexaWebhookSignature('omid_live_secret123', sampleBody, sig, 1700000900), false, 'expired signature rejected');
+
+const mockClient = createPayexaClient({
+  baseUrl: 'https://omidadli.site',
+  apiKey: 'omid_live_secret123',
+  fetchImpl: async (url, init) => {
+    assert.ok(String(url).startsWith('https://omidadli.site/api/payment/v2/payments'));
+    assert.equal(init.headers.Authorization, 'Bearer omid_live_secret123');
+    return new Response(JSON.stringify({ ok: true, data: { payment_id: 'pay_99', first_verification: true } }), { status: 200 });
+  },
+});
+const verRes = await mockClient.verifyPayment('pay_99', 5900000);
+assert.equal(verRes.ok, true);
+assert.equal(verRes.data.first_verification, true);
+console.log('✓ Payexa API v2 client & HMAC webhook signature verified');
 
 /* --------------------------------- orders & delivery --------------------------------- */
 // website purchase BEFORE the user is linked -> queued_unverified

@@ -56,7 +56,9 @@ export const config = {
   dataDir: process.env.DATA_DIR ? path.resolve(BOT_ROOT, process.env.DATA_DIR) : path.join(BOT_ROOT, 'data'),
   /** Free-text shown in /start and support replies. */
   supportHandle: String(process.env.SUPPORT_HANDLE || '@omidadli').trim(),
-  siteUrl: String(process.env.SITE_URL || 'https://omidadli.com').trim().replace(/\/+$/, ''),
+  siteUrl: String(process.env.SITE_URL || 'https://omidadli.site').trim().replace(/\/+$/, ''),
+  /** Optional API key (`omid_live_...`) for automated card-to-card checkout via `/api/payment/v2/*`. */
+  gatewayApiKey: String(process.env.GATEWAY_API_KEY || '').trim(),
   /** Max messages accepted per chat per minute (simple flood guard). */
   rateLimitPerMinute: num(process.env.RATE_LIMIT_PER_MINUTE, 20),
 };
