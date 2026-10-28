@@ -111,9 +111,9 @@ const env: any = {
   TELEGRAM_ADMIN_IDS: '999',
   BOT_CARD_NUMBER: '6037-9911-1234-5678',
   BOT_CARD_HOLDER: 'امید عدلی',
-  GEMINI_API_KEY: 'gk',
+  TELEGRAM_RECEIPT_GEMINI_API_KEY: 'gk',
   TELEGRAM_AUTO_APPROVE: 'vision',
-  SITE_URL: 'https://omidadli.com',
+  SITE_URL: 'https://omidadli.site',
 };
 await store.ensureBotTables(env);
 
