@@ -124,7 +124,8 @@ const renderOrderCard = (o: BotOrderRow, extraLines: string[] = []): string =>
   [
     `📦 سفارش <code>${tg.escapeHtml(o.id)}</code>`,
     `محصول: ${tg.escapeHtml(o.product_name)} — ${tg.escapeHtml(o.plan_name)}`,
-    `مبلغ: ${fmtToman(o.amount_toman)}`,
+    `قیمت محصول: ${fmtToman(o.amount_toman)}`,
+    o.expected_amount_toman && o.expected_amount_toman !== o.amount_toman ? `مبلغ دقیق انتقال: ${fmtToman(o.expected_amount_toman)}` : '',
     o.ref_code ? `شماره پیگیری: <code>${tg.escapeHtml(o.ref_code)}</code>` : '',
     ...extraLines,
   ].filter(Boolean).join('\n');
@@ -207,6 +208,18 @@ const showPlans = async (env: BotEnv, chatId: string, productId: string) => {
   );
 };
 
+const createUniquePaymentAmount = async (env: BotEnv, baseToman: number): Promise<number> => {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const candidate = baseToman + 1000 + Math.floor(Math.random() * 9000);
+    const collision = await env.DB.prepare(
+      `SELECT id FROM bot_orders WHERE expected_amount_toman = ?1 AND status IN ('awaiting_payment','receipt_submitted','needs_review') LIMIT 1`
+    ).bind(candidate).first<{ id: string }>();
+    if (!collision) return candidate;
+  }
+  // A low-probability fallback; still preserves the random suffix.
+  return baseToman + 1000 + Math.floor(Math.random() * 9000);
+};
+
 const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow | null, productId: string, planId: string) => {
   const product = botProduct(productId);
   const plan = botPlan(productId, planId);
@@ -222,7 +235,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     plan_id: plan.id,
     plan_name: plan.name,
     amount_toman: plan.amountToman || priceToToman(plan.price),
-    expected_amount_toman: (plan.amountToman || priceToToman(plan.price)) + 1000 + Math.floor(Math.random() * 9000),
+    expected_amount_toman: await createUniquePaymentAmount(env, plan.amountToman || priceToToman(plan.price)),
     status: 'awaiting_payment',
     ref_code: '',
     receipt_file_id: '',
@@ -235,7 +248,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
   };
   await insertOrder(env, order);
   await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId: order.id } });
-  await logEvent(env, 'order_created', `${order.id} ${productId}/${planId} amount=${order.amount_toman}`);
+  await logEvent(env, 'order_created', `${order.id} ${productId}/${planId} price=${order.amount_toman} transfer=${order.expected_amount_toman}`);
 
   const card = String(env.BOT_CARD_NUMBER || '').trim();
   const holder = String(env.BOT_CARD_HOLDER || '').trim();
