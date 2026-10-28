@@ -133,6 +133,7 @@ const order = {
   plan_id: plan.id,
   plan_name: plan.name,
   amount_toman: plan.amountToman,
+  expected_amount_toman: plan.amountToman + 1632,
   status: 'awaiting_payment',
   ref_code: '',
   receipt_file_id: '',
@@ -148,7 +149,7 @@ assert.equal((await store.getOrder(env, order.id))?.status, 'awaiting_payment');
 
 // --- 2) receipt arrives: vision reads a matching receipt ---
 const { handleBotUpdate } = await import('../lib/telegram/bot');
-visionAnswer = JSON.stringify({ looksLikeReceipt: true, ref: '1234567890', amount: plan.amountToman * 10, date: new Date().toISOString().slice(0, 10), bank: 'ملت' });
+visionAnswer = JSON.stringify({ looksLikeReceipt: true, ref: '1234567890', amount: (plan.amountToman + 1632) * 10, date: new Date().toISOString().slice(0, 10), bank: 'ملت', recipientName: 'امید عدلی' });
 
 // the customer's pending state points at this order
 await store.upsertBotUser(env, CUSTOMER, { pending: { kind: 'awaiting_receipt', orderId: order.id } });
@@ -161,7 +162,6 @@ await handleBotUpdate(env, {
     chat: { id: Number(CUSTOMER), type: 'private' },
     from: { id: Number(CUSTOMER), first_name: 'رضا' },
     photo: [{ file_id: 'ph1' }, { file_id: 'ph2' }],
-    caption: `مبلغ ${plan.amountToman} تومان — پیگیری 1234567890`,
   },
 });
 
@@ -221,7 +221,9 @@ const wrongAmount = applyAutoApprovePolicy(
     orderCreatedAtMs: Date.now(),
     textRef: '9999999999',
     textAmount: 1000,
-    vision: { ok: true, ref: '9999999999', amount: 1000, looksLikeReceipt: true },
+    expectedAmountToman: plan.amountToman + 1632,
+    expectedRecipientName: 'امید عدلی',
+    vision: { ok: true, ref: '9999999999', amount: 1000, date: new Date().toISOString().slice(0, 10), recipientName: 'شخص دیگر', looksLikeReceipt: true },
   }),
   'vision'
 );
