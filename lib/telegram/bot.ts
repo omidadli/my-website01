@@ -281,7 +281,7 @@ const renderCustomerReceiptFeedback = (reasons: string[], order: BotOrderRow, ex
     if (reason === 'recipient_name_mismatch' && expectedRecipientName) return `• نام صاحب حساب مقصد با «${tg.escapeHtml(expectedRecipientName)}» مطابقت ندارد.`;
     return `• ${receiptReasonFa[reason]}`;
   });
-  return ['⚠️ <b>رسید هنوز تأیید نشد</b>', 'مواردی که نیاز به اصلاح یا بررسی دارند:', ...visible.map((reason) => `• ${receiptReasonFa[reason]}`)].join('\n');
+  return ['⚠️ <b>رسید هنوز تأیید نشد</b>', 'مواردی که نیاز به اصلاح یا بررسی دارند:', ...lines].join('\n');
 };
 
 const runReceiptPipeline = async (
