@@ -111,6 +111,10 @@ export interface VisionReading {
   /** ISO or Persian date string as printed */
   date?: string;
   bank?: string;
+  /** Beneficiary/account-holder name printed on the transfer receipt. */
+  recipientName?: string;
+  /** Last four digits of the destination card, if printed. */
+  cardLast4?: string;
   looksLikeReceipt?: boolean;
   error?: string;
 }
@@ -126,6 +130,10 @@ export interface ReceiptEvidence {
   refTaken?: boolean;
   /** order amount in Toman */
   orderToman: number;
+  /** unique amount requested for this order; falls back to base amount for old orders */
+  expectedAmountToman?: number;
+  /** beneficiary name configured for card-to-card payments */
+  expectedRecipientName?: string;
   /** when the order was created (ms) — for the date-window check */
   orderCreatedAtMs: number;
   nowMs?: number;
@@ -177,11 +185,23 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
 
   // ---- amount checks ----
   const amounts = [e.textAmount, vision?.amount].filter((x): x is number => typeof x === 'number' && x > 0);
-  const amountOk = amounts.some((a) => amountMatches(a, e.orderToman));
+  const expectedAmount = e.expectedAmountToman || e.orderToman;
+  const amountOk = amounts.some((a) => amountMatches(a, expectedAmount));
   const amountBad = amounts.length > 0 && !amountOk;
   if (amountBad) reasons.push('amount_mismatch');
   else if (!amounts.length) reasons.push('amount_missing');
   if (amountOk) reasons.push('amount_ok');
+
+  // ---- beneficiary / destination checks ----
+  const normalizeName = (s: string) => faDigits(String(s || ''))
+    .replace(/[يى]/g, 'ی').replace(/ك/g, 'ک')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const expectedName = normalizeName(e.expectedRecipientName || '');
+  const actualName = normalizeName(vision?.recipientName || '');
+  const recipientOk = !!expectedName && !!actualName && (actualName === expectedName || actualName.includes(expectedName) || expectedName.includes(actualName));
+  if (expectedName && !actualName) reasons.push('recipient_name_missing');
+  else if (expectedName && !recipientOk) reasons.push('recipient_name_mismatch');
 
   // ---- date window: [order creation - 2h, now + 2 days] ----
   let dateOk = true;
@@ -195,19 +215,22 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
       dateOk = t >= e.orderCreatedAtMs - grace && t <= now + 2 * 86400_000;
       if (!dateOk) reasons.push('date_out_of_range');
     }
+  } else {
+    reasons.push('date_missing');
+    dateOk = false;
   }
 
   // ---- vision sanity ----
   if (vision && !vision.ok) reasons.push('vision_failed');
   if (vision?.ok && vision.looksLikeReceipt === false) reasons.push('not_a_receipt');
 
-  const visionConfirms = !!(vision?.ok && vision.looksLikeReceipt !== false && (amountOk || !vision.amount));
-  const textOnlyOk = !!(ref && amountOk && uniqueRefs.length <= 1 && dateOk);
+  const visionConfirms = !!(vision?.ok && vision.looksLikeReceipt !== false && amountOk && dateOk && recipientOk);
+  const textOnlyOk = !!(ref && amountOk && uniqueRefs.length <= 1 && dateOk && (!expectedName || recipientOk));
 
   let status: ReceiptDecisionStatus = 'needs_review';
   let confidence = 0.2;
 
-  if (textOnlyOk && visionConfirms) {
+  if (visionConfirms && uniqueRefs.length <= 1 && !reasons.includes('not_a_receipt') && !reasons.includes('vision_failed')) {
     // The photo itself was read and agrees with the order — strongest evidence.
     status = 'auto_approved';
     confidence = vision && vision.ref === ref ? 0.95 : 0.9;
@@ -229,7 +252,8 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
     else if (reasons.includes('amount_missing')) confidence = 0.4;
   }
 
-  const summary = status === 'auto_approved' ? 'رسید تأیید شد ✅' : 'رسید نیاز به بررسی دستی دارد ⏳';
+  if (vision?.ok && vision.looksLikeReceipt === false && !reasons.includes('not_a_receipt')) reasons.push('not_a_receipt');
+  const summary = status === 'auto_approved' ? 'رسید تأیید شد ✅' : 'رسید با اطلاعات سفارش تطبیق کامل ندارد.';
 
   return { status, ref, confidence, reasons, summary };
 };
@@ -252,8 +276,8 @@ export const applyAutoApprovePolicy = (d: ReceiptDecision, policy: 'vision' | 'a
 export const VISION_PROMPT = [
   'این تصویر یک رسید پرداخت بانکی ایرانی (کارت‌به‌کارت / پایا / ساتنا) است.',
   'فقط و فقط یک شیء JSON با این ساختار برگردان و هیچ متن دیگری ننویس:',
-  '{"looksLikeReceipt": true|false, "ref": "شماره پیگیری فقط رقم", "amount": عدد_ریال_یا_تومان_بدون_جداکننده, "date": "YYYY-MM-DDTHH:mm:ss اگر ساعت خواناست، وگرنه YYYY-MM-DD یا تاریخ فارسی", "bank": "نام بانک", "cardLast4": "۴ رقم آخر کارت مقصد اگر مشخص است"}',
-  'اگر فیلدی خوانا نبود مقدار null بگذار. amount را دقیقاً همان‌طور که روی رسید چاپ شده (ریال یا تومان) برگردان. تاریخ و ساعت را از زمان تراکنش بردار، نه ساعت گوشی یا زمان دریافت عکس. شماره کارت مقصد را از کارت مبدا اشتباه نگیر.',
+  '{"looksLikeReceipt": true|false, "ref": "شماره پیگیری فقط رقم", "amount": عدد_ریال_یا_تومان_بدون_جداکننده, "date": "تاریخ تراکنش به ISO 8601 میلادی؛ اگر قابل تبدیل نیست null", "bank": "نام بانک", "recipientName": "نام صاحب حساب مقصد که پول به او واریز شده", "cardLast4": "۴ رقم آخر کارت مقصد اگر مشخص است"}',
+  'اگر فیلدی خوانا نبود مقدار null بگذار؛ هرگز حدس نزن. amount را دقیقاً همان‌طور که روی رسید چاپ شده (ریال یا تومان) برگردان. تاریخ را از زمان تراکنش استخراج و در صورت امکان به میلادی ISO تبدیل کن، نه زمان گوشی یا دریافت عکس. recipientName نام صاحب حساب مقصد است، نه نام واریزکننده؛ اگر مشخص نیست null بده. شماره کارت مقصد را از کارت مبدا اشتباه نگیر.',
 ].join('\n');
 
 /** Parse the vision model response (tolerant to code fences / extra prose). */
@@ -274,6 +298,8 @@ export const parseVisionResponse = (text: string): VisionReading => {
       amount: Number.isFinite(amount) && amount > 0 ? Math.round(amount) : undefined,
       date: j.date ? String(j.date) : undefined,
       bank: j.bank ? String(j.bank) : undefined,
+      recipientName: j.recipientName ? String(j.recipientName) : undefined,
+      cardLast4: j.cardLast4 ? faDigits(String(j.cardLast4)).replace(/\D/g, '').slice(-4) : undefined,
       looksLikeReceipt: j.looksLikeReceipt !== false,
     };
   } catch {
