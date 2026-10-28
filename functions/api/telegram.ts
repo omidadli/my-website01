@@ -11,7 +11,7 @@
  * Env (Cloudflare secrets/vars):
  *   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET (required)
  *   TELEGRAM_ADMIN_IDS, BOT_CARD_NUMBER, BOT_CARD_HOLDER (recommended)
- *   GEMINI_API_KEY, TELEGRAM_VISION_MODEL, TELEGRAM_AUTO_APPROVE (optional)
+ *   TELEGRAM_RECEIPT_GEMINI_API_KEY, TELEGRAM_VISION_MODEL, TELEGRAM_AUTO_APPROVE (optional)
  *   SITE_URL, SUPPORT_HANDLE (optional)
  *
  * Why Pages Functions instead of a separate server: the bot then shares D1 with
@@ -39,8 +39,7 @@ export interface TelegramEnv {
   BOT_CARD_NUMBER?: string;
   BOT_CARD_HOLDER?: string;
   TELEGRAM_AUTO_APPROVE?: string;
-  GEMINI_API_KEY?: string;
-  Gemini_api_key?: string;
+  TELEGRAM_RECEIPT_GEMINI_API_KEY?: string;
   TELEGRAM_VISION_MODEL?: string;
   SITE_URL?: string;
   SUPPORT_HANDLE?: string;
@@ -262,7 +261,7 @@ export const onRequest = async (context: { request: Request; env: TelegramEnv; p
         token: !!env.TELEGRAM_BOT_TOKEN,
         secret: !!env.TELEGRAM_WEBHOOK_SECRET,
         admins: String(env.TELEGRAM_ADMIN_IDS || '').split(',').filter((s) => s.trim()).length,
-        vision: !!(env.GEMINI_API_KEY || env.Gemini_api_key),
+        vision: !!env.TELEGRAM_RECEIPT_GEMINI_API_KEY,
         autoApprove: String(env.TELEGRAM_AUTO_APPROVE || 'vision'),
         card: !!env.BOT_CARD_NUMBER,
       },
