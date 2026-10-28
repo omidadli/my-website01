@@ -236,7 +236,7 @@ const handsOff = applyAutoApprovePolicy(
   decideReceipt({ orderToman: plan.amountToman, orderCreatedAtMs: Date.now(), textRef: '8888888888', textAmount: plan.amountToman }),
   'always'
 );
-assert.equal(handsOff.status, 'auto_approved', "policy 'always' accepts a typed reference+amount");
+assert.equal(handsOff.status, 'needs_review', "policy 'always' cannot bypass missing OCR date and beneficiary");
 
 const offPolicy = applyAutoApprovePolicy(
   decideReceipt({
