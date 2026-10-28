@@ -126,7 +126,7 @@
 - [ ] `TELEGRAM_WEBHOOK_SECRET` (رشته تصادفی)
 - [ ] `TELEGRAM_ADMIN_IDS` (آیدی عددی خودتان)
 - [ ] `BOT_CARD_NUMBER` + `BOT_CARD_HOLDER`
-- [ ] `GEMINI_API_KEY` (برای تأیید خودکار با AI) — یا `TELEGRAM_AUTO_APPROVE=always`
+- [ ] `TELEGRAM_RECEIPT_GEMINI_API_KEY` (فقط برای خواندن تصویر رسید و تحلیل رسید پرداخت؛ مستقل از کلیدهای دستیار سایت و محصولات) — یا `TELEGRAM_AUTO_APPROVE=always`
 - [ ] `npx wrangler d1 execute omidadli01-site-db --remote --file=migrations/0006_telegram_bot.sql`
 - [ ] `curl "https://<دامنه>/api/telegram?setup=<secret>"`
 - [ ] `/start` → تأیید شماره → `/buy` → ارسال رسید تستی → تحویل خودکار ✅
