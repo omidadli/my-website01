@@ -222,6 +222,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     plan_id: plan.id,
     plan_name: plan.name,
     amount_toman: plan.amountToman || priceToToman(plan.price),
+    expected_amount_toman: (plan.amountToman || priceToToman(plan.price)) + 1000 + Math.floor(Math.random() * 9000),
     status: 'awaiting_payment',
     ref_code: '',
     receipt_file_id: '',
@@ -242,7 +243,8 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     '🧾 <b>سفارش جدید</b>',
     '',
     `📦 ${tg.escapeHtml(product.name)} — ${tg.escapeHtml(plan.name)}`,
-    `💰 مبلغ قابل پرداخت: <b>${fmtToman(order.amount_toman)}</b>`,
+    `💰 مبلغ دقیق قابل پرداخت: <b>${fmtToman(order.expected_amount_toman || order.amount_toman)}</b>`,
+    '⚠️ لطفاً همین مبلغ دقیق را واریز کنید تا سفارش به‌صورت خودکار تطبیق داده شود.',
     `📅 مدت دسترسی: ${plan.durationDays} روز${plan.messageQuota ? ` — ${plan.messageQuota} پیام` : ' — نامحدود'}`,
     '',
     card
@@ -255,6 +257,26 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
 };
 
 /* --------------------------- receipt verification --------------------------- */
+
+const receiptReasonFa: Record<string, string> = {
+  ref_missing: 'شماره پیگیری از روی رسید قابل تشخیص نبود.',
+  ref_mismatch: 'شماره‌های پیگیری موجود در رسید با هم تطبیق ندارند.',
+  duplicate_ref: 'این شماره پیگیری قبلاً برای سفارش دیگری استفاده شده است.',
+  amount_missing: 'مبلغ واریزی از روی رسید قابل تشخیص نبود.',
+  amount_mismatch: 'مبلغ واریزی با مبلغ دقیق اعلام‌شده برای این سفارش مطابقت ندارد.',
+  recipient_name_missing: 'نام صاحب حساب مقصد در رسید خوانا نیست.',
+  recipient_name_mismatch: 'نام صاحب حساب مقصد با نام مورد انتظار برای دریافت وجه مطابقت ندارد.',
+  date_missing: 'تاریخ تراکنش در رسید مشخص نیست.',
+  date_unreadable: 'تاریخ تراکنش از روی رسید قابل خواندن یا تبدیل نبود.',
+  date_out_of_range: 'تاریخ تراکنش با بازه زمانی سفارش مطابقت ندارد.',
+  vision_failed: 'تصویر رسید به‌طور قابل‌اعتماد خوانده نشد.',
+  not_a_receipt: 'تصویر ارسالی شبیه رسید پرداخت بانکی نیست.',
+};
+const renderCustomerReceiptFeedback = (reasons: string[]): string => {
+  const visible = [...new Set(reasons)].filter((reason) => receiptReasonFa[reason]);
+  if (!visible.length) return '⏳ رسید دریافت شد، اما هنوز شواهد کافی برای تأیید خودکار وجود ندارد.';
+  return ['⚠️ <b>رسید هنوز تأیید نشد</b>', 'مواردی که نیاز به اصلاح یا بررسی دارند:', ...visible.map((reason) => `• ${receiptReasonFa[reason]}`)].join('\\n');
+};
 
 const runReceiptPipeline = async (
   env: BotEnv,
@@ -283,6 +305,8 @@ const runReceiptPipeline = async (
       vision,
       refTaken,
       orderToman: order.amount_toman,
+      expectedAmountToman: order.expected_amount_toman || order.amount_toman,
+      expectedRecipientName: String(env.BOT_CARD_HOLDER || '').trim(),
       orderCreatedAtMs: Date.parse(order.created_at) || Date.now(),
     }),
     autoApprovePolicy(env)
@@ -314,9 +338,8 @@ const runReceiptPipeline = async (
 
   // needs review
   await send(env, order.tg_user_id,
-    '⏳ تصویر رسید دریافت شد و اطلاعات آن به‌صورت خودکار در حال بررسی است.\\n' +
-    'به‌محض تأیید، دسترسی شما فعال و همین‌جا اطلاع داده می‌شود.\n' +
-    'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ نتیجه را همین‌جا اطلاع می‌دهیم.'
+    renderCustomerReceiptFeedback(decision.reasons) + '\\n\\n' +
+    'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ اگر رسید صحیح باشد، نتیجه را همین‌جا اطلاع می‌دهیم.'
   );
   await notifyAdmins(env,
     `⏳ <b>رسید نیاز به بررسی دارد</b>\n${renderOrderCard(order, [
