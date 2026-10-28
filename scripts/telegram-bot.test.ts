@@ -156,6 +156,28 @@ t('vision JSON parser tolerates code fences and prose', () => {
   eq(parseVisionResponse('no json here').ok, false);
 });
 
+t('vision parser normalizes formatted Persian amount and beneficiary aliases', () => {
+  const v = parseVisionResponse(JSON.stringify({
+    isReceipt: true,
+    rrn: '۱۲۳۴۵۶۷۸۹۰',
+    amount: '۵۹۵٬۰۰۶ ریال',
+    transactionDate: '2026-10-27',
+    beneficiaryName: 'شخص دیگر',
+    bankName: 'بانک نمونه'
+  }));
+  ok(v.ok);
+  eq(v.looksLikeReceipt, true);
+  eq(v.amount, 595006);
+  eq(v.ref, '1234567890');
+  eq(v.recipientName, 'شخص دیگر');
+  eq(v.date, '2026-10-27');
+});
+
+t('vision parser accepts comma-formatted amount strings', () => {
+  const v = parseVisionResponse(JSON.stringify({ looksLikeReceipt: true, amount: '595,006' }));
+  eq(v.amount, 595006);
+});
+
 /* ---------------------------- renewal math ---------------------------- */
 
 t('renewal extends a still-active grant instead of resetting it', () => {
