@@ -67,6 +67,8 @@ export interface BotOrderRow {
   plan_id: string;
   plan_name: string;
   amount_toman: number;
+  /** Exact requested transfer amount, including the per-order random suffix. */
+  expected_amount_toman?: number;
   status: string; // awaiting_payment | receipt_submitted | auto_approved | needs_review | approved | rejected | fulfilled
   ref_code: string;
   receipt_file_id: string;
@@ -118,6 +120,7 @@ const BOT_TABLES = [
     plan_id TEXT DEFAULT '',
     plan_name TEXT DEFAULT '',
     amount_toman INTEGER NOT NULL DEFAULT 0,
+    expected_amount_toman INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'awaiting_payment',
     ref_code TEXT DEFAULT '',
     receipt_file_id TEXT DEFAULT '',
@@ -167,6 +170,13 @@ export const ensureBotTables = (env: BotEnv): Promise<void> => {
   if (!ready) {
     ready = (async () => {
       await env.DB.batch(BOT_TABLES.map((sql) => env.DB.prepare(sql)));
+      // Backward-compatible additive migration for already-created D1 databases.
+      try {
+        await env.DB.prepare(`ALTER TABLE bot_orders ADD COLUMN expected_amount_toman INTEGER NOT NULL DEFAULT 0`).run();
+      } catch (error) {
+        // Column already exists. Ignore only the duplicate-column case.
+        if (!String((error as any)?.message || error).toLowerCase().includes('duplicate column')) throw error;
+      }
     })().catch((e) => {
       ready = null;
       throw e;
@@ -239,11 +249,11 @@ export const findVerifiedByPhone = async (env: BotEnv, phone: string): Promise<B
 
 export const insertOrder = async (env: BotEnv, order: BotOrderRow): Promise<void> => {
   await env.DB.prepare(
-    `INSERT INTO bot_orders (id, tg_user_id, phone, product_id, product_name, plan_id, plan_name, amount_toman, status, ref_code, receipt_file_id, receipt_json, note, created_at, decided_at, decided_by, delivery_id)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)`
+    `INSERT INTO bot_orders (id, tg_user_id, phone, product_id, product_name, plan_id, plan_name, amount_toman, expected_amount_toman, status, ref_code, receipt_file_id, receipt_json, note, created_at, decided_at, decided_by, delivery_id)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)`
   ).bind(
     order.id, order.tg_user_id, order.phone, order.product_id, order.product_name, order.plan_id, order.plan_name,
-    order.amount_toman, order.status, order.ref_code, order.receipt_file_id, order.receipt_json, order.note,
+    order.amount_toman, order.expected_amount_toman || order.amount_toman, order.status, order.ref_code, order.receipt_file_id, order.receipt_json, order.note,
     order.created_at, order.decided_at, order.decided_by, order.delivery_id
   ).run();
 };
