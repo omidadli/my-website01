@@ -267,7 +267,8 @@ const runReceiptPipeline = async (
   let vision: VisionReading | null = null;
   // Keep compatibility with the existing Cloudflare secret name while preferring
   // the canonical uppercase variable for new deployments.
-  const visionApiKey = String(env.GEMINI_API_KEY || env.Gemini_api_key || '').trim();
+  // Dedicated key for Telegram receipt OCR only; never borrow the website/products' shared fallback.
+  const visionApiKey = String(env.TELEGRAM_RECEIPT_GEMINI_API_KEY || '').trim();
   if (photoFileId && visionApiKey) {
     const img = await tg.downloadFileBase64(env.TELEGRAM_BOT_TOKEN || '', photoFileId);
     if (img) vision = await readReceiptWithVision(visionApiKey, img.base64, env.TELEGRAM_VISION_MODEL || 'gemini-2.5-flash');
