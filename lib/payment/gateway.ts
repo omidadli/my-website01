@@ -64,6 +64,9 @@ export interface PaymentDeviceRow {
   device_serial: string;
   token_hash: string;
   token_mask: string;
+  pair_code?: string;
+  pair_token?: string;
+  pair_expires_at?: string;
   is_active: number;
   last_seen_at: string;
   battery_level: number;
@@ -216,6 +219,9 @@ const PAYMENT_DDL = [
     device_serial TEXT DEFAULT '',
     token_hash TEXT NOT NULL UNIQUE,
     token_mask TEXT NOT NULL,
+    pair_code TEXT DEFAULT '',
+    pair_token TEXT DEFAULT '',
+    pair_expires_at TEXT DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
     last_seen_at TEXT DEFAULT '',
     battery_level INTEGER NOT NULL DEFAULT -1,
@@ -313,6 +319,9 @@ const PAYMENT_ALTERS = [
   `ALTER TABLE users ADD COLUMN phone_verified_at TEXT DEFAULT ''`,
   `ALTER TABLE users ADD COLUMN tg_user_id TEXT DEFAULT ''`,
   `ALTER TABLE bot_orders ADD COLUMN payment_id TEXT DEFAULT ''`,
+  `ALTER TABLE payment_devices ADD COLUMN pair_code TEXT DEFAULT ''`,
+  `ALTER TABLE payment_devices ADD COLUMN pair_token TEXT DEFAULT ''`,
+  `ALTER TABLE payment_devices ADD COLUMN pair_expires_at TEXT DEFAULT ''`,
 ];
 
 const initializedDbs = new WeakSet<object>();

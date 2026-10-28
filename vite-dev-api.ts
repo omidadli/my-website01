@@ -732,8 +732,13 @@ export function cmsDevApiPlugin(): Plugin {
         };
 
         try {
-          // --- 0. /api/payment & /api/payment/* (Self-Hosted Card-to-Card SMS Gateway) ---
-          if (pathname === '/api/payment' || pathname.startsWith('/api/payment/')) {
+          // --- 0. /api/payment, /api/payment/* & /sms-bridge (iOS < 16 PWA + Gateway) ---
+          if (
+            pathname === '/api/payment' ||
+            pathname.startsWith('/api/payment/') ||
+            pathname === '/sms-bridge' ||
+            pathname.startsWith('/sms-bridge/')
+          ) {
             syncDevFilesIntoGatewaySqlite();
             const rawBuf = method === 'GET' || method === 'HEAD' || method === 'OPTIONS' ? undefined : await readRawBody();
             const proto = String(req.headers['x-forwarded-proto'] || 'http');

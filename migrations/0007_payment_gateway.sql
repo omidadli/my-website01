@@ -18,12 +18,15 @@ CREATE TABLE IF NOT EXISTS payment_cards (
 CREATE INDEX IF NOT EXISTS idx_payment_cards_active ON payment_cards (is_active, priority);
 
 CREATE TABLE IF NOT EXISTS payment_devices (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  device_serial TEXT DEFAULT '',
-  token_hash    TEXT NOT NULL UNIQUE,
-  token_mask    TEXT NOT NULL,
-  is_active     INTEGER NOT NULL DEFAULT 1,
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  device_serial   TEXT DEFAULT '',
+  token_hash      TEXT NOT NULL UNIQUE,
+  token_mask      TEXT NOT NULL,
+  pair_code       TEXT DEFAULT '',
+  pair_token      TEXT DEFAULT '',
+  pair_expires_at TEXT DEFAULT '',
+  is_active       INTEGER NOT NULL DEFAULT 1,
   last_seen_at  TEXT DEFAULT '',
   battery_level INTEGER NOT NULL DEFAULT -1,
   device_model  TEXT DEFAULT '',

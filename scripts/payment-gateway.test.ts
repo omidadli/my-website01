@@ -10,6 +10,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { detectIranBank, isValidIranBankCard } from '../lib/payment/banks';
 import { parseIranianBankSms } from '../lib/payment/smsParser';
 import {
@@ -415,6 +416,180 @@ const eq = (a: unknown, b: unknown, msg = '') => {
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. iPhone X (iOS < 16) Standalone PWA (`/sms-bridge`) & `/api/payment/ios/*`
+  // -------------------------------------------------------------------------
+  await test('iPhone X (iOS < 16) PWA (/sms-bridge), 6-digit pairing, Apple Shortcuts SMS & Quick-Confirm', async () => {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(readFileSync('schema.sql', 'utf8'));
+    const env: any = { DB: makeD1(sqlite), SITE_URL: 'https://omidadli.site' };
+    await ensurePaymentTables(env);
+
+    const callHttp = (req: Request) =>
+      handlePaymentRequest({
+        request: req,
+        env,
+        isAdmin: async () => true,
+        getCurrentUser: async () => null,
+      });
+
+    // 1) Render /sms-bridge HTML, Manifest, SW, Icon and verify strict iOS 12-15 Safari compatibility!
+    const bridgeRes = await callHttp(new Request('https://omidadli.site/sms-bridge'));
+    eq(bridgeRes.status, 200);
+    const bridgeHtml = await bridgeRes.text();
+    ok(bridgeHtml.includes('apple-mobile-web-app-capable'), 'includes iOS standalone meta tag');
+    ok(/font-size:\s*16px/.test(bridgeHtml), 'inputs use >=16px to prevent iOS Safari auto-zoom');
+    ok(!bridgeHtml.includes('oklch('), 'zero oklch() CSS so iOS < 16.4 renders all colors');
+    ok(!bridgeHtml.includes('color-mix('), 'zero color-mix() CSS for iOS < 16.2');
+    ok(!bridgeHtml.includes('@layer'), 'zero @layer CSS for iOS < 15.4');
+    // Extract inline <script>, parse it with vm.Script, and verify zero ES2020+/ES2021+ syntax (`?.`, `??`, `.replaceAll(`)
+    const scriptMatch = bridgeHtml.match(/<script>([\s\S]*?)<\/script>/);
+    ok(Boolean(scriptMatch && scriptMatch[1].length > 500), 'contains inline ES5/ES6 script');
+    const inlineJs = scriptMatch![1];
+    new vm.Script(inlineJs);
+    ok(!inlineJs.includes('?.'), 'zero optional chaining (?.) in inline JS for iOS 12/13.0-13.3');
+    ok(!inlineJs.includes('??'), 'zero nullish coalescing (??) in inline JS for iOS 12/13.0-13.3');
+    ok(!inlineJs.includes('.replaceAll('), 'zero String.prototype.replaceAll for iOS < 13.4');
+
+    const manifestRes = await callHttp(new Request('https://omidadli.site/sms-bridge/manifest.webmanifest'));
+    eq(manifestRes.status, 200);
+    const swRes = await callHttp(new Request('https://omidadli.site/sms-bridge/sw.js'));
+    eq(swRes.status, 200);
+    const iconRes = await callHttp(new Request('https://omidadli.site/sms-bridge/icon.svg'));
+    eq(iconRes.status, 200);
+
+    // 2) Add destination card & create iPhone X device -> receives 6-digit pairCode!
+    await callHttp(
+      new Request('https://omidadli.site/api/payment/admin/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardNumber: '6219861034529007',
+          holderName: 'امید عدلی',
+          priority: 1,
+        }),
+      })
+    );
+
+    const createDevRes = await callHttp(
+      new Request('https://omidadli.site/api/payment/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'iPhone X (iOS 15.8)' }),
+      })
+    );
+    const createDevJson: any = await createDevRes.json();
+    eq(createDevJson.ok, true);
+    eq(String(createDevJson.pairCode || '').length, 6, 'issues 6-digit pairing code for iOS Home Screen WebClip');
+
+    // Convert pairCode to Persian digits to verify Persian keyboard support on iPhone X!
+    const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+    const persianCode = String(createDevJson.pairCode).replace(/\d/g, (d) => persianDigits[Number(d)]);
+
+    const pairRes = await callHttp(
+      new Request('https://omidadli.site/api/payment/ios/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: persianCode, deviceModel: 'iPhone X (iOS 15)' }),
+      })
+    );
+    eq(pairRes.status, 200);
+    const pairJson: any = await pairRes.json();
+    eq(pairJson.ok, true);
+    eq(pairJson.device_token, createDevJson.deviceToken, 'exchanges 6-digit code for device_token');
+
+    // Single-use check: re-submitting same 6-digit code MUST fail with 401!
+    const replayPairRes = await callHttp(
+      new Request('https://omidadli.site/api/payment/ios/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: createDevJson.pairCode }),
+      })
+    );
+    eq(replayPairRes.status, 401, '6-digit pairing code is strictly single-use');
+
+    // Also test regenerating a fresh 6-digit pair code (`regen_pair`)
+    const regenRes = await callHttp(
+      new Request('https://omidadli.site/api/payment/admin/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'regen_pair', id: createDevJson.id }),
+      })
+    );
+    const regenJson: any = await regenRes.json();
+    eq(regenJson.ok, true);
+    eq(String(regenJson.pairCode || '').length, 6);
+    const pairRes2 = await callHttp(
+      new Request('https://omidadli.site/api/payment/ios/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: regenJson.pairCode, deviceModel: 'iPhone X (iOS 14.8)' }),
+      })
+    );
+    const pairJson2: any = await pairRes2.json();
+    eq(pairJson2.ok, true);
+    const activeToken = pairJson2.device_token;
+
+    // 3) Create two pending orders; match #1 via Apple Shortcuts plain-text POST `/api/payment/ios/sms`
+    //    and confirm #2 via 1-tap `POST /api/payment/ios/quick-confirm`!
+    const ord1 = await createGatewayPayment(env, {
+      orderId: 'ios_ord_1',
+      amountRial: 3_500_000,
+      source: 'website',
+      productId: 'business-therapist',
+      planId: 'basic',
+      phone: '09124445566',
+    });
+    if ('error' in ord1) throw new Error(ord1.error.message);
+
+    const ord2 = await createGatewayPayment(env, {
+      orderId: 'ios_ord_2',
+      amountRial: 3_500_000,
+      source: 'website',
+      productId: 'growth-path',
+      planId: 'pro',
+      phone: '09124445566',
+    });
+    if ('error' in ord2) throw new Error(ord2.error.message);
+
+    // Poll from iPhone X WebApp
+    const pollRes = await callHttp(
+      new Request(`https://omidadli.site/api/payment/ios/poll?token=${encodeURIComponent(activeToken)}`)
+    );
+    const pollJson: any = await pollRes.json();
+    eq(pollJson.ok, true);
+    eq(pollJson.pending_orders.length, 2, 'iPhone radar sees both open pending orders');
+
+    // Apple Shortcuts Personal Automation (`Message`) posts raw plain text body (`Shortcut Input`)!
+    const rawShortcutSms = `بلوبانک\nواریز به حساب شما\nمبلغ: ${ord1.data.payable_amount.toLocaleString('en-US')} ریال\nموجودی: ۱۲,۵۰۰,۰۰۰ ریال`;
+    const iosSmsRes = await callHttp(
+      new Request(`https://omidadli.site/api/payment/ios/sms?token=${encodeURIComponent(activeToken)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: rawShortcutSms,
+      })
+    );
+    const iosSmsJson: any = await iosSmsRes.json();
+    eq(iosSmsJson.ok, true);
+    eq(iosSmsJson.matched, true, 'Apple Shortcuts plain-text POST automatically matched pending invoice');
+    eq(iosSmsJson.matchedPaymentId, ord1.data.payment_id);
+
+    // 1-Tap Quick Confirm on order #2 from iPhone X Home Screen PWA
+    const quickRes = await callHttp(
+      new Request('https://omidadli.site/api/payment/ios/quick-confirm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeToken}`,
+        },
+        body: JSON.stringify({ paymentId: ord2.data.payment_id }),
+      })
+    );
+    const quickJson: any = await quickRes.json();
+    eq(quickJson.ok, true);
+    eq(quickJson.status, 'paid', '1-tap iPhone quick-confirm marks order paid and fulfills subscription');
   });
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} payment-gateway: ${pass} passed, ${fail} failed`);

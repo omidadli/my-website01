@@ -16,6 +16,7 @@ export default defineConfig(() => {
       },
     },
     build: {
+      target: ['es2019', 'safari13'],
       rollupOptions: {
         input: {
           main: path.resolve(__dirname, 'index.html'),

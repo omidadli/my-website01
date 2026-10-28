@@ -41,8 +41,15 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
 
   // Forms
   const [cardForm, setCardForm] = useState({ cardNumber: '', holderName: '', iban: '', priority: '1' });
-  const [deviceForm, setDeviceForm] = useState({ name: 'گوشی اندروید اصلی (دریافت پیامک بانک)', deviceSerial: '' });
-  const [newDeviceSecret, setNewDeviceSecret] = useState<{ token: string; connectPayload: string; name: string } | null>(null);
+  const [deviceForm, setDeviceForm] = useState({ name: 'آیفون X اصلی (دریافت پیامک بانک)', deviceSerial: '' });
+  const [newDeviceSecret, setNewDeviceSecret] = useState<{
+    token: string;
+    pairCode?: string;
+    iosBridgeUrl?: string;
+    iosShortcutUrl?: string;
+    connectPayload: string;
+    name: string;
+  } | null>(null);
   const [keyForm, setKeyForm] = useState({ name: 'وب‌سایت / ربات تلگرام', allowedOrigins: '' });
   const [newApiKeySecret, setNewApiKeySecret] = useState<string>('');
 
@@ -104,11 +111,32 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
     if (!res.ok) return toast(res.error || 'خطا در ساخت توکن دستگاه');
     setNewDeviceSecret({
       token: res.deviceToken,
+      pairCode: res.pairCode,
+      iosBridgeUrl: res.iosBridgeUrl,
+      iosShortcutUrl: res.iosShortcutUrl,
       connectPayload: res.connectPayload,
       name: res.name,
     });
-    setDeviceForm({ name: 'گوشی اندروید دریافت پیامک', deviceSerial: '' });
-    toast('توکن اختصاصی دستگاه اندروید صادر شد.');
+    setDeviceForm({ name: 'آیفون X اصلی (دریافت پیامک بانک)', deviceSerial: '' });
+    toast('کد ۶ رقمی آیفون و توکن اختصاصی دستگاه صادر شد.');
+    load();
+  };
+
+  const handleRegenPairCode = async (deviceId: string) => {
+    const res = await api.adminGatewayAction('devices', {
+      op: 'regen_pair',
+      id: deviceId,
+    });
+    if (!res.ok) return toast(res.error || 'خطا در صدور کد اتصال جدید');
+    setNewDeviceSecret({
+      token: res.deviceToken,
+      pairCode: res.pairCode,
+      iosBridgeUrl: res.iosBridgeUrl,
+      iosShortcutUrl: res.iosShortcutUrl,
+      connectPayload: res.connectPayload,
+      name: res.name,
+    });
+    toast('کد ۶ رقمی جدید برای وب‌اپ آیفون صادر شد.');
     load();
   };
 
@@ -200,7 +228,7 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
             <div className="text-[11px] nd-faint">تأیید ۱-کلیکی از همین پنل یا تلگرام</div>
           </div>
           <div className="nd-card p-4 space-y-1">
-            <div className="text-xs nd-muted">گوشی‌های اندروید متصل (SMS)</div>
+            <div className="text-xs nd-muted">گوشی‌های متصل (آیفون iOS / اندروید)</div>
             <div className="text-xl font-black flex items-center gap-2">
               <span
                 className={`w-2.5 h-2.5 rounded-full ${
@@ -211,7 +239,7 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                 {fmtFa(overview.stats.onlineDevices)} از {fmtFa(overview.stats.totalDevices)} آنلاین
               </span>
             </div>
-            <div className="text-[11px] nd-faint">اپلیکیشن OmidPay SMS Uploader</div>
+            <div className="text-[11px] nd-faint">وب‌اپ آیفون (iOS ۱۲–۱۶+) و اپ اندروید</div>
           </div>
         </div>
       )}
@@ -221,7 +249,7 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
         {[
           { id: 'transactions', label: 'تراکنش‌ها و شبیه‌ساز پیامک', icon: Zap },
           { id: 'cards', label: 'کارت‌های بانکی مقصد', icon: CreditCard },
-          { id: 'devices', label: 'اپلیکیشن اندروید و گوشی‌ها', icon: Smartphone },
+          { id: 'devices', label: 'اتصال آیفون (iOS < 16) و اندروید', icon: Smartphone },
           { id: 'smslogs', label: 'لاگ پیامک‌های بانکی', icon: MessageSquare },
           { id: 'apikeys', label: 'کلیدهای API و وب‌هوک (v2)', icon: KeyRound },
         ].map((t) => {
@@ -481,23 +509,53 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
         </div>
       )}
 
-      {/* ================= 3. ANDROID SMS UPLOADER DEVICES ================= */}
+      {/* ================= 3. iPHONE (iOS < 16) & ANDROID SMS BRIDGE DEVICES ================= */}
       {subTab === 'devices' && (
         <div className="space-y-6">
+          {/* Dedicated iPhone X / iOS < 16 WebApp Banner */}
+          <div className="nd-card p-5 border-2 border-indigo-500/35 bg-indigo-500/5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-black flex items-center gap-2 text-indigo-400">
+                <Smartphone className="w-4 h-4" />
+                <span>وب‌اپلیکیشن اختصاصی آیفون X (سازگار با iOS ۱۲، ۱۳، ۱۴، ۱۵ و بالاتر)</span>
+              </h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href="/sms-bridge"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 text-white text-xs font-extrabold hover:bg-indigo-500"
+                >
+                  باز کردن وب‌اپ آیفون (/sms-bridge)
+                </a>
+                <button
+                  type="button"
+                  onClick={() => copyText('iosurl', `${overview?.serverOrigin || window.location.origin}/sms-bridge`)}
+                  className="px-3 py-2 rounded-xl border border-indigo-500/40 text-xs font-bold cursor-pointer"
+                >
+                  {copied === 'iosurl' ? 'لینک کپی شد' : 'کپی لینک وب‌اپ'}
+                </button>
+              </div>
+            </div>
+            <p className="text-xs nd-muted leading-relaxed">
+              این وب‌اپ بدون هیچ وابستگی به CSS/JS مدرن (کاملاً سازگار با Safari قدیمی <b>iOS &lt; 16</b> روی <b>iPhone X</b>) طراحی شده است. کافی است در Safari آیفون آدرس <code dir="ltr">/sms-bridge</code> را باز کرده و <b>Share → Add to Home Screen</b> بزنید؛ سپس <b>کد ۶ رقمی اتصال</b> زیر را وارد کنید تا رادار صوتی سفارش‌ها، خواندن ۱-ضربه‌ای کلیپ‌بورد، اتوماسیون <b>Apple Shortcuts (پیام)</b>، ضربه پشت گوشی (<b>Back Tap</b>) و اسکریپت ۲۴/۷ جیمیل فعال شوند.
+            </p>
+          </div>
+
           <form onSubmit={handleCreateDevice} className="nd-card p-5 space-y-4">
             <h3 className="text-sm font-black flex items-center gap-2">
-              <Smartphone className="w-4 h-4 text-indigo-400" />
-              <span>افزودن گوشی اندروید جدید (اپلیکیشن OmidPay SMS Uploader)</span>
+              <Smartphone className="w-4 h-4 text-emerald-400" />
+              <span>افزودن گوشی جدید (آیفون X با وب‌اپ/Shortcuts یا گوشی اندروید با اپلیکیشن APK)</span>
             </h3>
             <p className="text-xs nd-muted leading-relaxed">
-              پروژه‌ی کامل اندروید در پوشه‌ی <code dir="ltr">android-sms-uploader/</code> قرار دارد (و فایل APK در GitHub Actions به‌صورت خودکار کامپایل می‌شود). توکن زیر را بسازید و در اپلیکیشن گوشی خود وارد کنید تا پیامک‌های واریز بانکی را لحظه‌ای به سایت گزارش دهد.
+              با زدن دکمه زیر هم <b>کد ۶ رقمی جفت‌سازی آیفون</b> (مخصوص محیط ایزوله Add to Home Screen در iOS 13–15) و هم <b>توکن اتصال Shortcuts / اندروید</b> صادر می‌شود.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <input
                 type="text"
                 value={deviceForm.name}
                 onChange={(e) => setDeviceForm({ ...deviceForm, name: e.target.value })}
-                placeholder="نام دستگاه (مثلاً Samsung S23 ادمین)"
+                placeholder="نام دستگاه (مثلاً iPhone X ادمین)"
                 className="px-3 py-2.5 rounded-xl bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] text-xs"
                 required
               />
@@ -506,31 +564,76 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                 dir="ltr"
                 value={deviceForm.deviceSerial}
                 onChange={(e) => setDeviceForm({ ...deviceForm, deviceSerial: e.target.value })}
-                placeholder="سریال یا توضیح اختیاری"
+                placeholder="مدل یا توضیح اختیاری (iPhone X - iOS 15)"
                 className="px-3 py-2.5 rounded-xl bg-[color:var(--nd-bg-soft)] border border-[color:var(--nd-line)] text-xs font-mono"
               />
               <button
                 type="submit"
                 className="px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-extrabold hover:bg-indigo-500 flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <Plus className="w-4 h-4" /> صدور توکن اتصال گوشی
+                <Plus className="w-4 h-4" /> صدور کد ۶ رقمی آیفون و توکن
               </button>
             </div>
           </form>
 
           {newDeviceSecret && (
-            <div className="nd-card p-5 border-2 border-emerald-500/40 bg-emerald-500/5 space-y-3">
+            <div className="nd-card p-5 border-2 border-emerald-500/40 bg-emerald-500/5 space-y-4">
               <div className="text-sm font-black text-emerald-500">
-                ✅ توکن امنیتی گوشی «{newDeviceSecret.name}» صادر شد (فقط همین یک‌بار نمایش داده می‌شود!):
+                ✅ اطلاعات اتصال گوشی «{newDeviceSecret.name}» صادر شد:
               </div>
+
+              {newDeviceSecret.pairCode && (
+                <div className="p-4 rounded-2xl bg-indigo-950/60 border border-indigo-400/40 flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="text-xs font-extrabold text-indigo-300">
+                      🍏 کد ۶ رقمی اتصال سریع وب‌اپ آیفون (معتبر تا ۱۵ دقیقه — یک‌بارمصرف):
+                    </div>
+                    <div className="text-[11px] opacity-80">
+                      در آیفون X وارد <code dir="ltr">/sms-bridge</code> (یا آیکون نصب‌شده روی Home Screen) شوید و این ۶ رقم را تایپ کنید:
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span
+                      dir="ltr"
+                      className="px-4 py-2 rounded-xl bg-black/50 border border-emerald-400/50 text-2xl font-mono font-black tracking-[0.25em] text-emerald-400"
+                    >
+                      {newDeviceSecret.pairCode}
+                    </span>
+                    <button
+                      onClick={() => copyText('paircode', newDeviceSecret.pairCode || '')}
+                      className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold cursor-pointer"
+                    >
+                      {copied === 'paircode' ? 'کپی شد' : 'کپی کد'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {newDeviceSecret.iosShortcutUrl && (
+                <div className="p-3 rounded-xl bg-black/20 space-y-1.5 text-xs">
+                  <div className="font-bold text-sky-400">
+                    ⚡ آدرس آماده برای اتوماسیون Apple Shortcuts در iOS 14 / 15 (تگ Get Contents of URL):
+                  </div>
+                  <div className="flex items-center justify-between gap-2 font-mono" dir="ltr">
+                    <span className="truncate text-sky-300">{newDeviceSecret.iosShortcutUrl}</span>
+                    <button
+                      onClick={() => copyText('iossc', newDeviceSecret.iosShortcutUrl || '')}
+                      className="px-2.5 py-1 rounded bg-sky-600 text-white text-[11px] shrink-0 cursor-pointer"
+                    >
+                      {copied === 'iossc' ? 'کپی شد' : 'کپی لینک Shortcuts'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div className="p-3 rounded-xl bg-black/20 space-y-1">
-                  <div className="opacity-70">آدرس سرور در اپلیکیشن (Server URL):</div>
+                  <div className="opacity-70">آدرس سرور (Server URL):</div>
                   <div className="flex items-center justify-between gap-2 font-mono" dir="ltr">
                     <span className="truncate">{overview?.serverOrigin}/api/payment</span>
                     <button
                       onClick={() => copyText('srv', `${overview?.serverOrigin}/api/payment`)}
-                      className="px-2 py-1 rounded bg-white/10 text-[11px]"
+                      className="px-2 py-1 rounded bg-white/10 text-[11px] cursor-pointer"
                     >
                       {copied === 'srv' ? 'کپی شد' : 'کپی'}
                     </button>
@@ -542,7 +645,7 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                     <span className="truncate text-emerald-400 font-bold">{newDeviceSecret.token}</span>
                     <button
                       onClick={() => copyText('devtok', newDeviceSecret.token)}
-                      className="px-2 py-1 rounded bg-emerald-600 text-white text-[11px]"
+                      className="px-2 py-1 rounded bg-emerald-600 text-white text-[11px] cursor-pointer"
                     >
                       {copied === 'devtok' ? 'کپی شد' : 'کپی توکن'}
                     </button>
@@ -550,11 +653,11 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                 </div>
               </div>
               <button
-                onClick={() => copyText(' devjson', newDeviceSecret.connectPayload)}
+                onClick={() => copyText('devjson', newDeviceSecret.connectPayload)}
                 className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold flex items-center gap-2 cursor-pointer"
               >
                 <Copy className="w-3.5 h-3.5" />
-                <span>کپی رشته اتصال ۱-کلیکی (Paste Config در اپ اندروید)</span>
+                <span>کپی رشته اتصال ۱-کلیکی (برای اپ اندروید یا پیست دستی در وب‌اپ آیفون)</span>
               </button>
             </div>
           )}
@@ -573,6 +676,13 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                         <BatteryCharging className="w-3 h-3" /> {d.batteryLevel}%
                       </span>
                     )}
+                    <button
+                      onClick={() => handleRegenPairCode(d.id)}
+                      className="px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 text-[11px] font-bold cursor-pointer"
+                      title="صدور کد ۶ رقمی جدید برای اتصال آیفون"
+                    >
+                      کد ۶ رقمی جدید
+                    </button>
                     <button
                       onClick={async () => {
                         if (!confirm('این دستگاه حذف شود؟')) return;

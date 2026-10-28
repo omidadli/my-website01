@@ -104,7 +104,12 @@ const isNavigation = (request: Request, pathname: string): boolean => {
 
 export const onRequest: PagesFunction<Env> = async ({ request, env, next }) => {
   const url = new URL(request.url);
-  if (url.pathname === '/api/payment' || url.pathname.startsWith('/api/payment/')) {
+  if (
+    url.pathname === '/api/payment' ||
+    url.pathname.startsWith('/api/payment/') ||
+    url.pathname === '/sms-bridge' ||
+    url.pathname.startsWith('/sms-bridge/')
+  ) {
     return runPaymentEndpoint(request, env);
   }
   if (!isNavigation(request, url.pathname)) return next();

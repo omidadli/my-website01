@@ -30,10 +30,18 @@ import {
   recordDeviceHeartbeat,
   sha256Hex,
   sweepExpiredPayments,
+  toLatinDigits,
   verifyGatewayPayment,
+  type PaymentDeviceRow,
   type PaymentEnv,
   type PaymentOrderRow,
 } from './gateway';
+import {
+  renderIosBridgeIconSvg,
+  renderIosBridgeManifest,
+  renderIosBridgeServiceWorker,
+  renderIosSmsBridgeHtml,
+} from './iosBridge';
 
 export interface PaymentRequestContext {
   request: Request;
@@ -118,6 +126,50 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
 
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
+  const cleanPathname = url.pathname.replace(/\/+$/, '') || '/';
+
+  /* =======================================================================
+   * 0. STANDALONE iOS < 16 / iPHONE X SMS BRIDGE PWA (`/sms-bridge/*`)
+   * ======================================================================= */
+  if (cleanPathname === '/sms-bridge' && (method === 'GET' || method === 'HEAD')) {
+    return new Response(method === 'HEAD' ? null : renderIosSmsBridgeHtml(url.origin), {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'X-Robots-Tag': 'noindex, nofollow',
+      },
+    });
+  }
+  if (cleanPathname === '/sms-bridge/manifest.webmanifest' && (method === 'GET' || method === 'HEAD')) {
+    return new Response(method === 'HEAD' ? null : renderIosBridgeManifest(url.origin), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/manifest+json; charset=utf-8',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+  if (cleanPathname === '/sms-bridge/sw.js' && (method === 'GET' || method === 'HEAD')) {
+    return new Response(method === 'HEAD' ? null : renderIosBridgeServiceWorker(), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Service-Worker-Allowed': '/sms-bridge',
+      },
+    });
+  }
+  if (cleanPathname === '/sms-bridge/icon.svg' && (method === 'GET' || method === 'HEAD')) {
+    return new Response(method === 'HEAD' ? null : renderIosBridgeIconSvg(), {
+      status: 200,
+      headers: {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  }
+
   // Strip leading `/api/payment` prefix so sub-paths are clean
   const subPath = url.pathname.replace(/^\/api\/payment\/?/, '').replace(/\/+$/, '');
 
@@ -209,6 +261,187 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
         results,
       },
     });
+  }
+
+  /* =======================================================================
+   * 1B. iPHONE / iOS < 16 BRIDGE ENDPOINTS (`/api/payment/ios/*`)
+   * ======================================================================= */
+  if (subPath === 'ios/pair' && method === 'POST') {
+    const body = await safeJsonBody(request);
+    const code = toLatinDigits(String(body?.code || '')).replace(/\D/g, '');
+    if (code.length !== 6) {
+      return payexaErr('VALIDATION_ERROR', 'کد اتصال باید دقیقاً ۶ رقم باشد.', 422);
+    }
+
+    const nowIso = new Date().toISOString();
+    // Clear expired pairing codes first
+    await env.DB.prepare(
+      `UPDATE payment_devices SET pair_code = '', pair_token = '', pair_expires_at = '' WHERE pair_expires_at <> '' AND pair_expires_at <= ?1`
+    )
+      .bind(nowIso)
+      .run()
+      .catch(() => {});
+
+    const dev = await env.DB.prepare(
+      `SELECT * FROM payment_devices WHERE pair_code = ?1 AND is_active = 1 AND pair_expires_at > ?2 LIMIT 1`
+    )
+      .bind(code, nowIso)
+      .first<PaymentDeviceRow>();
+
+    if (!dev || !dev.pair_token) {
+      return payexaErr('UNAUTHORIZED', 'کد ۶ رقمی نامعتبر است یا منقضی شده است. از پنل ادمین کد جدید بگیرید.', 401);
+    }
+
+    const rawToken = dev.pair_token;
+    // Single-use: wipe temporary pairing credentials immediately
+    await env.DB.prepare(
+      `UPDATE payment_devices SET pair_code = '', pair_token = '', pair_expires_at = '' WHERE id = ?1`
+    )
+      .bind(dev.id)
+      .run();
+
+    await recordDeviceHeartbeat(env, dev.id, {
+      deviceModel: String(body?.deviceModel || 'iPhone (iOS WebApp)').slice(0, 80),
+      appVersion: 'ios-pwa-1.0',
+    });
+
+    return json({
+      ok: true,
+      device_id: dev.id,
+      device_name: dev.name,
+      device_token: rawToken,
+      server_url: `${url.origin}/api/payment`,
+      ios_sms_url: `${url.origin}/api/payment/ios/sms?token=${encodeURIComponent(rawToken)}&text=`,
+    });
+  }
+
+  if (subPath === 'ios/sms' || subPath === 'ios/poll' || subPath === 'ios/quick-confirm') {
+    const rawDevToken =
+      (url.searchParams.get('token') || '').trim() ||
+      extractToken(request, 'X-Device-Token');
+    const device = await authenticateDeviceToken(env, rawDevToken);
+    if (!device) {
+      return payexaErr('UNAUTHORIZED', 'توکن آیفون معتبر نیست یا غیرفعال شده است.', 401);
+    }
+
+    if (subPath === 'ios/poll' && method === 'GET') {
+      await recordDeviceHeartbeat(env, device.id, {
+        deviceModel: device.device_model || 'iPhone (iOS WebApp)',
+        appVersion: device.app_version || 'ios-pwa-1.0',
+      });
+      await sweepExpiredPayments(env);
+      const [pendingRes, logsRes] = await Promise.all([
+        env.DB.prepare(
+          `SELECT id, order_id, payable_amount_rial, phone, product_name, description, expires_at
+           FROM payment_orders WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20`
+        ).all<any>(),
+        env.DB.prepare(
+          `SELECT id, status, parsed_amount_rial, body_sanitized, created_at
+           FROM payment_sms_logs ORDER BY created_at DESC LIMIT 20`
+        ).all<any>(),
+      ]);
+
+      const nowMs = Date.now();
+      const pendingOrders = (pendingRes.results || []).map((o) => ({
+        id: o.id,
+        order_id: o.order_id,
+        payable_amount_rial: o.payable_amount_rial,
+        phone: o.phone,
+        product_name: o.product_name,
+        description: o.description,
+        seconds_remaining: Math.max(0, Math.floor((Date.parse(o.expires_at) - nowMs) / 1000)),
+      }));
+
+      return json({
+        ok: true,
+        device_id: device.id,
+        device_name: device.name,
+        matched_count: device.matched_count,
+        pending_orders: pendingOrders,
+        recent_logs: logsRes.results || [],
+      });
+    }
+
+    if (subPath === 'ios/quick-confirm' && method === 'POST') {
+      const body = await safeJsonBody(request);
+      const paymentId = String(body?.paymentId || body?.payment_id || '').trim();
+      const row = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`)
+        .bind(paymentId)
+        .first<PaymentOrderRow>();
+      if (!row) return payexaErr('PAYMENT_NOT_FOUND', 'فاکتور یافت نشد.', 404);
+      if (row.status === 'paid') return json({ ok: true, status: 'paid' });
+
+      const nowIso = new Date().toISOString();
+      await env.DB.prepare(
+        `UPDATE payment_orders SET status = 'paid', paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END, updated_at = ?2 WHERE id = ?3`
+      )
+        .bind(nowIso, nowIso, paymentId)
+        .run();
+      await env.DB.prepare(
+        `UPDATE payment_devices SET matched_count = matched_count + 1, last_seen_at = ?1 WHERE id = ?2`
+      )
+        .bind(nowIso, device.id)
+        .run();
+
+      await fulfillGatewayPayment(env, paymentId, 'ios_webapp_confirm');
+      return json({ ok: true, status: 'paid', payment_id: paymentId });
+    }
+
+    if (subPath === 'ios/sms' && (method === 'GET' || method === 'POST')) {
+      let smsText = String(
+        url.searchParams.get('text') ||
+          url.searchParams.get('body') ||
+          url.searchParams.get('sms') ||
+          ''
+      ).trim();
+      let sender = String(url.searchParams.get('sender') || url.searchParams.get('from') || 'iOS-Shortcuts').trim();
+      let receivedAt: string | undefined;
+
+      if (method === 'POST' && !smsText) {
+        const ct = (request.headers.get('content-type') || '').toLowerCase();
+        const rawText = await request.text().catch(() => '');
+        if (ct.includes('application/json')) {
+          try {
+            const j = JSON.parse(rawText || '{}');
+            smsText = String(j?.body || j?.text || j?.message || j?.sms || '').trim();
+            if (j?.sender || j?.from) sender = String(j.sender || j.from).trim();
+            if (j?.receivedAt || j?.received_at) receivedAt = String(j.receivedAt || j.received_at);
+          } catch {
+            smsText = rawText.trim();
+          }
+        } else if (ct.includes('application/x-www-form-urlencoded')) {
+          const params = new URLSearchParams(rawText);
+          smsText = String(params.get('text') || params.get('body') || params.get('sms') || rawText).trim();
+          if (params.get('sender')) sender = String(params.get('sender')).trim();
+        } else {
+          // Plain raw text directly from Apple Shortcuts (`Shortcut Input`)!
+          smsText = rawText.trim();
+        }
+      }
+
+      if (!smsText) {
+        return payexaErr('VALIDATION_ERROR', 'متن پیامک خالی است.', 422);
+      }
+
+      await recordDeviceHeartbeat(env, device.id, {
+        deviceModel: device.device_model || 'iPhone (iOS Shortcuts)',
+        appVersion: device.app_version || 'ios-bridge-1.0',
+      });
+
+      const outcome = await processIncomingBankSms(env, device.id, {
+        sender,
+        body: smsText,
+        receivedAt,
+      });
+
+      return json({
+        ok: true,
+        matched: outcome.status === 'matched',
+        status: outcome.status,
+        matchedPaymentId: outcome.matchedPaymentId || null,
+        amount_rial: outcome.parsed.amountRial,
+      });
+    }
   }
 
   /* =======================================================================
@@ -712,23 +945,64 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
           .run();
         return json({ ok: true });
       }
+      if (op === 'regen_pair') {
+        const targetId = String(body?.id || '');
+        const existing = await env.DB.prepare(`SELECT * FROM payment_devices WHERE id = ?1`)
+          .bind(targetId)
+          .first<PaymentDeviceRow>();
+        if (!existing) return json({ ok: false, error: 'دستگاه یافت نشد.' }, 404);
+        const rawToken = `omid_dev_${randomHex(20)}`;
+        const tokenHash = await sha256Hex(rawToken);
+        const tokenMask = `${rawToken.slice(0, 12)}…${rawToken.slice(-4)}`;
+        const pairCode = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
+        const pairExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
 
-      const name = String(body?.name || '').trim() || 'گوشی اندروید دریافت پیامک';
+        await env.DB.prepare(
+          `UPDATE payment_devices
+           SET token_hash = ?1, token_mask = ?2, pair_code = ?3, pair_token = ?4, pair_expires_at = ?5, is_active = 1
+           WHERE id = ?6`
+        )
+          .bind(tokenHash, tokenMask, pairCode, rawToken, pairExpiresAt, targetId)
+          .run();
+
+        const connectPayload = JSON.stringify({
+          type: 'omidpay_uploader_v1',
+          server_url: `${url.origin}/api/payment`,
+          device_token: rawToken,
+          device_name: existing.name,
+        });
+
+        return json({
+          ok: true,
+          id: targetId,
+          name: existing.name,
+          deviceToken: rawToken,
+          pairCode,
+          pairExpiresAt,
+          iosBridgeUrl: `${url.origin}/sms-bridge`,
+          iosShortcutUrl: `${url.origin}/api/payment/ios/sms?token=${encodeURIComponent(rawToken)}&text=`,
+          connectPayload,
+        });
+      }
+
+      const name = String(body?.name || '').trim() || 'آیفون X / گوشی دریافت پیامک';
       const serial = String(body?.deviceSerial || '').trim().slice(0, 60);
       const rawToken = `omid_dev_${randomHex(20)}`;
       const tokenHash = await sha256Hex(rawToken);
       const tokenMask = `${rawToken.slice(0, 12)}…${rawToken.slice(-4)}`;
+      const pairCode = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
+      const pairExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
       const id = `dev-${Date.now().toString(36)}-${randomHex(3)}`;
       const nowIso = new Date().toISOString();
 
       await env.DB.prepare(
-        `INSERT INTO payment_devices (id, name, device_serial, token_hash, token_mask, is_active, last_seen_at, battery_level, device_model, app_version, sms_count, matched_count, created_at)
-         VALUES (?1,?2,?3,?4,?5,1,'',-1,'','',0,0,?6)`
+        `INSERT INTO payment_devices (id, name, device_serial, token_hash, token_mask, pair_code, pair_token, pair_expires_at, is_active, last_seen_at, battery_level, device_model, app_version, sms_count, matched_count, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,'',-1,'','',0,0,?9)`
       )
-        .bind(id, name, serial, tokenHash, tokenMask, nowIso)
+        .bind(id, name, serial, tokenHash, tokenMask, pairCode, rawToken, pairExpiresAt, nowIso)
         .run();
 
-      // Quick-connect JSON / URI for the Android Uploader app (QR & 1-click clipboard paste)
+      // Quick-connect JSON / URI for the Android Uploader & iOS Web App
       const connectPayload = JSON.stringify({
         type: 'omidpay_uploader_v1',
         server_url: `${url.origin}/api/payment`,
@@ -741,6 +1015,10 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
         id,
         name,
         deviceToken: rawToken,
+        pairCode,
+        pairExpiresAt,
+        iosBridgeUrl: `${url.origin}/sms-bridge`,
+        iosShortcutUrl: `${url.origin}/api/payment/ios/sms?token=${encodeURIComponent(rawToken)}&text=`,
         connectPayload,
       });
     }
