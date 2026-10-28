@@ -96,6 +96,41 @@ export const normalizeCategory = (post: { category?: string; categoryFa?: string
   return { category: String(post.category || '').trim(), categoryFa: String(post.categoryFa || '').trim() };
 };
 
+/**
+ * Groups for posts stored before the taxonomy existed (or whose category was
+ * typed by hand in the CMS). The stored English values are compared
+ * case-insensitively because the legacy CMS did not normalise casing
+ * ("Performance" vs "performance").
+ */
+const LEGACY_GROUP_BY_VALUE: Record<string, string> = {
+  performance: 'مارکتینگ و تبلیغات',
+  advertising: 'مارکتینگ و تبلیغات',
+  digital: 'مارکتینگ و تبلیغات',
+  cro: 'رشد و تبدیل',
+  conversion: 'رشد و تبدیل',
+  funnel: 'رشد و تبدیل',
+  retention: 'رشد و تبدیل',
+  analytics: 'داده و تحلیل',
+  'data-analytics': 'داده و تحلیل',
+  seo: 'جست‌وجو و محتوا',
+  'web-design': 'طراحی و راه‌اندازی',
+  'web design': 'طراحی و راه‌اندازی',
+};
+
+/**
+ * Which cluster a post belongs to (`''` when its category is unknown).
+ * Used by the homepage insights section, which shows the latest articles of
+ * each topic cluster instead of one flat "newest posts" list.
+ */
+export const groupOfPost = (post: { category?: string; categoryFa?: string }): string => {
+  const raw = String(post.category || '').trim();
+  const byValue = findCategory(raw) || findCategory(raw.toLowerCase()) || findCategory(raw.replace(/\s+/g, '-'));
+  if (byValue) return byValue.group;
+  const byFa = findCategoryByFa(String(post.categoryFa || '').trim());
+  if (byFa) return byFa.group;
+  return LEGACY_GROUP_BY_VALUE[raw.toLowerCase()] || '';
+};
+
 /** Sort key so the blog filter chips follow the taxonomy order instead of insertion order. */
 export const categoryOrder = (fa: string): number => {
   const i = BLOG_CATEGORIES.findIndex((c) => c.fa === fa);

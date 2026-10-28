@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ChatAnswer } from '../src/components/mascot/ChatAnswer';
+const render = (text: string) => renderToStaticMarkup(<ChatAnswer text={text} />);
+const html = render('## پاسخ فارسی\n\nاین یک **پاسخ** است.\n\n- مورد اول\n- مورد دوم\n\n```js\nconst value = 42;\n```\n\n| عنوان | مقدار |\n| --- | --- |\n| رشد | ۴۲ |');
+for (const part of ['dir="rtl"', 'lang="fa"', '<h2>', '<strong>', '<ul>', '<pre dir="ltr"', '<table>']) assert.ok(html.includes(part), part);
+const external = render('[منبع](https://example.com)');
+assert.ok(external.includes('rel="noopener noreferrer"'));
+assert.ok(render('[مقاله](/blog/test)').includes('href="/blog/test"'));
+assert.ok(!render('[خطر](javascript:alert%281%29)').includes('javascript:'));
+assert.ok(!render('<script>alert(1)</script>').includes('<script>'));
+console.log('✓ Chat answers: Persian direction, markdown, tables, LTR code and safe links');
+
+const sentence = 'این یک توضیح فارسی نسبتاً طولانی است که برای بررسی خوانایی پاسخ و فضای بین پاراگراف‌ها نوشته شده است. ';
+const dense = render(sentence.repeat(9));
+assert.ok((dense.match(/<p>/g) || []).length >= 3, 'Dense prose is split at sentence boundaries');
+assert.equal(dense.replace(/<h3>.*?<\/h3>/g, '').replace(/<[^>]+>/g, '').replace(/\s/g, ''), sentence.repeat(9).replace(/\s/g, ''), 'No words are changed');
+const preserved = render('```text\n' + sentence.repeat(9) + '\n```');
+assert.equal((preserved.match(/<pre /g) || []).length, 1);
+assert.ok(!preserved.includes('<p>'), 'Code is never split into paragraphs');
+assert.equal((render('- ' + sentence.repeat(9)).match(/<li>/g) || []).length, 1, 'List structure is preserved');
+assert.ok(render('نکته **مهم**: ' + sentence.repeat(6)).includes('<strong>مهم</strong>'), 'Inline formatting survives');
+assert.equal((render('یک پاسخ کوتاه.').match(/<p>/g) || []).length, 1);
+console.log('✓ Readability: dense prose spacing, unchanged content, preserved code, lists and emphasis');
+
+const longPlain = render(('این متن بدون نقطه برای بررسی بخش بندی و نمایش خوانای پاسخ فارسی نوشته شده است ').repeat(35));
+assert.ok((longPlain.match(/<p>/g) || []).length >= 4, 'Unpunctuated prose is also divided');
+assert.ok((longPlain.match(/<h3>/g) || []).length >= 2, 'Long unstructured answers get neutral section labels');
+const titled = render('### تحلیل کمپین\n\n' + sentence.repeat(12));
+assert.equal((titled.match(/<h3>/g) || []).length, 1, 'Existing topical headings are not duplicated');
+assert.ok(render('**پیشنهاد عملی**\n\nمتن توضیح.').includes('<h3>پیشنهاد عملی</h3>'), 'Explicit bold-only titles become headings');
+assert.ok(!render('پاسخ کوتاه و ساده.').includes('<h3>'), 'Short answers have no artificial headings');
+console.log('✓ Section fallback: long unpunctuated prose, explicit titles, existing headings and short answers');

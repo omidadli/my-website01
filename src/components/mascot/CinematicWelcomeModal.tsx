@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Sparkles, Volume2, VolumeX, CheckCircle2 } from 'lucide-react';
 import { Theme } from '../../types';
-import { useStaticMediaMode } from './useStaticMediaMode';
 
 interface CinematicWelcomeModalProps {
   isOpen: boolean;
@@ -44,8 +43,6 @@ export const CinematicWelcomeModal: React.FC<CinematicWelcomeModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [videoLoaded, setVideoLoaded] = useState(false);
-  // Touch / reduced-motion / Save-Data / 2G → the static WebP still (zero video bytes).
-  const staticMode = useStaticMediaMode();
   const [step, setStep] = useState<'welcome' | 'done'>('welcome');
   const [savedName, setSavedName] = useState('');
 
@@ -206,30 +203,17 @@ export const CinematicWelcomeModal: React.FC<CinematicWelcomeModalProps> = ({
                     : '0 20px 40px rgba(79, 70, 229, 0.2), inset 0 1px 2px rgba(255, 255, 255, 0.9)',
                 }}
               >
-                {staticMode ? (
-                  <img
-                    src="/mascot/confident.webp"
-                    alt=""
-                    width={640}
-                    height={698}
-                    decoding="async"
-                    onLoad={() => setVideoLoaded(true)}
-                    className="w-full h-full object-cover object-center"
-                  />
-                ) : (
-                  <video
-                    ref={videoRef}
-                    src="/mascot/confident.mp4"
-                    poster="/mascot/confident.webp"
-                    playsInline
-                    autoPlay
-                    loop
-                    preload="metadata"
-                    muted={isMuted}
-                    onLoadedData={() => setVideoLoaded(true)}
-                    className="w-full h-full object-cover object-center"
-                  />
-                )}
+                <video
+                  ref={videoRef}
+                  src="/mascot/confident.mp4"
+                  poster="/mascot/confident.webp"
+                  playsInline
+                  autoPlay
+                  loop
+                  muted={isMuted}
+                  onLoadedData={() => setVideoLoaded(true)}
+                  className="w-full h-full object-cover object-center"
+                />
 
                 {/* Film grain / specular vignette */}
                 <div
@@ -241,22 +225,20 @@ export const CinematicWelcomeModal: React.FC<CinematicWelcomeModalProps> = ({
                   }}
                 />
 
-                {/* Mute toggle button (video only — static mode has no audio track) */}
-                {!staticMode && (
-                  <button
-                    type="button"
-                    onClick={() => setIsMuted((m) => !m)}
-                    className="absolute bottom-2.5 left-2.5 p-1.5 rounded-full backdrop-blur-md transition-all duration-200 cursor-pointer"
-                    style={{
-                      background: 'rgba(0, 0, 0, 0.45)',
-                      color: '#f8fafc',
-                    }}
-                    title={isMuted ? 'فعال‌سازی صدا' : 'قطع صدا'}
-                    aria-label="تغییر وضعیت صدا"
-                  >
-                    {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                  </button>
-                )}
+                {/* Mute toggle button */}
+                <button
+                  type="button"
+                  onClick={() => setIsMuted((m) => !m)}
+                  className="absolute bottom-2.5 left-2.5 p-1.5 rounded-full backdrop-blur-md transition-all duration-200 cursor-pointer"
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.45)',
+                    color: '#f8fafc',
+                  }}
+                  title={isMuted ? 'فعال‌سازی صدا' : 'قطع صدا'}
+                  aria-label="تغییر وضعیت صدا"
+                >
+                  {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                </button>
 
                 {/* Live Mascot Badge */}
                 <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold text-white backdrop-blur-md bg-black/40 border border-white/20">

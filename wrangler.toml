@@ -16,3 +16,17 @@ database_id = "89b0d5f8-7ded-4dc8-9f52-79befd0abbec"
 # [[r2_buckets]]
 # binding = "MEDIA"
 # bucket_name = "omidadli01-media"
+
+# ---------------------------------------------------------------------------
+# ربات تلگرام (functions/api/telegram.ts)
+# مقادیر حساس (توکن ربات و WEBHOOK_SECRET) را در
+# Dashboard → Settings → Environment variables → Secrets بگذارید، نه اینجا.
+# ---------------------------------------------------------------------------
+# [vars]
+# TELEGRAM_ADMIN_IDS = "123456789"
+# BOT_CARD_NUMBER    = "6037-9911-1234-5678"
+# BOT_CARD_HOLDER    = "امید عدلی"
+# SITE_URL           = "https://omidadli.com"
+# SUPPORT_HANDLE     = "@omidadli"
+# TELEGRAM_AUTO_APPROVE = "vision"   # vision | always | off
+# TELEGRAM_VISION_MODEL = "gemini-2.5-flash"

@@ -9,11 +9,11 @@ interface AdminLoginModalProps {
 
 /** Quick edit-mode login (matches the /#admin gate: username+password in cloud mode). */
 export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClose }) => {
-  const { loginAdmin, persistence } = useContent();
+  const { loginAdmin, persistence, lastLoginError } = useContent();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(lastLoginError || '');
 
   if (!isOpen) return null;
 
@@ -30,7 +30,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({ isOpen, onClos
       setPassword('');
       onClose();
     } else {
-      setError(persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز وارد شده اشتباه است.');
+      setError(lastLoginError || (persistence === 'cloud' ? 'نام کاربری یا رمز عبور اشتباه است.' : 'رمز وارد شده اشتباه است.'));
     }
   };
 

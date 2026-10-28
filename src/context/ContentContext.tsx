@@ -1,5 +1,7 @@
+/// <reference types="vite/client" />
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo } from 'react';
-import { api } from '../services/api';
+import { api, type LoginResult } from '../services/api';
+import { createSaveCoordinator, type SaveOutcome } from '../services/saveCoordinator';
 // NOTE: the eager import goes to contentCore (WITHOUT the 748 kB of generated
 // article batches) so the first-paint bundle stays small. The batches load in
 // the background via the dynamic import below and are merged in as defaults.
@@ -18,13 +20,15 @@ import {
   BlogComment,
   BlogPost
 } from '../types';
-import { CANONICAL_SITE_URL, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
-import { mergeContentDefaults } from '../utils/contentDefaults';
+import { resolveCanonicalOrigin, defaultGlobalSeo as sharedGlobalSeoDefaults } from '../../lib/seoDefaults';
+import { mergeContentDefaults, reconcileProductCatalog } from '../utils/contentDefaults';
 import { publicContentView } from '../../lib/contentVisibility';
 
 const LOCAL_STORAGE_KEY = 'OMID_ADLI_SITE_CONTENT_V3';
 const LOCAL_STORAGE_PIN_KEY = 'OMID_ADLI_ADMIN_PIN_CODE';
 const DEFAULT_PIN = '1234';
+
+type SyncStatus = 'idle' | 'saving' | 'synced' | 'error' | 'conflict';
 
 /**
  * Background load of the generated article batches (batch01+batch02). The
@@ -58,6 +62,7 @@ export const defaultPageSections: Record<string, PageSectionItem[]> = {
     { id: 'sec-how-i-work', name: 'HOW_I_WORK', label: 'فرآیند همکاری (How I Work)', isHidden: false },
     { id: 'sec-why-omid', name: 'WHY_OMID', label: 'چرا با من کار کنید؟ + نقل‌قول مشتری', isHidden: false },
     { id: 'sec-insights', name: 'INSIGHTS', label: 'آنالیز رایگان + نوشت‌های تازه', isHidden: false },
+    { id: 'sec-ai-tools', name: 'AI_TOOLS', label: 'دستیارهای هوشمند (معرفی محصولات)', isHidden: false },
     { id: 'sec-faq', name: 'FAQ', label: 'پرسش‌های پرتکرار', isHidden: false },
     { id: 'sec-final-cta', name: 'FINAL_CTA', label: 'فراخوان نهایی اقدام', isHidden: false },
   ],
@@ -248,6 +253,24 @@ interface ContentContextType {
   persistence: 'local' | 'cloud';
   /** True once the mount probe finished (cloud content adopted, or confirmed local-only). */
   contentReady: boolean;
+  /** Last admin login error message (for display in login forms). */
+  lastLoginError: string | null;
+  /** Cloud sync status: 'idle' | 'saving' | 'synced' | 'error' | 'conflict'. */
+  syncStatus: SyncStatus;
+  /** Human-readable timestamp of the last successful cloud sync. */
+  lastSyncedAt: string | null;
+  /** Last cloud sync error message, if any. */
+  syncError: string | null;
+  /** True when a cloud refresh is in progress (distinct from saving). */
+  isRefreshing: boolean;
+  /** True when local edits exist that have not been successfully synced to the cloud. */
+  hasUnsyncedCloudChanges: boolean;
+  /** Save immediately to Cloudflare D1 (bypasses the 1.2s debounce). */
+  saveToCloudNow: () => Promise<SaveOutcome>;
+  /** Resolve a save conflict: keep the local version (re-save) or take the cloud version (local draft is backed up first). */
+  resolveConflict: (choice: 'mine' | 'cloud') => Promise<{ ok: boolean; message: string }>;
+  /** Reload the latest content from Cloudflare D1. */
+  refreshFromCloud: () => Promise<boolean>;
   logoutAdmin: () => void;
   updateField: (path: string, newValue: any) => void;
   addItem: (arrayPath: string, templateItem?: any) => void;
@@ -329,6 +352,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Restore SERVICES, STATS, TIMELINE, HOW_I_WORK_STEPS to default initialData
         return { 
           ...mergeContentDefaults(defaultContentState, parsed),
+          // Older browser caches can hold a product collection from a previous
+          // catalog. Reconcile it before first render, not only after cloud sync.
+          PRODUCTS: reconcileProductCatalog(initialData.PRODUCTS, parsed.PRODUCTS),
           SERVICES: initialData.SERVICES,
           STATS: initialData.STATS,
           TIMELINE: initialData.TIMELINE,
@@ -395,7 +421,25 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // ---------- Cloud (Cloudflare D1) persistence ----------
   const [persistence, setPersistence] = useState<'local' | 'cloud'>('local');
   const [contentReady, setContentReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastLoginError, setLastLoginError] = useState<string | null>(null);
   const cloudReady = useRef(false);
+  /** True when local edits exist that have not been successfully synced to the cloud. */
+  const [hasUnsyncedCloudChanges, setHasUnsyncedCloudChanges] = useState(false);
+  /** Always-current mirrors for code that outlives a render (retries, timers, broadcast handlers). */
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const canSyncRef = useRef(false);
+  canSyncRef.current = persistence === 'cloud' && isAdmin;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = hasUnsyncedCloudChanges;
+  const syncStatusRef = useRef<SyncStatus>('idle');
+  syncStatusRef.current = syncStatus;
+  /** The exact content object that the cloud currently has (identity compare = O(1) dirty check). */
+  const syncedObj = useRef<unknown>(null);
   /** Version stamp of the content this tab last read from / saved to the cloud (optimistic concurrency). */
   const remoteUpdatedAt = useRef<string | null>(null);
   /** Serialized snapshot of what the cloud currently holds — lets us skip no-op saves. */
@@ -406,6 +450,9 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const merged = mergeContentDefaults(defaultContentState, r);
     return {
       ...merged,
+      // The cloud snapshot is authoritative for editable content, but an old
+      // product catalog must not resurrect products unsupported by this build.
+      PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, merged.PRODUCTS),
       PERSONAL_INFO: { ...defaultContentState.PERSONAL_INFO, ...merged.PERSONAL_INFO },
       GLOBAL_SEO: { ...defaultGlobalSeo, ...merged.GLOBAL_SEO },
       AI_TOOLS_CONFIG: {
@@ -424,7 +471,11 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const merged = mergeRemote(remote.data);
     remoteUpdatedAt.current = remote.updatedAt || null;
     lastSyncedJson.current = JSON.stringify(merged);
+    syncedObj.current = merged;
     setData(merged);
+    setSyncStatus('synced');
+    setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+    setSyncError(null);
     return true;
   };
 
@@ -460,36 +511,164 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
+  // ---------- Core single save path (logic + tests live in services/saveCoordinator.ts) ----------
+
+  const tabId = useRef(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+  /** One long-lived channel per tab (never open/close per message). */
+  const bcRef = useRef<BroadcastChannel | null>(null);
+
+  const coordinator = useRef<ReturnType<typeof createSaveCoordinator> | null>(null);
+  if (!coordinator.current) {
+    coordinator.current = createSaveCoordinator({
+      getData: () => dataRef.current,
+      getBase: () => remoteUpdatedAt.current,
+      setBase: (v) => { remoteUpdatedAt.current = v; },
+      save: (d, base) => api.saveContent(d, base),
+      isSynced: (json) => json === lastSyncedJson.current,
+      isActive: () => canSyncRef.current && cloudReady.current,
+      onSaving: () => { setSyncStatus('saving'); setSyncError(null); },
+      onOutcome: (o, json, sent) => {
+        switch (o.status) {
+          case 'saved':
+            remoteUpdatedAt.current = o.updatedAt || remoteUpdatedAt.current;
+            lastSyncedJson.current = json;
+            syncedObj.current = sent;
+            setSyncStatus('synced');
+            setLastSyncedAt(new Date().toLocaleString('fa-IR'));
+            setSyncError(null);
+            // Edits typed while the request was in flight are still unsynced.
+            setHasUnsyncedCloudChanges(dataRef.current !== sent);
+            try { bcRef.current?.postMessage({ type: 'content-saved', at: o.updatedAt, from: tabId.current }); } catch { /* ignore */ }
+            break;
+          case 'conflict':
+            setSyncStatus('conflict');
+            setSyncError(o.message);
+            setHasUnsyncedCloudChanges(true);
+            break;
+          case 'unauthorized':
+            setSyncStatus('error');
+            setSyncError(o.message);
+            setHasUnsyncedCloudChanges(true);
+            api.logout();
+            setIsAdmin(false);
+            break;
+          case 'error':
+            setSyncStatus('error');
+            setSyncError(o.message);
+            setHasUnsyncedCloudChanges(true);
+            console.warn(`Cloud save failed (${o.code}):`, o.message);
+            break;
+          default:
+            break;
+        }
+      },
+    });
+  }
+
+  // Cheap dirty tracking: the content object differs from the one the cloud has.
+  useEffect(() => {
+    if (persistence !== 'cloud' || !isAdmin || !cloudReady.current) return;
+    if (syncedObj.current === null) return;
+    setHasUnsyncedCloudChanges(data !== syncedObj.current);
+  }, [data, persistence, isAdmin]);
+
   // Debounced push of every content change to D1 (only while logged in).
-  // The save is conditional on the version this tab last saw: if the site was
-  // edited elsewhere in the meantime (Claude MCP, another tab, the Git sync) the
-  // API answers 409 → we reload the latest version instead of overwriting it.
   useEffect(() => {
     if (persistence !== 'cloud' || !cloudReady.current || !isAdmin) return;
-    const t = setTimeout(async () => {
-      const json = JSON.stringify(data);
-      if (json === lastSyncedJson.current) return; // nothing new to save
-      const res = await api.saveContent(data, remoteUpdatedAt.current);
-      if (res.ok) {
-        remoteUpdatedAt.current = res.updatedAt || remoteUpdatedAt.current;
-        lastSyncedJson.current = json;
-        return;
-      }
-      if (res.conflict) {
-        console.warn('Cloud save skipped: content changed elsewhere — reloading the latest version.');
-        remoteUpdatedAt.current = res.updatedAt || ''; // resync the stamp even if the reload below finds no content
-        await adoptRemote();
-        window.dispatchEvent(
-          new CustomEvent('nd:content-conflict', {
-            detail: { message: 'محتوا هم‌زمان از جای دیگری (مثلاً کلاد یا تب دیگر) تغییر کرده بود؛ آخرین نسخه بارگذاری شد. لطفاً آخرین تغییرت را دوباره اعمال کن.' },
-          })
-        );
-        return;
-      }
-      console.warn('Cloud save failed:', res.error);
+    const t = setTimeout(() => {
+      void coordinator.current!.request('auto');
     }, 1200);
     return () => clearTimeout(t);
   }, [data, persistence, isAdmin]);
+
+  /** Save immediately to Cloudflare D1. Resolves with the REAL outcome of this save. */
+  const saveToCloudNow = (): Promise<SaveOutcome> => coordinator.current!.request('manual');
+
+  const resolveConflict = async (choice: 'mine' | 'cloud'): Promise<{ ok: boolean; message: string }> => {
+    if (choice === 'mine') {
+      const o = await coordinator.current!.keepMine();
+      if (o.status === 'saved') return { ok: true, message: 'نسخه شما با موفقیت ذخیره شد.' };
+      return { ok: false, message: o.message || 'ذخیره نسخه شما ناموفق بود.' };
+    }
+    try {
+      // Never throw the local draft away: keep one backup copy in the browser first.
+      try {
+        localStorage.setItem('nd_conflict_backup', JSON.stringify({ at: new Date().toISOString(), data: dataRef.current }));
+      } catch { /* storage full: continue, the user explicitly chose the cloud version */ }
+      const hadRemote = await adoptRemote();
+      if (!hadRemote) return { ok: false, message: 'نسخه ابری پیدا نشد.' };
+      coordinator.current!.clearConflict();
+      setHasUnsyncedCloudChanges(false);
+      return { ok: true, message: 'نسخه ابری بارگذاری شد؛ از نسخه محلی شما یک پشتیبان در مرورگر ذخیره شد.' };
+    } catch {
+      return { ok: false, message: 'بارگذاری نسخه ابری ناموفق بود.' };
+    }
+  };
+
+  /** Refresh content from Cloudflare D1 (bypasses local cache). */
+  const refreshFromCloud = async (): Promise<boolean> => {
+    if (persistence !== 'cloud') return false;
+    if (dirtyRef.current) {
+      const ok = window.confirm('تغییرات ذخیره‌نشده شما از بین می‌روند. آیا بازنویسی از ابری را تایید می‌کنید؟');
+      if (!ok) return false;
+    }
+    setIsRefreshing(true);
+    setSyncStatus('saving');
+    try {
+      const hadRemote = await adoptRemote();
+      setIsRefreshing(false);
+      if (hadRemote) {
+        coordinator.current!.clearConflict();
+        setHasUnsyncedCloudChanges(false);
+        return true;
+      }
+      setSyncStatus('error');
+      setSyncError('محتوای ابری یافت نشد.');
+      return false;
+    } catch {
+      setIsRefreshing(false);
+      setSyncStatus('error');
+      setSyncError('ارتباط با سرور برقرار نشد؛ بارگذاری از ابری انجام نشد.');
+      return false;
+    }
+  };
+
+  // Cross-tab sync: another tab saved -> load it, but never overwrite unsaved work here.
+  useEffect(() => {
+    if (persistence !== 'cloud') return;
+    let bc: BroadcastChannel;
+    try {
+      bc = new BroadcastChannel('omid-adli-cms-sync');
+    } catch {
+      return; // BroadcastChannel not available
+    }
+    bcRef.current = bc;
+    bc.onmessage = (event) => {
+      const m = event.data;
+      if (m?.type !== 'content-saved' || m.from === tabId.current) return;
+      // Unsaved / saving / conflicted local work wins: the next save is checked atomically
+      // on the server against the newer version and the user decides in the conflict dialog.
+      if (dirtyRef.current || syncStatusRef.current === 'saving' || coordinator.current?.hasConflict()) return;
+      void adoptRemote().catch(() => { /* stay on the current version */ });
+    };
+    return () => {
+      bcRef.current = null;
+      try { bc.close(); } catch { /* ignore */ }
+    };
+  }, [persistence]);
+
+  // Warn before unload if there are unsynced cloud changes.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (persistence === 'cloud' && isAdmin && hasUnsyncedCloudChanges) {
+        e.preventDefault();
+        e.returnValue = 'تغییرات ذخیره‌نشده شما از بین می‌روند.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [persistence, isAdmin, hasUnsyncedCloudChanges]);
 
   // Activity logger helper
   const logActivity = (action: string, details?: string) => {
@@ -596,7 +775,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // login: adopt the latest cloud version first; only seed when the cloud is empty.
         const hadRemote = await adoptRemote().catch(() => false);
         if (!hadRemote) {
-          const seeded = await api.saveContent(data, remoteUpdatedAt.current ?? '');
+          const seeded = await api.saveContent(data, remoteUpdatedAt.current ?? null);
           if (seeded.ok) {
             remoteUpdatedAt.current = seeded.updatedAt || null;
             lastSyncedJson.current = JSON.stringify(data);
@@ -606,11 +785,31 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logActivity('ورود موفق', `کاربر «${username}» از طریق سرویس ابری وارد پیشخوان شد.`);
         return true;
       }
-      logActivity('ورود ناموفق', 'نام کاربری یا رمز عبور اشتباه بود (سرویس ابری).');
+      let userMessage = 'نام کاربری یا رمز عبور اشتباه است.';
+      if (!res.ok) {
+        const err = res as Extract<typeof res, { ok: false }>;
+        switch (err.code) {
+          case 'service':
+            userMessage = 'سرویس ورود تنظیم نشده است.';
+            break;
+          case 'rate_limit':
+            userMessage = 'تلاش‌های ناموفق زیاد؛ چند دقیقه بعد دوباره امتحان کنید.';
+            break;
+          case 'unauthorized':
+            userMessage = 'نام کاربری یا رمز عبور اشتباه است.';
+            break;
+          case 'network':
+            userMessage = 'ارتباط با سرور برقرار نشد.';
+            break;
+        }
+      }
+      setLastLoginError(userMessage);
+      logActivity('ورود ناموفق', userMessage);
       return false;
     }
     // Local dev fallback (no Cloudflare backend running): legacy PIN mode.
-    if (!password && username === pinCode) {
+    // Only available in development builds; production never falls back to PIN.
+    if (import.meta.env.DEV && !password && username === pinCode) {
       setIsAdmin(true);
       logActivity('ورود موفق', 'کاربر ادمین وارد پیشخوان شد (حالت محلی).');
       return true;
@@ -641,7 +840,10 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       const parsed = JSON.parse(jsonStr);
       if (parsed && typeof parsed === 'object') {
-        const merged = { ...defaultContentState, ...parsed };
+        const merged = {
+          ...mergeContentDefaults(defaultContentState, parsed),
+          PRODUCTS: reconcileProductCatalog(defaultContentState.PRODUCTS, parsed.PRODUCTS),
+        };
         setData(merged);
         persistLocal(merged);
         setHasUnsavedChanges(false);
@@ -917,7 +1119,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const generateSitemapXml = () => {
-    const baseUrl = (data.GLOBAL_SEO.canonicalBaseUrl || CANONICAL_SITE_URL).replace(/\/$/, '');
+    const baseUrl = resolveCanonicalOrigin(data.GLOBAL_SEO.canonicalBaseUrl, typeof window !== 'undefined' ? window.location.host : '');
     // Real paths (path-based router + Cloudflare Pages SPA fallback).
     const pageUrl = (path: string) => `${baseUrl}/${path}`;
     const pages = [
@@ -1059,6 +1261,16 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logoutAdmin,
         persistence,
         contentReady,
+        syncStatus,
+        lastSyncedAt,
+        syncError,
+        lastLoginError,
+        isRefreshing,
+        hasUnsyncedCloudChanges,
+        saveChanges,
+        saveToCloudNow,
+        resolveConflict,
+        refreshFromCloud,
         updateField,
         addItem,
         removeItem,
@@ -1070,7 +1282,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         openEditModal,
         closeEditModal,
         hasUnsavedChanges,
-        saveChanges,
         duplicateItem,
         duplicateSection,
         duplicatePage,
@@ -1180,7 +1391,6 @@ function createDefaultItemForPath(arrayPath: string): any {
       readTime: '۵ دقیقه مطالعه',
       author: 'امید عدلی',
       authorRole: 'استراتژیست رشد و دیجیتال مارکتینگ',
-      authorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
       imageIcon: 'rocket',
       coverImage: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80',
       featured: false,

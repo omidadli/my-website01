@@ -12,7 +12,7 @@ import type React from 'react';
 import type { Page } from '../types';
 import { legacyHashToPath, parsePath, pathForPage as _pathForPage, routeToPath, type Route as BaseRoute } from '../../lib/routes';
 
-export { STATIC_PAGES, pathForPost, postPath, routeToPath, legacyHashToPath, parsePath } from '../../lib/routes';
+export { STATIC_PAGES, pathForPost, postPath, pathForProduct, routeToPath, legacyHashToPath, parsePath } from '../../lib/routes';
 
 export interface Route extends BaseRoute {
   page: Page;

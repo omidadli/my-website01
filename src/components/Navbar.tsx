@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Page, Theme } from '../types';
 import { useContent } from '../context/ContentContext';
-import { Menu, X, ArrowUpLeft, Sun, Moon } from 'lucide-react';
+import { useUser } from '../context/UserContext';
+import { Menu, X, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { linkProps, pathForPage } from '../utils/router';
 import { safeRecordArray } from '../utils/contentDefaults';
@@ -21,7 +22,7 @@ interface NavbarProps {
   onOpenAdminModal?: () => void;
 }
 
-/* Luxe day/night switch — glossy track, glowing knob (per brand reference) */
+/* Scenic day/night switch — landscape illustration with sliding white knob (per reference design) */
 const ThemeSwitch: React.FC<{ theme: Theme; onToggle?: () => void }> = ({ theme, onToggle }) => {
   const isDark = theme === 'dark';
   return (
@@ -31,29 +32,169 @@ const ThemeSwitch: React.FC<{ theme: Theme; onToggle?: () => void }> = ({ theme,
       aria-label="تغییر تم روز/شب"
       title={isDark ? 'حالت روز' : 'حالت شب'}
       onClick={onToggle}
-      className="relative w-[58px] h-[30px] rounded-full nd-glass shrink-0 cursor-pointer overflow-hidden"
+      className="relative w-[88px] h-[42px] rounded-full shrink-0 cursor-pointer overflow-hidden border-2 border-white/30 shadow-lg"
+      style={{
+        background: isDark
+          // Night: deep indigo/purple sky fading darker toward the bottom
+          ? 'linear-gradient(180deg,#1a1040 0%,#2d1b5e 45%,#0b0524 100%)'
+          // Day: bright blue sky gradient
+          : 'linear-gradient(180deg,#5cc8ff 0%,#89dbff 50%,#b7e8ff 100%)',
+        transition: 'background 0.6s ease',
+      }}
     >
-      {/* edge glow per state */}
+      {/* ==== DAY ELEMENTS (faded out at night) ==== */}
+      {/* Clouds */}
+      <span className="absolute top-1.5 left-3 w-5 h-2.5 rounded-full bg-white/90 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1, boxShadow: '0 0 0 2px rgba(255,255,255,0.7)' }} />
+      <span className="absolute top-2.5 left-6 w-3 h-1.5 rounded-full bg-white/80 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 0.9 }} />
+      <span className="absolute top-3 left-[52%] w-6 h-2.5 rounded-full bg-white/90 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1 }} />
+      <span className="absolute top-5 right-4 w-4 h-1.5 rounded-full bg-white/80 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 0.8 }} />
+      <span className="absolute top-1.5 right-7 w-2 h-1 rounded-full bg-white/70 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 0.7 }} />
+      {/* Small mountain/hill behind trees */}
       <span
-        className="absolute inset-0 rounded-full pointer-events-none transition-shadow duration-500"
-        style={{ boxShadow: isDark ? 'inset 0 0 12px rgba(99,102,241,0.45)' : 'inset 0 0 12px rgba(245,158,11,0.35)' }}
-      />
-      <Sun className="absolute w-3.5 h-3.5 left-[9px] top-1/2 -translate-y-1/2 text-amber-500 transition-opacity duration-300" style={{ opacity: isDark ? 0.45 : 0 }} />
-      <Moon className="absolute w-3.5 h-3.5 right-[9px] top-1/2 -translate-y-1/2 text-indigo-300 transition-opacity duration-300" style={{ opacity: isDark ? 0 : 0.5 }} />
-      <motion.span
-        animate={{ left: isDark ? 29 : 3 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 34 }}
-        className="absolute top-[3px] w-6 h-6 rounded-full grid place-items-center"
+        className="absolute bottom-[14px] left-0 right-0 h-[14px] transition-opacity duration-500"
         style={{
-          background: isDark ? 'linear-gradient(135deg,#312e81,#0ea5e9)' : 'linear-gradient(135deg,#fbbf24,#f59e0b)',
-          boxShadow: isDark ? '0 0 14px rgba(99,102,241,0.8)' : '0 0 14px rgba(245,158,11,0.7)',
+          opacity: isDark ? 0 : 1,
+          background: 'linear-gradient(180deg,#7aa7d9 0%,#6a94c4 100%)',
+          clipPath: 'polygon(0% 100%, 0% 60%, 15% 30%, 30% 55%, 45% 20%, 60% 50%, 75% 25%, 90% 45%, 100% 30%, 100% 100%)',
+        }}
+      />
+      {/* Ground / sand path */}
+      <span
+        className="absolute bottom-0 left-0 right-0 h-[12px] transition-opacity duration-500"
+        style={{
+          opacity: isDark ? 0 : 1,
+          background: 'linear-gradient(180deg,#e8b87a 0%,#d4a062 100%)',
+        }}
+      />
+      {/* Grass patches on ground */}
+      <span className="absolute bottom-[11px] left-[20%] w-1 h-2 bg-green-500 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1, clipPath: 'polygon(50% 0,0 100%,100% 100%)' }} />
+      <span className="absolute bottom-[11px] left-[45%] w-1 h-2 bg-green-600 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1, clipPath: 'polygon(50% 0,0 100%,100% 100%)' }} />
+      <span className="absolute bottom-[11px] right-[30%] w-1 h-2 bg-green-500 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1, clipPath: 'polygon(50% 0,0 100%,100% 100%)' }} />
+      <span className="absolute bottom-[11px] right-[15%] w-1 h-2 bg-green-600 transition-opacity duration-500" style={{ opacity: isDark ? 0 : 1, clipPath: 'polygon(50% 0,0 100%,100% 100%)' }} />
+      {/* Rocks */}
+      <span
+        className="absolute bottom-[6px] left-[40%] w-5 h-3 rounded-t-lg transition-opacity duration-500"
+        style={{ opacity: isDark ? 0 : 1, background: 'linear-gradient(180deg,#5a6a7d,#3f4d5e)', borderRadius: '50% 50% 20% 20%' }}
+      />
+      <span
+        className="absolute bottom-[6px] left-[55%] w-3.5 h-2 rounded-t-lg transition-opacity duration-500"
+        style={{ opacity: isDark ? 0 : 1, background: 'linear-gradient(180deg,#667689,#4a586a)', borderRadius: '50% 50% 20% 20%' }}
+      />
+      <span
+        className="absolute bottom-[6px] right-[25%] w-4 h-2.5 rounded-t-lg transition-opacity duration-500"
+        style={{ opacity: isDark ? 0 : 1, background: 'linear-gradient(180deg,#5e6e80,#455366)', borderRadius: '50% 50% 20% 20%' }}
+      />
+      {/* Pine trees (day - green) */}
+      <PineTree left="62%" height={18} color="#2d8f3e" dark={isDark} />
+      <PineTree left="70%" height={14} color="#34a048" dark={isDark} />
+      <PineTree left="77%" height={20} color="#28883a" dark={isDark} />
+      <PineTree left="84%" height={16} color="#2f9644" dark={isDark} />
+      <PineTree left="90%" height={17} color="#2a8d3c" dark={isDark} />
+
+      {/* ==== NIGHT ELEMENTS (faded in at night) ==== */}
+      {/* Stars */}
+      <span className="absolute top-2 left-[35%] w-0.5 h-0.5 rounded-full bg-yellow-200 transition-opacity duration-500" style={{ opacity: isDark ? 0.9 : 0, boxShadow: '0 0 3px #fde68a' }} />
+      <span className="absolute top-3 left-[48%] w-0.5 h-0.5 rounded-full bg-yellow-100 transition-opacity duration-500" style={{ opacity: isDark ? 0.7 : 0, boxShadow: '0 0 2px #fef3c7' }} />
+      <span className="absolute top-1.5 left-[60%] w-0.5 h-0.5 rounded-full bg-yellow-200 transition-opacity duration-500" style={{ opacity: isDark ? 0.8 : 0, boxShadow: '0 0 3px #fde68a' }} />
+      <span className="absolute top-4 left-[70%] w-0.5 h-0.5 rounded-full bg-yellow-100 transition-opacity duration-500" style={{ opacity: isDark ? 0.6 : 0 }} />
+      <span className="absolute top-2.5 right-[45%] w-0.5 h-0.5 rounded-full bg-amber-200 transition-opacity duration-500" style={{ opacity: isDark ? 0.9 : 0, boxShadow: '0 0 4px #fbbf24' }} />
+      <span className="absolute top-5 left-[42%] w-0.5 h-0.5 rounded-full bg-yellow-100 transition-opacity duration-500" style={{ opacity: isDark ? 0.5 : 0 }} />
+      {/* Orange moon (on the left in night mode) */}
+      <span
+        className="absolute top-1/2 -translate-y-1/2 w-[30px] h-[30px] rounded-full transition-opacity duration-500"
+        style={{
+          left: '6px',
+          opacity: isDark ? 1 : 0,
+          background: 'radial-gradient(circle at 35% 35%, #ffcc66 0%, #ff9933 40%, #e6731a 75%, #c55a0f 100%)',
+          boxShadow: '0 0 18px rgba(255,150,50,0.7), 0 0 32px rgba(255,120,30,0.35)',
         }}
       >
-        {isDark ? <Moon className="w-3 h-3 text-sky-100" /> : <Sun className="w-3 h-3 text-amber-50" />}
-      </motion.span>
+        {/* Moon craters */}
+        <span className="absolute top-2 left-3 w-2 h-2 rounded-full bg-orange-700/30" />
+        <span className="absolute top-4 left-6 w-1.5 h-1.5 rounded-full bg-orange-800/25" />
+        <span className="absolute top-6 left-4 w-2.5 h-2.5 rounded-full bg-orange-700/20" />
+      </span>
+      {/* Small night cloud near moon */}
+      <span className="absolute top-4 left-9 w-8 h-2 rounded-full bg-white/25 transition-opacity duration-500" style={{ opacity: isDark ? 1 : 0 }} />
+      <span className="absolute top-5.5 left-7 w-5 h-1.5 rounded-full bg-white/20 transition-opacity duration-500" style={{ opacity: isDark ? 0.8 : 0 }} />
+      {/* Dark tree silhouettes (night) */}
+      <span
+        className="absolute bottom-0 left-0 right-0 h-[22px] transition-opacity duration-500"
+        style={{
+          opacity: isDark ? 1 : 0,
+          background: '#050212',
+          clipPath: 'polygon(0 100%, 0 40%, 4% 25%, 7% 50%, 10% 15%, 13% 45%, 16% 20%, 19% 40%, 23% 10%, 26% 35%, 30% 20%, 34% 42%, 38% 18%, 42% 38%, 46% 25%, 50% 45%, 54% 22%, 58% 40%, 62% 15%, 66% 38%, 70% 28%, 100% 30%, 100% 100%)',
+        }}
+      />
+
+      {/* ==== SLIDING WHITE KNOB ==== */}
+      <motion.span
+        animate={{ left: isDark ? 'calc(100% - 36px)' : '4px' }}
+        transition={{ type: 'spring', stiffness: 450, damping: 32 }}
+        className="absolute top-[4px] w-[34px] h-[34px] rounded-full z-10"
+        style={{
+          background: 'radial-gradient(circle at 30% 30%, #ffffff 0%, #f0f0f5 60%, #d8d8e2 100%)',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.5) inset, -2px -2px 6px rgba(255,255,255,0.8) inset',
+        }}
+      />
     </button>
   );
 };
+
+/* Small pine tree element for the day scene */
+const PineTree: React.FC<{ left: string; height: number; color: string; dark: boolean }> = ({ left, height, color, dark }) => (
+  <span
+    className="absolute bottom-[8px] transition-opacity duration-500"
+    style={{
+      left,
+      opacity: dark ? 0 : 1,
+      width: `${height * 0.6}px`,
+      height: `${height}px`,
+    }}
+  >
+    {/* Trunk */}
+    <span
+      className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[3px] rounded-sm"
+      style={{ height: `${height * 0.25}px`, background: '#5c3a1e' }}
+    />
+    {/* Tree layers (triangles) */}
+    <span
+      className="absolute left-1/2 -translate-x-1/2 rounded-sm"
+      style={{
+        bottom: `${height * 0.2}px`,
+        width: 0,
+        height: 0,
+        borderLeft: `${height * 0.3}px solid transparent`,
+        borderRight: `${height * 0.3}px solid transparent`,
+        borderBottom: `${height * 0.35}px solid ${color}`,
+      }}
+    />
+    <span
+      className="absolute left-1/2 -translate-x-1/2 rounded-sm"
+      style={{
+        bottom: `${height * 0.4}px`,
+        width: 0,
+        height: 0,
+        borderLeft: `${height * 0.25}px solid transparent`,
+        borderRight: `${height * 0.25}px solid transparent`,
+        borderBottom: `${height * 0.35}px solid ${color}`,
+        filter: 'brightness(1.1)',
+      }}
+    />
+    <span
+      className="absolute left-1/2 -translate-x-1/2 rounded-sm"
+      style={{
+        bottom: `${height * 0.6}px`,
+        width: 0,
+        height: 0,
+        borderLeft: `${height * 0.2}px solid transparent`,
+        borderRight: `${height * 0.2}px solid transparent`,
+        borderBottom: `${height * 0.3}px solid ${color}`,
+        filter: 'brightness(1.15)',
+      }}
+    />
+  </span>
+);
 
 export const Navbar: React.FC<NavbarProps> = ({
   theme,
@@ -62,6 +203,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleTheme,
 }) => {
   const { data } = useContent();
+  const { isLoggedIn, profile } = useUser();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -130,13 +272,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Theme switch */}
           {onToggleTheme && <ThemeSwitch theme={theme} onToggle={onToggleTheme} />}
 
-          {/* CTA */}
+          {/* Profile Button */}
           <a
-            {...linkProps(pathForPage('contact'), () => go('contact'))}
-            className="nd-btn nd-btn-accent hidden sm:inline-flex px-5 py-2.5 text-[12px] shrink-0"
+            {...linkProps(pathForPage('profile'), () => go('profile'))}
+            aria-label="پروفایل کاربری"
+            title={profile ? `پروفایل ${profile.fullName}` : 'ورود / ثبت‌نام'}
+            className={`w-10 h-10 rounded-full grid place-items-center shrink-0 transition-all cursor-pointer ${
+              currentPage === 'profile'
+                ? 'bg-[color:var(--nd-ink)] text-[color:var(--nd-bg)]'
+                : 'nd-glass text-[color:var(--nd-muted)] hover:text-[color:var(--nd-accent)]'
+            } ${isLoggedIn ? 'ring-2 ring-[color:var(--nd-accent)]/30' : ''}`}
           >
-            <span>گفتگوی رایگان</span>
-            <ArrowUpLeft className="w-3.5 h-3.5" />
+            <User className="w-4.5 h-4.5" />
           </a>
 
           {/* Mobile toggle */}
@@ -175,9 +322,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </a>
               );
             })}
-            <a {...linkProps(pathForPage('contact'), () => go('contact'))} className="nd-btn nd-btn-accent w-full py-3.5 text-sm mt-2">
-              <span>گفتگوی رایگان</span>
-              <ArrowUpLeft className="w-4 h-4" />
+            <a {...linkProps(pathForPage('profile'), () => go('profile'))} className="nd-btn nd-btn-accent w-full py-3.5 text-sm mt-2">
+              <span>{isLoggedIn ? 'پروفایل من' : 'ورود / ثبت‌نام'}</span>
+              <User className="w-4 h-4" />
             </a>
           </motion.div>
         )}

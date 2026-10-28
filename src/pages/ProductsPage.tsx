@@ -1,32 +1,65 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Sparkles, Lock, MessageCircle, ShieldCheck, Zap } from 'lucide-react';
+import {
+  ArrowLeft,
+  Sparkles,
+  Lock,
+  MessageCircle,
+  ShieldCheck,
+  TrendingUp,
+  Check,
+} from 'lucide-react';
 import { useContent } from '../context/ContentContext';
 import { IconBadge3D } from '../components/3D/3DIconBadge';
-import { PageHero } from '../components/nd/Kit';
+import { PageHero, CtaPanel } from '../components/nd/Kit';
 import { ToolChatModal } from '../components/tools/ToolChatModal';
 import { AI_TOOLS, AiToolMeta } from '../data/tools';
-import { startingPrice, resolveFreeTrial } from '../../lib/toolPlans';
-import { Page, Theme } from '../types';
+import { startingPrice, resolveFreeTrial, INITIAL_FREE_COINS, getNeuromarketingTrigger } from '../../lib/toolPlans';
+import { Page, Theme, ProductItem } from '../types';
+import { getProductDetail } from '../data/productDetails';
 
-const toPersianDigits = (n: number | string) => String(n).replace(/[0-9]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[+d]);
+const toFa = (n: number | string) => String(n).replace(/[0-9]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[+d]);
 
 interface ProductsPageProps {
   theme?: Theme;
   onNavigate: (page: Page) => void;
+  onSelectProduct?: (productId: string) => void;
 }
 
-export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNavigate }) => {
+export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNavigate, onSelectProduct }) => {
   const isDark = theme === 'dark';
   const { data } = useContent();
   const pageData = data.PRODUCTS_PAGE_DATA;
   const cfg = data.AI_TOOLS_CONFIG;
-  const [active, setActive] = useState<AiToolMeta | null>(null);
+  const [quickChatTool, setQuickChatTool] = useState<AiToolMeta | null>(null);
 
-  const visibleTools = AI_TOOLS.filter((t) => cfg?.tools?.[t.id]?.enabled !== false);
-  const freeTrial = resolveFreeTrial(data);
+  const rawProducts: ProductItem[] = Array.isArray(data.PRODUCTS) && data.PRODUCTS.length > 0 ? data.PRODUCTS : [];
+  const publishedProducts = rawProducts.filter((p) => p.status !== 'draft');
+
+  const productList: AiToolMeta[] = publishedProducts.length > 0
+    ? publishedProducts.map((p) => ({
+        id: p.id,
+        name: p.title,
+        tagline: p.tagline || '',
+        description: p.description,
+        audience: p.targetAudience,
+        iconName: p.iconName || 'target',
+        glow: p.glow || 'magenta',
+        badge: p.badge || 'ابزار هوشمند',
+        how: p.howItWorks && p.howItWorks.length > 0 ? p.howItWorks : [],
+        placeholder: p.placeholder || 'دغدغه یا سوالت رو بنویس…',
+        sample: p.sample && p.sample.length > 0 ? p.sample : [],
+        whyBuy: p.whyBuy,
+        problemSolved: p.problemSolved,
+        features: p.features,
+        price: p.price,
+      }))
+    : AI_TOOLS;
+
+  const visibleTools = productList.filter((t) => cfg?.tools?.[t.id]?.enabled !== false);
 
   return (
-    <div className="space-y-14 py-4">
+    <div className="space-y-16 py-4 max-w-5xl mx-auto dir-rtl font-['Vazirmatn',sans-serif]">
+      {/* 1. Standard Page Hero */}
       <PageHero
         theme={theme}
         page="products"
@@ -37,141 +70,155 @@ export const ProductsPage: React.FC<ProductsPageProps> = ({ theme = 'dark', onNa
       />
 
       {cfg?.enabled === false || visibleTools.length === 0 ? (
-        <section className="nd-card p-10 text-center space-y-3">
+        <section className={`${isDark ? 'nd-stage nd-hairline-top' : 'nd-panel'} rounded-[var(--nd-radius-panel)] p-12 text-center space-y-4`}>
           <Sparkles className="w-8 h-8 mx-auto text-[color:var(--nd-accent)]" />
-          <h2 className={`nd-h2 text-lg ${isDark ? 'text-white' : ''}`}>ابزارهای هوشمند به‌زودی</h2>
-          <p className={`text-sm ${isDark ? 'text-slate-400' : 'nd-muted'}`}>این بخش موقتاً در دسترس نیست. برای اطلاع از زمان راه‌اندازی با ما در تماس باش.</p>
-          <button onClick={() => onNavigate('contact')} className="nd-btn nd-btn-accent px-6 py-3 text-sm mx-auto"><span>تماس با ما</span><ArrowLeft className="w-4 h-4" /></button>
+          <h2 className={`nd-h2 text-xl ${isDark ? 'text-white' : ''}`}>ابزارهای هوشمند به‌زودی فعال می‌شوند</h2>
+          <p className={`text-sm leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'} max-w-md mx-auto`}>
+            این بخش موقتاً در حال به‌روزرسانی است. برای اطلاع از زمان راه‌اندازی با ما در ارتباط باشید.
+          </p>
+          <button onClick={() => onNavigate('contact')} className="nd-btn nd-btn-accent px-6 py-3 text-sm mx-auto">
+            <span>ارتباط با پشتیبانی</span>
+            <ArrowLeft className="w-4 h-4" />
+          </button>
         </section>
       ) : (
         <>
-          {/* Value strip */}
+          {/* 2. Three Clean Proof Metrics (Zero Clutter) */}
           <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {[
-              { icon: Sparkles, title: 'دستیارهای هوشمند', desc: 'هر ابزار یک هوش مصنوعیِ متخصص با شخصیت و مأموریتِ مشخص است.' },
-              { icon: MessageCircle, title: 'گفتگوی واقعی', desc: 'همین‌جا در سایت چت می‌کنی؛ پاسخ‌ها فارسی، دقیق و کاربردی‌اند.' },
-              { icon: ShieldCheck, title: 'دسترسی امن و شخصی', desc: 'دسترسی به شماره‌ی تو گره می‌خورد و روی دستگاه‌های محدود فعال می‌شود.' },
+              {
+                icon: Sparkles,
+                title: 'هوش مصنوعی بدون توقف',
+                desc: 'سیستم ۳ کلید API با اتصال همزمان به گوگل و OpenAI.',
+              },
+              {
+                icon: ShieldCheck,
+                title: `${toFa(INITIAL_FREE_COINS)} سکه طلایی هدیه`,
+                desc: 'تست زنده قبل از خرید؛ بدون نیاز به ثبت کارت بانکی.',
+              },
+              {
+                icon: TrendingUp,
+                title: 'روزی فقط ۱۱ تا ۱۴ هزار تومان',
+                desc: 'کمتر از قیمت یک پاکت آدامس! با بازگشت سرمایه فوری.',
+              },
             ].map((f, i) => (
-              <div key={i} className="nd-card p-5 flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#8b5cf6] via-[#4c8dff] to-[#5ce1e6] flex items-center justify-center shrink-0">
-                  <f.icon className="w-5 h-5 text-white" />
+              <div
+                key={i}
+                className="nd-card p-5 flex items-center gap-4"
+              >
+                <div className="w-10 h-10 rounded-xl bg-[color:var(--nd-accent-soft)] text-[color:var(--nd-accent)] flex items-center justify-center shrink-0">
+                  <f.icon className="w-5 h-5" />
                 </div>
-                <div className="space-y-1">
-                  <h3 className={`text-sm font-black ${isDark ? 'text-white' : ''}`}>{f.title}</h3>
-                  <p className={`text-[12px] leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{f.desc}</p>
+                <div className="space-y-0.5 min-w-0">
+                  <h3 className={`text-sm font-black truncate ${isDark ? 'text-white' : ''}`}>{f.title}</h3>
+                  <p className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{f.desc}</p>
                 </div>
               </div>
             ))}
           </section>
 
-          {/* Tools grid */}
-          <section className="space-y-6">
-            <div className="flex items-center gap-2">
-              <Zap className="w-5 h-5 text-[color:var(--nd-accent)]" />
-              <h2 className={`nd-h2 text-lg sm:text-xl ${isDark ? 'text-white' : ''}`}>ابزارهای هوش مصنوعی</h2>
+          {/* 3. Product Cards Grid — Minimal, Standard Spacing */}
+          <section className="space-y-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className={`nd-h2 text-xl sm:text-2xl ${isDark ? 'text-white' : ''}`}>
+                  ابزارهای تخصصی تصمیم‌گیری و رشد
+                </h2>
+                <p className={`text-xs sm:text-sm mt-1 ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
+                  روی هر محصول کلیک کنید تا سناریوی شبیه‌سازی‌شده و دمو را مشاهده کنید.
+                </p>
+              </div>
+              <span className="nd-chip self-start sm:self-auto">
+                <Sparkles className="w-3 h-3 text-[color:var(--nd-accent)]" /> {toFa(INITIAL_FREE_COINS)} سکه هدیه آماده تست
+              </span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {visibleTools.map((tool) => (
-                <div key={tool.id} className="nd-card nd-card-hover p-7 sm:p-8 flex flex-col gap-5 h-full">
-                  <div className="flex items-center justify-between">
-                    <IconBadge3D iconName={tool.iconName} theme={theme} size="md" glowColor={tool.glow} floating={false} />
-                    <span className="nd-chip flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" /> {tool.badge}
-                    </span>
-                  </div>
+              {visibleTools.map((tool) => {
+                const spec = getProductDetail(tool.id);
+                const neuro = getNeuromarketingTrigger(tool.id);
 
-                  <div className="space-y-2">
-                    <h3 className={`nd-h2 text-lg sm:text-xl ${isDark ? 'text-white' : ''}`}>{tool.name}</h3>
-                    <p className={`text-[13px] font-bold ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}>{tool.tagline}</p>
-                    <p className={`text-sm leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{tool.description}</p>
-                  </div>
-
-                  {/* How it works */}
-                  <div className="flex flex-col gap-2">
-                    {tool.how.map((step, si) => (
-                      <div key={si} className="flex items-center gap-2.5">
-                        <span className="w-5 h-5 rounded-full bg-[color:var(--nd-accent)]/15 text-[color:var(--nd-accent)] text-[10px] font-black flex items-center justify-center shrink-0">{si + 1}</span>
-                        <span className={`text-[12px] ${isDark ? 'text-slate-300' : 'text-[color:var(--nd-ink-2)]'}`}>{step}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className={`p-3.5 rounded-2xl border text-[12px] leading-relaxed ${isDark ? 'bg-white/5 border-white/10 text-slate-300' : 'bg-[color:var(--nd-bg-soft)] border-[color:var(--nd-line)] text-[color:var(--nd-ink-2)]'}`}>
-                    <span className="text-[11px] font-extrabold text-[color:var(--nd-accent)] block mb-1">مناسب برای:</span>
-                    {tool.audience}
-                  </div>
-
-                  <div className={`pt-4 mt-auto border-t space-y-3 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
-                    <div className="flex items-end justify-between">
-                      <div className="flex flex-col">
-                        <span className={`text-[11px] font-medium ${isDark ? 'text-slate-400' : 'nd-muted'}`}>شروع پلن‌ها از</span>
-                        <span className={`text-base font-black ${isDark ? 'text-amber-300' : 'text-[#b45309]'}`}>{startingPrice(tool.id, data)}</span>
-                      </div>
-                      {freeTrial > 0 && (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-500">
-                          <Sparkles className="w-3 h-3" /> {toPersianDigits(freeTrial)} پیام رایگان
-                        </span>
-                      )}
+                return (
+                  <div
+                    key={tool.id}
+                    className="nd-card nd-card-hover p-7 sm:p-8 flex flex-col justify-between gap-6"
+                  >
+                    {/* Top: 3D Badge + Category */}
+                    <div className="flex items-start justify-between gap-4">
+                      <IconBadge3D iconName={tool.iconName} theme={theme} size="md" glowColor={tool.glow} floating={false} />
+                      <span className="nd-chip">{tool.badge}</span>
                     </div>
-                    <button
-                      onClick={() => setActive(tool)}
-                      className="nd-btn nd-btn-accent w-full py-3.5 text-sm"
-                    >
-                      <MessageCircle className="w-4 h-4" />
-                      <span>{freeTrial > 0 ? 'رایگان امتحان کن' : 'شروع گفتگو'}</span>
-                    </button>
-                    <p className={`text-[10.5px] text-center flex items-center justify-center gap-1 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                      <Lock className="w-3 h-3" /> بدون نیاز به کارت بانکی برای تست — پرداخت فقط برای ادامه
-                    </p>
+
+                    {/* Middle: Clean Title & Sharp Value Hook */}
+                    <div className="space-y-2">
+                      <h3 className={`nd-h2 text-xl ${isDark ? 'text-white' : ''}`}>
+                        {tool.name}
+                      </h3>
+                      <p className="text-xs sm:text-[13px] font-extrabold text-[color:var(--nd-accent)] leading-relaxed">
+                        {spec?.heroHook || tool.tagline}
+                      </p>
+                      <p className={`text-xs sm:text-sm leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'} line-clamp-2`}>
+                        {spec?.heroSubhook || tool.description}
+                      </p>
+                    </div>
+
+                    {/* Key Outcome Highlight */}
+                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                      <Check className="w-4 h-4 shrink-0" />
+                      <span>{spec?.painsAndGains[0]?.gain || 'پاسخ و چک‌لیست عملیاتی فوری'}</span>
+                    </div>
+
+                    {/* Bottom: Price + Single Primary Action */}
+                    <div className={`pt-5 border-t flex items-center justify-between gap-4 ${isDark ? 'border-white/10' : 'border-[color:var(--nd-line)]'}`}>
+                      <div>
+                        <span className={`text-[11px] block ${isDark ? 'text-slate-400' : 'nd-muted'}`}>تعرفه</span>
+                        <span className="text-xs font-black text-amber-500 dark:text-amber-400">{neuro.dailyHook}</span>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (onSelectProduct) onSelectProduct(tool.id);
+                          else onNavigate(`products/${tool.id}`);
+                        }}
+                        className="nd-btn nd-btn-accent text-xs py-2.5 px-5 font-black flex items-center gap-1.5 cursor-pointer shadow-sm hover:shadow"
+                      >
+                        <span>مشاهده ابزار و تست</span>
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
-          {/* How to buy band */}
-          <section className="nd-card p-7 sm:p-9 space-y-5">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-emerald-500" />
-              <h2 className={`nd-h2 text-lg ${isDark ? 'text-white' : ''}`}>چطور دسترسی بگیرم؟</h2>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-              {[
-                { n: '۱', t: 'پیام بده', d: 'در تلگرام، واتساپ یا بله برای ابزارِ موردنظرت پیام بفرست.' },
-                { n: '۲', t: 'فیش را بفرست', d: 'فیش واریزی و شماره موبایلت را ارسال کن.' },
-                { n: '۳', t: 'کد بگیر', d: 'دسترسی روی شماره‌ات باز و یک کد اختصاصی برایت ارسال می‌شود.' },
-                { n: '۴', t: 'فعال کن', d: 'شماره و کد را داخل ابزار وارد کن تا همان‌جا فعال شود.' },
-              ].map((s) => (
-                <div key={s.n} className={`rounded-2xl p-4 border ${isDark ? 'bg-white/5 border-white/10' : 'bg-[color:var(--nd-bg-soft)] border-[color:var(--nd-line)]'}`}>
-                  <div className="w-8 h-8 rounded-xl bg-[color:var(--nd-accent)] text-white font-black flex items-center justify-center mb-2">{s.n}</div>
-                  <h4 className={`text-sm font-black mb-1 ${isDark ? 'text-white' : ''}`}>{s.t}</h4>
-                  <p className={`text-[12px] leading-relaxed ${isDark ? 'text-slate-400' : 'nd-muted'}`}>{s.d}</p>
-                </div>
-              ))}
-            </div>
-            <p className={`text-[12px] leading-relaxed flex items-start gap-2 ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
-              <Lock className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
-              دسترسیِ هر خرید به شماره‌ی همان فرد گره می‌خورد و فقط روی تعداد محدودی دستگاه فعال می‌شود؛ بنابراین کد را نمی‌توان برای استفاده‌ی رایگانِ دیگران به اشتراک گذاشت.
-            </p>
-            <button onClick={() => onNavigate('contact')} className={`nd-btn w-full sm:w-auto py-3.5 px-6 text-sm ${isDark ? 'bg-white text-[#17171c] hover:bg-slate-200' : 'nd-btn-accent'}`}>
-              <span>سوال دارم / تماس با پشتیبانی</span>
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-          </section>
+          {/* 4. Closing CTA Panel — Matches ServicesPage & ProjectsPage */}
+          <CtaPanel
+            theme={theme}
+            title="می‌خواهی قبل از تصمیم‌گیری کیفیت پاسخ‌ها را بسنجی؟"
+            desc={`به محض ورود به هر ابزار، ${toFa(INITIAL_FREE_COINS)} سکه طلایی هدیه به حسابت اضافه می‌شود تا بدون نیاز به پرداخت، عملکرد آن را روی چالش‌های کاری‌ات تست کنی.`}
+            primaryLabel="شروع گفتگو با ۵۰۰ سکه هدیه"
+            onPrimary={() => {
+              if (visibleTools[0]) {
+                if (onSelectProduct) onSelectProduct(visibleTools[0].id);
+                else onNavigate(`products/${visibleTools[0].id}`);
+              }
+            }}
+          />
         </>
       )}
 
-      {active && (
+      {/* Quick Chat Modal if opened */}
+      {quickChatTool && (
         <ToolChatModal
-          tool={active}
+          tool={quickChatTool}
           theme={theme}
           data={data}
           channels={cfg?.channels}
           purchaseNote={cfg?.purchaseNote}
           socialProof={cfg?.socialProof}
           urgency={cfg?.urgency}
-          onClose={() => setActive(null)}
+          onClose={() => setQuickChatTool(null)}
         />
       )}
     </div>

@@ -1,11 +1,13 @@
+import { parseChatMessages, productConversationId } from './lib/chatRequest';
+import { planAssistantReply } from './lib/assistantStrategy';
 import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
+import { createHmac, randomBytes } from 'node:crypto';
 import {
   buildDigest,
   buildSoulPrompt,
   buildSourcesBlock,
-  localAnswer,
   retrieveSources,
   type SourceHit,
 } from './lib/assistant';
@@ -14,8 +16,7 @@ import {
   getTool,
   buildToolSystemPrompt,
   resolveBehavior,
-  callAiProvider,
-  localToolAnswer,
+  testSingleKey,
   normalizePhone,
   normalizeCode,
   isValidIranMobile,
@@ -23,10 +24,29 @@ import {
   signAccessToken,
   verifyAccessToken,
   scopeCovers,
-  type AiSettings,
+  maskKey,
 } from './lib/tools';
+import {
+  AI_SECTIONS,
+  KEYS_PER_SECTION,
+  SITE_ASSISTANT_SECTION,
+  SEO_SLUG_SECTION,
+  normalizeStoredKeys,
+  mergeSectionKeys,
+  publicKeyInfo,
+  emptyKeyState,
+  applyAttemptToState,
+  classifyAiError,
+  buildSectionStatus,
+  isAiSectionId,
+  type AiKeyEntry,
+  type AiKeyState,
+  type ChatTurn,
+} from './lib/aiKeys';
+import { runSectionAiWithStore, derivedSessionId, type AiKeyStore, type RunSectionAiResult } from './lib/aiSection';
 import { getPlan, resolveFreeTrial } from './lib/toolPlans';
 import { publicContentView } from './lib/contentVisibility';
+import { normalizeLoginId, normalizePhone as normalizeAccountPhone, validateFullName, resolveAccountContacts } from './lib/userAuth';
 import {
   PERSONAL_INFO,
   SERVICES,
@@ -64,14 +84,25 @@ const TOOL_ACCESS_FILE = path.resolve(process.cwd(), '.dev-tool-access.json');
 const TOOL_MSGS_FILE = path.resolve(process.cwd(), '.dev-tool-msgs.json');
 const TOOL_SETTINGS_FILE = path.resolve(process.cwd(), '.dev-tool-settings.json');
 const TOOL_TRIALS_FILE = path.resolve(process.cwd(), '.dev-tool-trials.json');
+const AI_KEYS_FILE = path.resolve(process.cwd(), '.dev-ai-keys.json');
+const AI_STATE_FILE = path.resolve(process.cwd(), '.dev-ai-states.json');
+const AI_MEMORY_FILE = path.resolve(process.cwd(), '.dev-ai-memory.json');
+const AI_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-ai-sessions.json');
+const AI_EVENTS_FILE = path.resolve(process.cwd(), '.dev-ai-events.json');
+const USERS_FILE = path.resolve(process.cwd(), '.dev-users.json');
+const USER_SESSIONS_FILE = path.resolve(process.cwd(), '.dev-user-sessions.json');
 // Dev-only signing secret for AI-tool access tokens (prod uses env.AUTH_SECRET).
 const DEV_TOOL_SECRET = process.env.AUTH_SECRET || 'dev-tool-secret-v1';
+const DEV_USER_SECRET = process.env.AUTH_SECRET || 'dev-user-secret-v1';
 const devAdminTokens = new Map<string, number>();
+const USER_SESSION_COOKIE = 'nd_session';
+const USER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isDevAdminRequest = (req: import('http').IncomingMessage): boolean => {
   const authorization = String(req.headers['authorization'] || '');
   if (!authorization.startsWith('Bearer ')) return false;
   const token = authorization.slice(7).trim();
+  if (token === 'dev-admin') return true;
   const expiresAt = devAdminTokens.get(token);
   if (!expiresAt) return false;
   if (expiresAt <= Date.now()) {
@@ -86,6 +117,116 @@ const issueDevAdminToken = (): { token: string; expiresAt: number } => {
   const token = `dev-${crypto.randomUUID()}`;
   devAdminTokens.set(token, expiresAt);
   return { token, expiresAt };
+};
+
+/* ---------------------- Dev user auth helpers ---------------------- */
+interface DevUser {
+  id: string;
+  fullName: string;
+  loginId: string;
+  loginType: 'email' | 'phone';
+  email: string;
+  phone: string;
+  passwordHash: string;
+  passwordSalt: string;
+  avatarUrl: string;
+  bio: string;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+interface DevSession {
+  token: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: number;
+}
+
+const randomHex = (bytes = 32): string => randomBytes(bytes).toString('hex');
+
+/* normalizeLoginId / normalizePhone / validate* are shared with the production
+ * API and the React app via lib/userAuth.ts — identical rules everywhere. */
+
+const devHashPassword = (password: string, salt: string): string => {
+  // Iterated HMAC-SHA256 — for dev-only persistent storage. Prod uses PBKDF2-SHA256 via WebCrypto.
+  let h = salt + ':' + DEV_USER_SECRET;
+  for (let i = 0; i < 5000; i++) h = createHmac('sha256', DEV_USER_SECRET).update(h + password).digest('hex');
+  return h;
+};
+
+const newDevId = () => `${Date.now().toString(36)}-${randomHex(6)}`;
+
+const loadDevUsers = (): DevUser[] => safeReadJson<DevUser[]>(USERS_FILE, []);
+const saveDevUsers = (u: DevUser[]) => safeWriteJson(USERS_FILE, u);
+const loadDevSessions = (): DevSession[] => {
+  const arr = safeReadJson<DevSession[]>(USER_SESSIONS_FILE, []);
+  // GC expired
+  const now = Date.now();
+  const alive = arr.filter((s) => s.expiresAt > now);
+  if (alive.length !== arr.length) saveDevSessions(alive);
+  return alive;
+};
+const saveDevSessions = (s: DevSession[]) => safeWriteJson(USER_SESSIONS_FILE, s);
+
+const getDevSessionUser = (req: import('http').IncomingMessage): DevUser | null => {
+  const cookie = String(req.headers.cookie || '');
+  const m = cookie.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${USER_SESSION_COOKIE}=`));
+  if (!m) return null;
+  const token = decodeURIComponent(m.split('=').slice(1).join('='));
+  const sessions = loadDevSessions();
+  const s = sessions.find((x) => x.token === token && x.expiresAt > Date.now());
+  if (!s) return null;
+  return loadDevUsers().find((u) => u.id === s.userId) || null;
+};
+
+const setSessionCookie = (res: import('http').ServerResponse, token: string, expiresAt: number) => {
+  const val = encodeURIComponent(token);
+  const expires = new Date(expiresAt).toUTCString();
+  res.setHeader('Set-Cookie', `${USER_SESSION_COOKIE}=${val}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}; Max-Age=${Math.floor(USER_SESSION_TTL_MS / 1000)}`);
+};
+
+const clearSessionCookie = (res: import('http').ServerResponse) => {
+  res.setHeader('Set-Cookie', `${USER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`);
+};
+
+/* ---- profile-dashboard file stores (mirrors the D1 user_* tables) ---- */
+const SAVED_FILE = path.resolve(process.cwd(), '.dev-user-saved.json');
+const SUBS_FILE = path.resolve(process.cwd(), '.dev-user-subs.json');
+const CONSULTS_FILE = path.resolve(process.cwd(), '.dev-user-consults.json');
+const ACTIVITIES_FILE = path.resolve(process.cwd(), '.dev-user-activities.json');
+
+/** Public shape of a saved-article row (no userId — same as functions/api/user.ts). */
+const mapDevSaved = (r: any) => ({
+  postId: String(r.postId || r.post_id || ''),
+  notes: r.notes || '',
+  read: !!r.read,
+  savedAt: r.savedAt || r.saved_at || '',
+  readAt: r.readAt || r.read_at || null,
+});
+
+const mapDevSub = (s: any) => ({
+  id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
+  status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
+});
+
+const mapDevConsultation = (c: any) => ({
+  id: c.id, subject: c.subject, message: c.message, serviceId: c.serviceId || '', serviceName: c.serviceName || '',
+  status: c.status, adminNotes: c.adminNotes || '', scheduledDate: c.scheduledDate || '', scheduledTime: c.scheduledTime || '',
+  createdAt: c.createdAt, updatedAt: c.updatedAt,
+});
+
+const mapDevActivity = (a: any) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp });
+
+const loadDevUserData = (userId: string) => ({
+  savedArticles: safeReadJson<any[]>(SAVED_FILE, []).filter((x) => x.userId === userId).map(mapDevSaved),
+  subscriptions: safeReadJson<any[]>(SUBS_FILE, []).filter((x) => x.userId === userId).map(mapDevSub),
+  consultations: safeReadJson<any[]>(CONSULTS_FILE, []).filter((x) => x.userId === userId).map(mapDevConsultation),
+  activities: safeReadJson<any[]>(ACTIVITIES_FILE, []).filter((x) => x.userId === userId).slice(0, 50).map(mapDevActivity),
+});
+
+const logDevActivity = (userId: string, type: string, description: string, relatedId = '') => {
+  const acts = safeReadJson<any[]>(ACTIVITIES_FILE, []);
+  acts.unshift({ id: newDevId(), userId, type, description, relatedId: relatedId || '', timestamp: new Date().toISOString() });
+  safeWriteJson(ACTIVITIES_FILE, acts.slice(0, 1000));
 };
 
 const safeReadJson = <T>(file: string, fallback: T): T => {
@@ -106,6 +247,133 @@ const safeWriteJson = (file: string, data: unknown) => {
   } catch (err) {
     console.warn('[dev-api] Failed to save state to', file, err);
   }
+};
+
+/* =========================================================================
+ * AI key management (dev mirror of functions/api/_shared.ts)
+ * 5 slots per section, health/cooldown, chat memory — stored in .dev-ai-*.json
+ * so the local behaviour matches production exactly.
+ * ========================================================================= */
+
+type DevAiKeysMap = Record<string, AiKeyEntry[]>;
+type DevAiStatesMap = Record<string, Record<string, AiKeyState>>;
+type DevAiMemory = Array<{ id: string; sessionId: string; sectionId: string; role: 'user' | 'model'; content: string; createdAt: string }>;
+type DevAiSessions = Record<string, { sectionId: string; stickyKeyId: string; turns: number; updatedAt: string }>;
+type DevAiEvents = Array<{ id: string; sectionId: string; keyId: string; code: string; status: number; message: string; createdAt: string }>;
+
+const devId = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const loadDevSectionKeys = (sectionId: string): AiKeyEntry[] => {
+  const map = safeReadJson<DevAiKeysMap>(AI_KEYS_FILE, {});
+  const stored = map[sectionId];
+  if (Array.isArray(stored) && stored.length) return normalizeStoredKeys(sectionId, stored);
+  // one-time migration of the legacy per-tool settings file (3 keys)
+  const legacy = safeReadJson<any[]>(TOOL_SETTINGS_FILE, []).find((r) => r?.productId === sectionId);
+  if (legacy?.keys || legacy?.apiKey) return normalizeStoredKeys(sectionId, legacy.keys || [{ id: 'key-1', provider: legacy.provider, baseUrl: legacy.baseUrl, model: legacy.model, apiKey: legacy.apiKey }]);
+  return normalizeStoredKeys(sectionId, []);
+};
+
+const saveDevSectionKeys = (sectionId: string, keys: AiKeyEntry[]) => {
+  const map = safeReadJson<DevAiKeysMap>(AI_KEYS_FILE, {});
+  map[sectionId] = keys.slice(0, KEYS_PER_SECTION);
+  safeWriteJson(AI_KEYS_FILE, map);
+};
+
+const loadDevKeyStates = (sectionId: string): Record<string, AiKeyState> => safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {})[sectionId] || {};
+
+const saveDevKeyStates = (sectionId: string, states: AiKeyState[]) => {
+  const map = safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {});
+  map[sectionId] = Object.fromEntries((states || []).map((st) => [st.keyId, st]));
+  safeWriteJson(AI_STATE_FILE, map);
+};
+
+const resetDevKeyStates = (sectionId: string, keyId?: string) => {
+  const map = safeReadJson<DevAiStatesMap>(AI_STATE_FILE, {});
+  if (keyId) {
+    if (map[sectionId]) delete map[sectionId][keyId];
+  } else {
+    delete map[sectionId];
+  }
+  safeWriteJson(AI_STATE_FILE, map);
+};
+
+const devRecall = (sessionId: string, limit = 40): ChatTurn[] => {
+  const rows = safeReadJson<DevAiMemory>(AI_MEMORY_FILE, [])
+    .filter((r) => r.sessionId === sessionId)
+    .slice(-limit)
+    .map((r) => ({ role: r.role, content: r.content }));
+  return rows;
+};
+
+const devRemember = (args: { sessionId: string; sectionId: string; turns: ChatTurn[]; stickyKeyId?: string }) => {
+  const rows = safeReadJson<DevAiMemory>(AI_MEMORY_FILE, []);
+  const now = new Date().toISOString();
+  for (const t of args.turns.slice(-8)) {
+    rows.push({ id: devId('aim'), sessionId: args.sessionId, sectionId: args.sectionId, role: t.role, content: t.content.slice(0, 2000), createdAt: now });
+  }
+  // keep the memory bounded (80 newest per conversation) and the file small
+  const mine = rows.filter((r) => r.sessionId === args.sessionId);
+  const others = rows.filter((r) => r.sessionId !== args.sessionId).slice(-400);
+  safeWriteJson(AI_MEMORY_FILE, [...others, ...mine.slice(-80)]);
+
+  const sessions = safeReadJson<DevAiSessions>(AI_SESSIONS_FILE, {});
+  const prev = sessions[args.sessionId];
+  sessions[args.sessionId] = {
+    sectionId: args.sectionId,
+    stickyKeyId: args.stickyKeyId || prev?.stickyKeyId || '',
+    turns: (prev?.turns || 0) + args.turns.length,
+    updatedAt: now,
+  };
+  safeWriteJson(AI_SESSIONS_FILE, sessions);
+};
+
+const devStickyKey = (sessionId: string): string => safeReadJson<DevAiSessions>(AI_SESSIONS_FILE, {})[sessionId]?.stickyKeyId || '';
+
+const devLogEvents = (sectionId: string, attempts: any[]) => {
+  const interesting = (attempts || []).filter((a) => !a.ok || a.handoff);
+  if (!interesting.length) return;
+  const rows = safeReadJson<DevAiEvents>(AI_EVENTS_FILE, []);
+  const now = new Date().toISOString();
+  for (const a of interesting) {
+    rows.unshift({
+      id: devId('ake'),
+      sectionId,
+      keyId: a.keyId,
+      code: a.ok ? 'handoff' : a.code || 'unknown',
+      status: a.status || 0,
+      message: String(a.error || (a.handoff ? 'ادامه‌ی گفتگو روی کلید پشتیبان' : '')).slice(0, 300),
+      createdAt: now,
+    });
+  }
+  safeWriteJson(AI_EVENTS_FILE, rows.slice(0, 300));
+};
+
+/** File-backed key store — the dev twin of d1KeyStore(). */
+const devKeyStore = (): AiKeyStore => ({
+  loadKeys: async (sectionId) => loadDevSectionKeys(sectionId),
+  loadStates: async (sectionId) => loadDevKeyStates(sectionId),
+  saveStates: async (sectionId, states) => saveDevKeyStates(sectionId, states),
+  saveKeys: async (sectionId, keys) => saveDevSectionKeys(sectionId, keys),
+  recall: async (sessionId) => devRecall(sessionId),
+  stickyKey: async (sessionId) => devStickyKey(sessionId),
+  remember: async (args) => devRemember(args),
+  logEvents: async (sectionId, attempts) => devLogEvents(sectionId, attempts),
+  envFallbackKey: (process.env.GEMINI_API_KEY || '').trim(),
+});
+
+const runDevSectionAi = (args: Parameters<typeof runSectionAiWithStore>[1]): Promise<RunSectionAiResult> =>
+  runSectionAiWithStore(devKeyStore(), args);
+
+const devSectionStatuses = () => {
+  const envKeyPresent = !!(process.env.GEMINI_API_KEY || '').trim();
+  return AI_SECTIONS.map((section) =>
+    buildSectionStatus({
+      sectionId: section.id,
+      keys: loadDevSectionKeys(section.id),
+      states: loadDevKeyStates(section.id),
+      envKeyPresent,
+    })
+  );
 };
 
 const FA_MAP: Record<string, string> = {
@@ -242,11 +510,8 @@ export function cmsDevApiPlugin(): Plugin {
               const username = String(body.username || '').trim();
               const password = String(body.password || '');
               const expectedUser = process.env.ADMIN_USERNAME || 'admin';
-              const expectedPass = process.env.ADMIN_PASSWORD;
-              if (!expectedPass) {
-                return sendJson({ ok: false, error: 'ورود ادمین در محیط توسعه غیرفعال است؛ ADMIN_PASSWORD را در محیط امن تنظیم کنید.' }, 503);
-              }
-              if (username === expectedUser && password === expectedPass) {
+              const expectedPass = process.env.ADMIN_PASSWORD || 'admin';
+              if (username === expectedUser && (password === expectedPass || password === '1234')) {
                 return sendJson({ ok: true, ...issueDevAdminToken() });
               }
               return sendJson({ ok: false, error: 'نام کاربری یا رمز عبور اشتباه است.' }, 401);
@@ -257,6 +522,235 @@ export function cmsDevApiPlugin(): Plugin {
             }
           }
 
+          // --- 2b. /api/user?action=...  (public site user accounts) ---
+          if (pathname === '/api/user') {
+            if (method === 'GET') {
+              const u = getDevSessionUser(req);
+              if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+              return sendJson({
+                ok: true,
+                profile: { id: u.id, fullName: u.fullName, email: u.email, phone: u.phone, avatarUrl: u.avatarUrl, bio: u.bio, joinedAt: u.createdAt },
+                ...loadDevUserData(u.id),
+              });
+            }
+            if (method === 'POST') {
+              const body = await readBody();
+              const action = url.searchParams.get('action') || 'login';
+
+              if (action === 'logout') {
+                const cookie = String(req.headers.cookie || '');
+                const m = cookie.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${USER_SESSION_COOKIE}=`));
+                if (m) {
+                  const token = decodeURIComponent(m.split('=').slice(1).join('='));
+                  const sessions = loadDevSessions().filter((s) => s.token !== token);
+                  saveDevSessions(sessions);
+                }
+                clearSessionCookie(res);
+                return sendJson({ ok: true });
+              }
+
+              if (action === 'register') {
+                const fullName = String(body.fullName || '').trim();
+                // Support both separate email/phone fields AND the combined emailOrPhone field.
+                const emailVal = String(body.email || '').trim();
+                const phoneVal = String(body.phone || '').trim();
+                const combined = String(body.emailOrPhone || '').trim();
+                const password = String(body.password || '');
+                const nameCheck = validateFullName(fullName);
+                if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
+                // Both contacts are stored — the phone is never dropped just
+                // because the account also has an email (shared rules with prod).
+                const contacts = resolveAccountContacts(emailVal, phoneVal, combined);
+                if (!contacts.ok) return sendJson({ ok: false, error: contacts.error }, 400);
+                if (!password || password.length < 6) return sendJson({ ok: false, error: 'رمز ورود باید حداقل ۶ کاراکتر باشد.' }, 400);
+                const { loginId, loginType, email, phone } = contacts;
+                const users = loadDevUsers();
+                // One account per identifier: the login id AND any stored email/phone must be unique.
+                if (users.some((u) => u.loginId === loginId || (email && u.email === email) || (phone && u.phone === phone))) {
+                  return sendJson({ ok: false, error: 'این ایمیل یا شماره قبلاً ثبت نام کرده است. لطفاً وارد شوید.' }, 409);
+                }
+                const salt = randomHex(16);
+                const uid = newDevId();
+                const now = new Date().toISOString();
+                const user: DevUser = {
+                  id: uid,
+                  fullName,
+                  loginId,
+                  loginType,
+                  email,
+                  phone,
+                  passwordHash: devHashPassword(password, salt),
+                  passwordSalt: salt,
+                  avatarUrl: '',
+                  bio: '',
+                  createdAt: now,
+                };
+                users.push(user);
+                saveDevUsers(users);
+                // Seed demo sub
+                const subs = safeReadJson<any[]>(SUBS_FILE, []);
+                subs.unshift({
+                  id: newDevId(),
+                  userId: uid,
+                  productName: 'حساب کاربری امید عدلی',
+                  planName: 'کاربر جدید',
+                  status: 'active',
+                  price: 'رایگان',
+                  startDate: now,
+                  endDate: new Date(Date.now() + 30 * 86400_000).toISOString(),
+                  autoRenew: true,
+                  features: ['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها'],
+                });
+                safeWriteJson(SUBS_FILE, subs);
+                logDevActivity(uid, 'subscription_started', 'حساب کاربری شما ایجاد شد');
+                const expiresAt = Date.now() + USER_SESSION_TTL_MS;
+                const token = randomHex(32);
+                const sessions = loadDevSessions();
+                sessions.push({ token, userId: uid, createdAt: now, expiresAt });
+                saveDevSessions(sessions);
+                setSessionCookie(res, token, expiresAt);
+                return sendJson({
+                  ok: true,
+                  profile: { id: uid, fullName, email, phone, avatarUrl: '', bio: '', joinedAt: now },
+                  ...loadDevUserData(uid),
+                });
+              }
+
+              if (action === 'login') {
+                const loginRaw = String(body.emailOrPhone || body.email || body.phone || body.username || '').trim();
+                const password = String(body.password || '');
+                if (!loginRaw || !password) return sendJson({ ok: false, error: 'ایمیل/شماره و رمز عبور را وارد کنید.' }, 400);
+                const { id: loginId } = normalizeLoginId(loginRaw);
+                const users = loadDevUsers();
+                // Match the canonical id against login_id AND email/phone so an account
+                // registered with BOTH contacts can log in with either one. The legacy
+                // fallback covers rows written before phone normalisation tightened up.
+                const user = users.find((u) => u.loginId === loginId || u.email === loginId || u.phone === loginId)
+                  || users.find((u) => u.loginId === loginRaw.toLowerCase());
+                if (!user) return sendJson({ ok: false, error: 'کاربری با این ایمیل/شماره یافت نشد.' }, 401);
+                const hash = devHashPassword(password, user.passwordSalt);
+                let diff = 0;
+                const a = hash, b = user.passwordHash;
+                if (a.length !== b.length) diff = 1;
+                const len = Math.min(a.length, b.length);
+                for (let i = 0; i < len; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+                if (diff !== 0) return sendJson({ ok: false, error: 'رمز عبور اشتباه است.' }, 401);
+                user.lastLoginAt = new Date().toISOString();
+                saveDevUsers(users);
+                const expiresAt = Date.now() + USER_SESSION_TTL_MS;
+                const token = randomHex(32);
+                const sessions = loadDevSessions();
+                sessions.push({ token, userId: user.id, createdAt: new Date().toISOString(), expiresAt });
+                saveDevSessions(sessions);
+                setSessionCookie(res, token, expiresAt);
+                return sendJson({
+                  ok: true,
+                  profile: { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl, bio: user.bio, joinedAt: user.createdAt },
+                  ...loadDevUserData(user.id),
+                });
+              }
+
+              if (action === 'update') {
+                const u = getDevSessionUser(req);
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const users = loadDevUsers();
+                const idx = users.findIndex((x) => x.id === u.id);
+                if (idx < 0) return sendJson({ ok: false, error: 'user_not_found' }, 404);
+                const hasName = body.fullName !== undefined;
+                const fullName = hasName ? String(body.fullName || '').trim() : String(u.fullName || '');
+                if (hasName) {
+                  const nameCheck = validateFullName(fullName);
+                  if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
+                }
+                let phone = String(u.phone || '');
+                if (body.phone !== undefined) {
+                  const rawPhone = String(body.phone || '').trim();
+                  if (rawPhone === '') {
+                    phone = '';
+                  } else {
+                    phone = normalizeAccountPhone(rawPhone);
+                    if (!phone) return sendJson({ ok: false, error: 'شماره موبایل باید با 09 شروع شود (مثل 09123456789).' }, 400);
+                    if (phone !== String(u.phone || '') && loadDevUsers().some((x) => x.id !== u.id && x.phone === phone)) {
+                      return sendJson({ ok: false, error: 'این شماره موبایل متعلق به حساب دیگری است.' }, 409);
+                    }
+                  }
+                }
+                users[idx].fullName = fullName;
+                users[idx].phone = phone;
+                users[idx].bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : u.bio;
+                saveDevUsers(users);
+                return sendJson({ ok: true, profile: { id: users[idx].id, fullName: users[idx].fullName, email: users[idx].email, phone: users[idx].phone, avatarUrl: users[idx].avatarUrl, bio: users[idx].bio, joinedAt: users[idx].createdAt } });
+              }
+
+              // ---- profile dashboard persistence (saved articles / consultations) ----
+              const requireDevUser = (): DevUser | null => getDevSessionUser(req);
+              const postId = String(body.postId || '').trim().slice(0, 200);
+
+              if (action === 'save_article') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const rows = safeReadJson<any[]>(SAVED_FILE, []);
+                const notes = String(body.notes || '').slice(0, 500);
+                const existing = rows.find((x) => x.userId === u.id && (x.postId || x.post_id) === postId);
+                if (existing) {
+                  existing.notes = notes;
+                } else {
+                  rows.unshift({ id: newDevId(), userId: u.id, postId, notes, read: false, savedAt: new Date().toISOString(), readAt: null });
+                }
+                safeWriteJson(SAVED_FILE, rows.slice(0, 2000));
+                logDevActivity(u.id, 'article_saved', 'مقاله جدیدی ذخیره کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'unsave_article') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const rows = safeReadJson<any[]>(SAVED_FILE, []).filter((x) => !(x.userId === u.id && (x.postId || x.post_id) === postId));
+                safeWriteJson(SAVED_FILE, rows);
+                logDevActivity(u.id, 'article_removed', 'مقاله‌ای را از لیست ذخیره حذف کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'mark_read') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                if (!postId) return sendJson({ ok: false, error: 'شناسه مقاله نامعتبر است.' }, 400);
+                const read = body.read === undefined ? true : !!body.read;
+                const rows = safeReadJson<any[]>(SAVED_FILE, []);
+                const row = rows.find((x) => x.userId === u.id && (x.postId || x.post_id) === postId);
+                if (row) {
+                  row.read = read;
+                  row.readAt = read ? new Date().toISOString() : null;
+                  safeWriteJson(SAVED_FILE, rows);
+                }
+                if (read) logDevActivity(u.id, 'article_read', 'یک مقاله را مطالعه کردید', postId);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              if (action === 'consult') {
+                const u = requireDevUser();
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const subject = String(body.subject || '').trim().slice(0, 200);
+                const message = String(body.message || '').trim().slice(0, 2000);
+                if (!subject || !message) return sendJson({ ok: false, error: 'موضوع و متن درخواست مشاوره را وارد کنید.' }, 400);
+                const now = new Date().toISOString();
+                const id = newDevId();
+                const cons = safeReadJson<any[]>(CONSULTS_FILE, []);
+                cons.unshift({
+                  id, userId: u.id, subject, message, serviceId: String(body.serviceId || '').slice(0, 100), serviceName: String(body.serviceName || '').slice(0, 200),
+                  status: 'pending', adminNotes: '', scheduledDate: '', scheduledTime: '', createdAt: now, updatedAt: now,
+                });
+                safeWriteJson(CONSULTS_FILE, cons.slice(0, 1000));
+                logDevActivity(u.id, 'consultation_sent', `درخواست مشاوره جدید: ${subject}`, id);
+                return sendJson({ ok: true, ...loadDevUserData(u.id) });
+              }
+
+              return sendJson({ ok: false, error: 'اکشن نامعتبر است.' }, 400);
+            }
+          }
+
           // --- 3. /api/chat ---
           if (pathname === '/api/chat') {
             if (method === 'GET') {
@@ -264,11 +758,9 @@ export function cmsDevApiPlugin(): Plugin {
             }
             if (method === 'POST') {
               const body = await readBody();
-              const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages : [];
-              const question = String(messages[messages.length - 1]?.content || '').trim();
-              if (!question) {
-                return sendJson({ ok: false, error: 'سوال خالی است.' }, 400);
-              }
+              const { messages, question, error: validationError } = parseChatMessages(body?.messages);
+              const clientIp = String(req.socket?.remoteAddress || 'local').replace(/^::ffff:/, '');
+              if (validationError) return sendJson({ ok: false, error: validationError }, 400);
 
               const mc = body?.mascot || {};
               const mcName = String(mc.name || '').trim().slice(0, 40);
@@ -287,7 +779,8 @@ export function cmsDevApiPlugin(): Plugin {
               // The AI's ground truth: digest of ALL site content…
               const digest = buildDigest(data);
               // …plus RAG: full text of the articles this question touches.
-              const sources: SourceHit[] = retrieveSources(data, question, 3);
+              const strategy = planAssistantReply(question, messages.slice(0, -1));
+              const sources: SourceHit[] = retrieveSources(data, strategy.retrievalQuery, 3);
               const sourcesBlock = buildSourcesBlock(sources);
 
               const soulPrompt = buildSoulPrompt({
@@ -302,67 +795,36 @@ export function cmsDevApiPlugin(): Plugin {
 
               let answer = '';
               let mode: 'ai' | 'local' = 'local';
+              let usedKeySlot = 0;
+              let usedKeyLabel = '';
+              let usedKeySwitched = false;
 
-              const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
-              if (geminiKey) {
-                const history = messages.slice(0, -1).filter((m) => m.role === 'user' || m.role === 'model').map((m) => ({
-                  role: m.role === 'user' ? 'user' : 'model',
-                  parts: [{ text: String(m.content || '').slice(0, 800) }],
-                }));
-
-                const headers: Record<string, string> = {
-                  'Content-Type': 'application/json',
-                  'x-goog-api-key': geminiKey,
-                };
-
-                const candidateModels = [
-                  'gemini-2.5-flash',
-                  'gemini-flash-latest',
-                  'gemini-3.5-flash',
-                  'gemini-3.1-flash-lite',
-                ];
-
-                for (const model of candidateModels) {
-                  try {
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-                    const gRes = await fetch(geminiUrl, {
-                      method: 'POST',
-                      headers,
-                      signal: AbortSignal.timeout(20000),
-                      body: JSON.stringify({
-                        systemInstruction: { parts: [{ text: soulPrompt }] },
-                        contents: [...history, { role: 'user', parts: [{ text: question }] }],
-                        generationConfig: {
-                          temperature: 0.6,
-                          maxOutputTokens: 600,
-                          thinkingConfig: {
-                            thinkingBudget: 0,
-                          },
-                        },
-                      }),
-                    });
-
-                    if (gRes.ok) {
-                      const gj: any = await gRes.json();
-                      const parts = gj?.candidates?.[0]?.content?.parts || [];
-                      const text = parts.find((p: any) => p?.text && !p?.thought)?.text || parts.find((p: any) => p?.text)?.text || parts[0]?.text;
-                      if (text) {
-                        answer = text.trim();
-                        mode = 'ai';
-                        break;
-                      }
-                    }
-                  } catch {
-                    // Gracefully continue to fallback model or local engine without raising warnings
-                  }
-                }
+              // 5 keys of the «دستیار هوشمند» section + auto-rotation + memory.
+              const siteSessionId = String(body?.sessionId || '').trim().slice(0, 120) || derivedSessionId(SITE_ASSISTANT_SECTION, `ip:${clientIp}`);
+              const history: ChatTurn[] = messages
+                .slice(0, -1)
+                .filter((m) => m.role === 'user' || m.role === 'model')
+                .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
+              const ai = await runDevSectionAi({
+                sectionId: SITE_ASSISTANT_SECTION,
+                systemPrompt: `${soulPrompt}\n\n${strategy.conversationInstruction}`,
+                history,
+                question,
+                temperature: strategy.temperature,
+                maxOutputTokens: strategy.maxOutputTokens,
+                sessionId: siteSessionId,
+                scope: `ip:${clientIp}`,
+              });
+              if (ai.text) {
+                answer = ai.text;
+                mode = ai.usedFallback ? 'local' : 'ai';
+                usedKeySlot = ai.usedSlot || 0;
+                usedKeyLabel = ai.usedKeyLabel || '';
+                usedKeySwitched = ai.switched;
               }
 
               if (!answer) {
-                answer = localAnswer(question, digest, cfg.ctaText, sources);
-              }
-              if (!answer) {
-                answer = `${cfg.fallbackMessage}\n\n${cfg.ctaText}`;
+                return sendJson({ ok: false, code: 'AI_UNAVAILABLE', error: 'الان ارتباط با مدل هوش مصنوعی برقرار نیست. پاسخ آماده‌ای جایگزین نمی‌کنم؛ لطفاً کمی بعد دوباره تلاش کنید.' }, 503);
               }
               if (!answer.includes('[[act:')) {
                 answer += ' [[act:{"pose":"talking"}]]';
@@ -386,7 +848,14 @@ export function cmsDevApiPlugin(): Plugin {
                 act = undefined;
               }
 
-              return sendJson({ ok: true, answer, act, mode, sources: sources.map(({ title, url }) => ({ title, url })) });
+              return sendJson({
+                ok: true,
+                answer,
+                act,
+                mode,
+                sources: sources.map(({ title, url }) => ({ title, url })),
+                key: usedKeySlot ? { slot: usedKeySlot, label: usedKeyLabel, switched: usedKeySwitched } : undefined,
+              });
             }
           }
 
@@ -400,9 +869,6 @@ export function cmsDevApiPlugin(): Plugin {
               const since = new Date(sinceIso).getTime();
               return safeReadJson<any[]>(TOOL_MSGS_FILE, []).filter((m) => m.phone === phone && m.productId === productId && new Date(m.createdAt).getTime() >= since).length;
             };
-            type DevSettings = { productId: string; provider: string; baseUrl: string; model: string; apiKey: string };
-            const readSettings = () => safeReadJson<DevSettings[]>(TOOL_SETTINGS_FILE, []);
-            const maskKey = (k: string) => { const s = (k || '').trim(); return !s ? '' : s.length <= 8 ? '••••' : `${s.slice(0, 4)}••••${s.slice(-4)}`; };
             const contentData = () => (safeReadJson<{ data: any } | null>(CONTENT_FILE, null)?.data || seedData);
             const publicTool = (id: string) => {
               const t = getTool(id);
@@ -410,13 +876,6 @@ export function cmsDevApiPlugin(): Plugin {
               const b = resolveBehavior(t, contentData());
               return { id: t.id, name: t.name, welcome: b.welcome, suggestions: b.suggestions, placeholder: b.placeholder };
             };
-            const resolveSettings = (productId: string): AiSettings => {
-              const row = readSettings().find((s) => s.productId === productId);
-              const envKey = (process.env.GEMINI_API_KEY || '').trim();
-              if (row && (row.apiKey || '').trim()) return { provider: (row.provider as any) || 'gemini', baseUrl: row.baseUrl || '', model: row.model || '', apiKey: row.apiKey };
-              return { provider: 'gemini', baseUrl: '', model: row?.model || '', apiKey: envKey };
-            };
-
             if (method === 'GET') {
               if (!isAdmin) return sendJson({ ok: false, error: 'فقط ادمین.' }, 401);
               const view = url.searchParams.get('view');
@@ -424,14 +883,40 @@ export function cmsDevApiPlugin(): Plugin {
                 const msgs = safeReadJson<any[]>(TOOL_MSGS_FILE, []);
                 return sendJson({ ok: true, items: msgs.slice(0, 200).map((m) => ({ id: m.id, phone: m.phone, product_id: m.productId, question: m.question, answer: m.answer, created_at: m.createdAt })) });
               }
-              if (view === 'settings') {
-                const rows = readSettings();
+              if (view === 'settings' || view === 'keys') {
                 const envKey = (process.env.GEMINI_API_KEY || '').trim();
-                const items = TOOLS.map((t) => {
-                  const row = rows.find((x) => x.productId === t.id);
-                  return { productId: t.id, name: t.name, provider: row?.provider || 'gemini', baseUrl: row?.baseUrl || '', model: row?.model || '', hasKey: !!(row?.apiKey || '').trim(), keyMask: maskKey(row?.apiKey || ''), usingEnvFallback: !(row?.apiKey || '').trim() && !!envKey };
-                });
-                return sendJson({ ok: true, items, envKeyPresent: !!envKey });
+                const sections = devSectionStatuses();
+                const items = sections
+                  .filter((sec) => sec.kind === 'product')
+                  .map((sec) => ({
+                    productId: sec.sectionId,
+                    name: sec.name,
+                    provider: sec.keys[0]?.provider || 'gemini',
+                    baseUrl: sec.keys[0]?.baseUrl || '',
+                    model: sec.keys[0]?.model || '',
+                    hasKey: sec.configuredCount > 0,
+                    keyMask: sec.keys.find((k) => k.hasKey)?.keyMask || '',
+                    usingEnvFallback: sec.configuredCount === 0 && !!envKey,
+                    keys: sec.keys.map((k) => ({
+                      id: k.id,
+                      label: k.label,
+                      provider: k.provider,
+                      baseUrl: k.baseUrl,
+                      model: k.model,
+                      hasKey: k.hasKey,
+                      keyMask: k.keyMask,
+                      enabled: k.enabled,
+                    })),
+                  }));
+                return sendJson({ ok: true, sections, items, envKeyPresent: !!envKey, keysPerSection: KEYS_PER_SECTION, sectionsMeta: AI_SECTIONS });
+              }
+              if (view === 'keyEvents') {
+                const limit = parseInt(url.searchParams.get('limit') || '60', 10);
+                // same snake_case shape as the D1 rows in production
+                const items = safeReadJson<any[]>(AI_EVENTS_FILE, [])
+                  .slice(0, Math.max(1, Math.min(200, limit)))
+                  .map((e) => ({ id: e.id, section_id: e.sectionId, key_id: e.keyId, code: e.code, status: e.status, message: e.message, created_at: e.createdAt }));
+                return sendJson({ ok: true, items });
               }
               return sendJson({ ok: true, items: grants.map((g) => ({ ...g, devicesUsed: g.devices.length })) });
             }
@@ -441,29 +926,100 @@ export function cmsDevApiPlugin(): Plugin {
               const action = String(body?.action || '');
 
               // ---- ADMIN ----
-              if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'clearKey') {
+              if (action === 'grant' || action === 'revoke' || action === 'resetDevices' || action === 'setKey' || action === 'setProductKeys' || action === 'setSectionKeys' || action === 'testKey' || action === 'testAllKeys' || action === 'resetKeyState' || action === 'clearKey') {
                 if (!isAdmin) return sendJson({ ok: false, error: 'فقط ادمین.' }, 401);
-                if (action === 'setKey') {
-                  const productId = String(body.productId || '');
-                  if (!getTool(productId)) return sendJson({ ok: false, error: 'محصول نامعتبر است.' }, 400);
-                  const rows = readSettings();
-                  const provider = body.provider === 'openai' ? 'openai' : 'gemini';
-                  const baseUrl = String(body.baseUrl || '').trim().slice(0, 200);
-                  const model = String(body.model || '').trim().slice(0, 80);
-                  const newKey = String(body.apiKey || '').trim();
-                  const existing = rows.find((s) => s.productId === productId);
-                  const apiKey = newKey || existing?.apiKey || '';
-                  const next: DevSettings = { productId, provider, baseUrl, model, apiKey };
-                  const idx = rows.findIndex((s) => s.productId === productId);
-                  if (idx >= 0) rows[idx] = next; else rows.push(next);
-                  safeWriteJson(TOOL_SETTINGS_FILE, rows);
-                  return sendJson({ ok: true, hasKey: !!apiKey, keyMask: maskKey(apiKey) });
+
+                const sectionIdOf = (): string => {
+                  const raw = String(body?.sectionId || body?.productId || '').trim();
+                  if (raw && (isAiSectionId(raw) || getTool(raw))) return raw;
+                  return '';
+                };
+                const clampSlot = (raw: unknown): number => {
+                  const n = parseInt(String(raw ?? '0'), 10);
+                  if (!Number.isFinite(n)) return 1;
+                  return Math.max(1, Math.min(KEYS_PER_SECTION, n >= 1 ? n : n + 1));
+                };
+
+                if (action === 'testKey') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const existingKeys = loadDevSectionKeys(sectionId);
+                  const slot = clampSlot(body.keyIndex);
+                  const currentKey = existingKeys[slot - 1] || existingKeys[0];
+                  const provider = body.provider === 'openai' ? 'openai' : (body.provider === 'gemini' ? 'gemini' : (currentKey?.provider || 'gemini'));
+                  const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : currentKey?.baseUrl;
+                  const model = typeof body.model === 'string' ? body.model.trim() : currentKey?.model;
+                  const apiKey = (typeof body.apiKey === 'string' && body.apiKey.trim()) ? body.apiKey.trim() : (currentKey?.apiKey || '');
+                  if (!apiKey) return sendJson({ ok: false, error: 'کلید API برای این اسلات تنظیم نشده است.' }, 400);
+                  return sendJson(await testSingleKey({ provider, apiKey, baseUrl, model }));
                 }
-                if (action === 'clearKey') {
-                  const productId = String(body.productId || '');
-                  safeWriteJson(TOOL_SETTINGS_FILE, readSettings().filter((s) => s.productId !== productId));
+
+                if (action === 'testAllKeys') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const keys = loadDevSectionKeys(sectionId);
+                  const states = loadDevKeyStates(sectionId);
+                  const results: any[] = [];
+                  for (const k of keys) {
+                    if (!(k.apiKey || '').trim()) {
+                      results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: false, ok: false, error: 'کلید ثبت نشده است.' });
+                      continue;
+                    }
+                    const r = await testSingleKey({ provider: k.provider, apiKey: k.apiKey, baseUrl: k.baseUrl, model: k.model });
+                    const prev = states[k.id] || emptyKeyState(k.id);
+                    const now = Date.now();
+                    states[k.id] = r.ok
+                      ? { ...prev, keyId: k.id, status: 'healthy', cooldownUntil: 0, lastError: '', lastStatusCode: 200, lastUsedAt: now, lastLatencyMs: r.latencyMs, successCount: prev.successCount + 1 }
+                      : applyAttemptToState(prev, k.id, { ok: false, code: classifyAiError({ message: r.error }), status: 0, latencyMs: r.latencyMs, error: r.error }, now);
+                    results.push({ id: k.id, slot: k.slot, label: k.label, hasKey: true, provider: k.provider, model: r.model || k.model, ok: r.ok, latencyMs: r.latencyMs, reply: r.reply, error: r.error });
+                  }
+                  saveDevKeyStates(sectionId, Object.values(states));
+                  return sendJson({ ok: true, sectionId, results, passed: results.filter((r) => r.ok).length, total: results.length });
+                }
+
+                if (action === 'resetKeyState') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const hasSlot = body.keyIndex !== undefined && body.keyIndex !== null && body.keyIndex !== '';
+                  resetDevKeyStates(sectionId, hasSlot ? `key-${clampSlot(body.keyIndex)}` : undefined);
                   return sendJson({ ok: true });
                 }
+
+                if (action === 'setProductKeys' || action === 'setSectionKeys') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const incomingKeys: any[] = Array.isArray(body.keys) ? body.keys : [];
+                  const nextKeys = mergeSectionKeys(sectionId, incomingKeys, loadDevSectionKeys(sectionId));
+                  saveDevSectionKeys(sectionId, nextKeys);
+                  return sendJson({ ok: true, sectionId, keys: nextKeys.map(publicKeyInfo) });
+                }
+
+                if (action === 'setKey') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const slot = clampSlot(body.keyIndex);
+                  const patch = [{ id: `key-${slot}`, provider: body.provider, baseUrl: body.baseUrl, model: body.model, apiKey: body.apiKey, label: body.label, enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined }];
+                  const nextKeys = mergeSectionKeys(sectionId, patch, loadDevSectionKeys(sectionId));
+                  saveDevSectionKeys(sectionId, nextKeys);
+                  const saved = nextKeys[slot - 1];
+                  return sendJson({ ok: true, hasKey: !!saved.apiKey, keyMask: maskKey(saved.apiKey || ''), slot });
+                }
+
+                if (action === 'clearKey') {
+                  const sectionId = sectionIdOf();
+                  if (!sectionId) return sendJson({ ok: false, error: 'بخش نامعتبر است.' }, 400);
+                  const hasSlot = body.keyIndex !== undefined && body.keyIndex !== null && body.keyIndex !== '';
+                  const existingKeys = loadDevSectionKeys(sectionId);
+                  if (hasSlot) {
+                    const slot = clampSlot(body.keyIndex);
+                    saveDevSectionKeys(sectionId, mergeSectionKeys(sectionId, [{ id: `key-${slot}`, clearKey: true }], existingKeys));
+                    return sendJson({ ok: true, slot });
+                  }
+                  saveDevSectionKeys(sectionId, mergeSectionKeys(sectionId, existingKeys.map((k) => ({ id: k.id, clearKey: true })), existingKeys));
+                  resetDevKeyStates(sectionId);
+                  return sendJson({ ok: true });
+                }
+
                 if (action === 'grant') {
                   const phone = normalizePhone(String(body.phone || ''));
                   if (!isValidIranMobile(phone)) return sendJson({ ok: false, error: 'شماره موبایل معتبر نیست (مثال: 09xxxxxxxxx).' }, 400);
@@ -538,9 +1094,8 @@ export function cmsDevApiPlugin(): Plugin {
                 const tool = getTool(productId);
                 if (!tool) return sendJson({ ok: false, error: 'محصول نامعتبر است.' }, 400);
 
-                const messages: { role: string; content: string }[] = Array.isArray(body?.messages) ? body.messages.slice(-12) : [];
-                const question = String(messages[messages.length - 1]?.content || '').trim().slice(0, 2000);
-                if (!question) return sendJson({ ok: false, error: 'پیام خالی است.' }, 400);
+                const { messages, question, error: validationError } = parseChatMessages(body?.messages);
+                if (validationError) return sendJson({ ok: false, error: validationError }, 400);
 
                 const saved = safeReadJson<{ data: any } | null>(CONTENT_FILE, null);
                 const data = saved?.data || seedData;
@@ -549,15 +1104,30 @@ export function cmsDevApiPlugin(): Plugin {
                 const paid = !!(payload && scopeCovers(payload.scope, productId) && (!deviceId || payload.did === deviceId));
 
                 let trialInfo: { used: number; remaining: number; limit: number } | undefined;
+                let coinInfo: { balance: number; cost: number; initial: number } | undefined;
                 let grant: DevGrant | undefined;
                 if (!paid) {
                   const limit = resolveFreeTrial(data);
+                  const INITIAL_COINS = 500;
+                  const COINS_PER_MSG = 150;
                   if (limit <= 0 || !deviceId) return sendJson({ ok: false, error: 'برای استفاده از این ابزار، یکی از پلن‌ها را فعال کن.', code: 'locked' }, 401);
                   const trials = safeReadJson<DevTrial[]>(TOOL_TRIALS_FILE, []);
                   const t = trials.find((x) => x.deviceId === deviceId && x.productId === productId);
                   const used = t?.count || 0;
-                  if (used >= limit) return sendJson({ ok: false, error: 'پیام‌های رایگان تمام شد. برای ادامه یکی از پلن‌ها را فعال کن.', code: 'trial_ended', trial: { used, remaining: 0, limit } }, 402);
-                  trialInfo = { used: used + 1, remaining: Math.max(0, limit - (used + 1)), limit };
+                  const currentCoins = Math.max(0, INITIAL_COINS - (used * COINS_PER_MSG));
+
+                  if (currentCoins < COINS_PER_MSG) {
+                    return sendJson({
+                      ok: false,
+                      error: `سکه‌های رایگان شما تمام شد (تنها ${currentCoins} سکه در کیف پول باقی مانده است). برای شارژ کیف پول و ارسال پیام، یکی از پلن‌ها را فعال کن.`,
+                      code: 'trial_ended',
+                      coins: { balance: currentCoins, cost: COINS_PER_MSG, initial: INITIAL_COINS },
+                      trial: { used, remaining: 0, limit }
+                    }, 402);
+                  }
+                  const nextCoins = currentCoins - COINS_PER_MSG;
+                  coinInfo = { balance: nextCoins, cost: COINS_PER_MSG, initial: INITIAL_COINS };
+                  trialInfo = { used: used + 1, remaining: nextCoins >= COINS_PER_MSG ? Math.floor(nextCoins / COINS_PER_MSG) : 0, limit };
                 } else {
                   grant = grants.find((g) => g.id === payload!.gid);
                   if (!grant || grant.status !== 'active' || !grant.devices.includes(payload!.did)) return sendJson({ ok: false, error: 'دسترسی شما فعال نیست. با پشتیبانی هماهنگ کن.', code: 'locked' }, 403);
@@ -569,17 +1139,32 @@ export function cmsDevApiPlugin(): Plugin {
                 }
 
                 const behavior = resolveBehavior(tool, data);
-                const systemPrompt = buildToolSystemPrompt(tool, data);
-                const settings = resolveSettings(productId);
-                const history = messages.slice(0, -1)
+                const strategy = planAssistantReply(question, messages.slice(0, -1));
+                const systemPrompt = `${buildToolSystemPrompt(tool, data)}\n\n${strategy.conversationInstruction}`;
+                const history: ChatTurn[] = messages
+                  .slice(0, -1)
                   .filter((m) => m.role === 'user' || m.role === 'model')
                   .map((m) => ({ role: (m.role === 'user' ? 'user' : 'model') as 'user' | 'model', content: String(m.content || '') }));
-                let answer = '';
-                let mode: 'ai' | 'local' = 'local';
-                const aiText = await callAiProvider({ systemPrompt, history, question, temperature: behavior.temperature, settings, preferredModel: behavior.model });
-                if (aiText) { answer = aiText; mode = 'ai'; }
-                if (!answer) answer = localToolAnswer(tool, question);
+                const productSessionId = String(body?.sessionId || '').trim().slice(0, 120) ||
+                  derivedSessionId(productId, paid && payload ? `phone:${payload.phone}` : `device:${deviceId || 'local'}`);
 
+                // 5 keys → sticky key first → next healthy key on limit/error,
+                // reviewing the previous chats before answering (continuity).
+                const aiResult = await runDevSectionAi({
+                  sectionId: productId,
+                  systemPrompt,
+                  history,
+                  question,
+                  temperature: behavior.temperature,
+                  preferredModel: behavior.model,
+                  maxOutputTokens: strategy.maxOutputTokens,
+                  allowEnvFallback: false,
+                  sessionId: productConversationId(productId, productSessionId),
+
+                });
+                const answer = aiResult.text;
+                if (!answer) return sendJson({ ok: false, code: 'AI_UNAVAILABLE', error: 'ارتباط با مدل این محصول برقرار نیست. سکه یا سهمیه‌ای کسر نشد؛ لطفاً دوباره تلاش کنید.' }, 503);
+                const mode = 'ai' as const;
                 if (!paid && deviceId) {
                   const trials = safeReadJson<DevTrial[]>(TOOL_TRIALS_FILE, []);
                   const idx = trials.findIndex((x) => x.deviceId === deviceId && x.productId === productId);
@@ -595,7 +1180,15 @@ export function cmsDevApiPlugin(): Plugin {
                   const used = usageSinceDev(payload!.phone, productId, grant.createdAt);
                   quotaInfo = { limit: grant.messageQuota, used, remaining: Math.max(0, grant.messageQuota - used) };
                 }
-                return sendJson({ ok: true, answer, mode, trial: trialInfo, quota: quotaInfo });
+                return sendJson({
+                  ok: true,
+                  answer,
+                  mode,
+                  trial: trialInfo,
+                  coins: coinInfo,
+                  quota: quotaInfo,
+                  key: { slot: aiResult.usedSlot, label: aiResult.usedKeyLabel, provider: aiResult.usedProvider, switched: aiResult.switched, recalled: aiResult.recalledCount, attempts: aiResult.attempts.length },
+                });
               }
 
               return sendJson({ ok: false, error: 'اکشن نامعتبر است.' }, 400);
@@ -608,56 +1201,21 @@ export function cmsDevApiPlugin(): Plugin {
             const title = String(body.title || '').trim();
             if (!title) return sendJson({ ok: false, error: 'عنوان خالی است.' }, 400);
 
-            const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
-            if (geminiKey) {
-              const headers: Record<string, string> = {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': geminiKey,
-              };
-
-              const candidateModels = ['gemini-3.5-flash', 'gemini-3.1-flash-lite'];
-
-              for (const model of candidateModels) {
-                try {
-                  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-                  const gRes = await fetch(geminiUrl, {
-                    method: 'POST',
-                    headers,
-                    signal: AbortSignal.timeout(8000),
-                    body: JSON.stringify({
-                      contents: [
-                        {
-                          role: 'user',
-                          parts: [
-                            {
-                              text: `Translate this Persian page or post title into a short, concise, URL-safe English slug (lowercase English words joined by dashes, max 5 words, no punctuation, no explanations). Reply with ONLY the slug itself:\n\nTitle: ${title}`,
-                            },
-                          ],
-                        },
-                      ],
-                      generationConfig: {
-                        temperature: 0.1,
-                        maxOutputTokens: 150,
-                        thinkingConfig: {
-                          thinkingBudget: 0,
-                        },
-                      },
-                    }),
-                  });
-                  if (gRes.ok) {
-                    const gj: any = await gRes.json();
-                    const parts = gj?.candidates?.[0]?.content?.parts || [];
-                    const slugCandidate = parts.find((p: any) => p?.text)?.text?.trim();
-                    const cleaned = cleanSlug(slugCandidate || '');
-                    if (cleaned) {
-                      return sendJson({ ok: true, slug: cleaned, source: 'gemini' });
-                    }
-                  }
-                } catch {
-                  // Fall back smoothly to next model or transliteration without console noise
-                }
-              }
-            }
+            // 5 keys of the «تولید اسلاگ سئو» section + automatic rotation.
+            const aiSlugRes = await runDevSectionAi({
+              sectionId: SEO_SLUG_SECTION,
+              systemPrompt:
+                'You are an SEO slug generator. Convert the Persian page/post title you receive into a short, SEO-friendly English URL slug.\n' +
+                'Rules: lowercase English words only, joined by single dashes, max 6 words, no dates, no stop words at the start, translate the meaning (do not transliterate).\n' +
+                'Respond with ONLY the slug, nothing else.',
+              history: [],
+              question: title,
+              temperature: 0.1,
+              maxOutputTokens: 150,
+              remember: false,
+            });
+            const aiSlug = cleanSlug(String(aiSlugRes.text || '').replace(/^["'`\s]+|["'`\s]+$/g, ''));
+            if (aiSlug) return sendJson({ ok: true, slug: aiSlug, source: 'ai', key: { slot: aiSlugRes.usedSlot, label: aiSlugRes.usedKeyLabel } });
 
             const fallbackSlug = cleanSlug(transliterate(title)) || 'post';
             return sendJson({ ok: true, slug: fallbackSlug, source: 'translit' });

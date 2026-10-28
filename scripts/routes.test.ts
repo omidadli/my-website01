@@ -14,6 +14,9 @@ assert.deepEqual(parsePath('/Services/'), { page: 'services', postId: null }, 'c
 assert.deepEqual(parsePath('/blog'), { page: 'blog', postId: null });
 assert.deepEqual(parsePath('/blog/ga4-setup-guide'), { page: 'blog', postId: 'ga4-setup-guide' });
 assert.deepEqual(parsePath('/blog/%D9%85%D9%82%D8%A7%D9%84%D9%87'), { page: 'blog', postId: 'مقاله' }, 'percent-decoded slug');
+assert.deepEqual(parsePath('/products'), { page: 'products', postId: null });
+assert.deepEqual(parsePath('/products/business-therapist'), { page: 'products', postId: null, productId: 'business-therapist' });
+assert.deepEqual(parsePath('/product/growth-path'), { page: 'products', postId: null, productId: 'growth-path' });
 assert.deepEqual(parsePath('/admin/anything'), { page: 'admin', postId: null });
 assert.deepEqual(parsePath('/landing-x', ['landing-x']), { page: 'landing-x', postId: null }, 'custom page');
 assert.equal(parsePath('/landing-x'), null, 'unknown custom page without CMS data');

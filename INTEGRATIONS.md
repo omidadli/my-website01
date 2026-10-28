@@ -11,7 +11,7 @@ This document explains the three ways the site can be driven programmatically:
 
 ## 1. HTTP API
 
-Base URL = your site origin (e.g. `https://omidadli01.site`).
+Base URL = your site origin (e.g. `https://omidadli.site`).
 
 ### Auth
 
@@ -47,12 +47,23 @@ MCP server, the sync script and the admin panel all use it.
 ```
 GET  /api/tools                         →  { ok, items: [ grants… ] }               (admin)
 GET  /api/tools?view=messages           →  { ok, items: [ usage log… ] }            (admin)
-GET  /api/tools?view=settings           →  { ok, items: [ per-tool AI conn (masked) ] } (admin)
-POST /api/tools   { action, … }         →  grant | revoke | resetDevices | setKey | clearKey (admin)
+GET  /api/tools?view=settings           →  { ok, sections: [6 × 5 key slots + health], items: […], keysPerSection: 5 } (admin)
+GET  /api/tools?view=keyEvents          →  { ok, items: [ limit hits / key hand-offs ] } (admin)
+POST /api/tools   { action, … }         →  grant | revoke | resetDevices | setSectionKeys | setKey | clearKey | testKey | testAllKeys | resetKeyState (admin)
 POST /api/tools   { action: "unlock" | "chat" | "session", … }                      (public)
 ```
 
 API keys live only server-side and are **never** returned in full (only masked).
+
+**AI keys: 5 slots per section, automatic rotation.** Every part of the site that
+needs a key — the site assistant (mascot chat), the SEO slug generator and each of
+the 4 paid products — has **5 key slots** managed in the admin panel
+(*کلیدهای API*). When a key hits its rate limit / quota (or errors), the next
+healthy key answers instead; the previous chats of the conversation are reviewed
+first (server-side memory + a continuity instruction), so the conversation
+continues naturally and the user never notices the switch. See
+[docs/API-KEYS.md](./docs/API-KEYS.md) for the full reference (cooldowns, admin
+endpoints, storage tables, setup checklist).
 
 Abuse limits (public actions): `unlock` — 10 failed codes / 15 min per IP+phone and 60 per IP
 (429); `chat` — paid: 60 msgs / hour per phone, free trial: N msgs per device (CMS setting,
@@ -127,7 +138,7 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 |--------|---------|-------|
 | `CLOUDFLARE_API_TOKEN` | deploy | Cloudflare token with *Pages: Edit* + *D1: Edit* |
 | `CLOUDFLARE_ACCOUNT_ID` | deploy | your Cloudflare account id |
-| `SITE_URL` | content sync | live site URL, e.g. `https://omidadli01.site` |
+| `SITE_URL` | content sync | live site URL, e.g. `https://omidadli.site` |
 | `ADMIN_USERNAME` | content sync | same as the Pages secret |
 | `ADMIN_PASSWORD` | content sync | same as the Pages secret |
 

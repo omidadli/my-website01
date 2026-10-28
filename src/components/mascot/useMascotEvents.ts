@@ -337,24 +337,50 @@ export function useMascotEvents(currentPage: Page) {
     })();
 
     // ---------- entry: exactly ONE purposeful act ----------
-    let openT: ReturnType<typeof setTimeout>;
-    if (!schemeSeen && !skipped) {
-      // first meeting: greet once, then ask the name
+    // When the welcome overlay is visible it handles the greeting/name-ask;
+    // we listen for its completion to fire ONE follow-up cue instead of
+    // double-prompting while the modal is up.
+    let openT: ReturnType<typeof setTimeout> | null = null;
+    const greetWithName = (n: string) => {
+      mascotCue('wave', `سلام ${n}، خیلی خوش اومدی! امروز دوست داری برات چیکار کنم؟`, 7000, true);
+    };
+    const greetAnon = () => {
+      mascotCue('wave', 'سلام! خوش اومدی. چه کاری برات انجام بدم؟', 5200, true);
+    };
+    const onWelcomeDone = (e: Event) => {
+      if (openT) { clearTimeout(openT); openT = null; }
+      const name = ((e as CustomEvent<string>).detail || '').trim();
+      nameRef.current = name;
+      setTimeout(() => {
+        if (name) greetWithName(name);
+        else greetAnon();
+      }, 2800); // wait for dissolve to finish
+    };
+    window.addEventListener('nd:welcome-complete', onWelcomeDone);
+
+    // Detect whether the welcome overlay is currently showing. If it is
+    // (first visit or manually reopened), don't fire the opening cue from
+    // here — wait for the nd:welcome-complete event instead.
+    const welcomeOverlayActive = typeof document !== 'undefined' && document.querySelector('[data-mascot-welcome="1"]');
+    if (welcomeOverlayActive) {
+      // overlay handles the greeting; wait for completion event
+      openT = null;
+    } else if (!schemeSeen && !skipped) {
+      // overlay was skipped/dismissed before we attached (e.g. fast-dismiss)
       openT = setTimeout(() => {
-        mascotCue('wave', 'سلام، خیلی خوش اومدی! اسمت چیه؟ دوست دارم درست صدامت کنم.', 24000, true, true);
+        const n = nameRef.current;
+        if (n) greetWithName(n);
+        else mascotCue('wave', 'سلام، خیلی خوش اومدی! اسمت چیه؟ دوست دارم درست صدامت کنم.', 24000, true, true);
       }, 2400);
     } else {
       const n = nameRef.current;
-      openT = setTimeout(
-        () => {
-          if (n) {
-            mascotCue('wave', `سلام ${n}، ${timeGreet()}! حالت چطوره؟ امروز میتونم چه کمکی بهت بکنم؟`, 6800, true);
-          } else {
-            mascotCue('wave', 'سلام! خوش برگشتی. چه کاری برات انجام بدم؟', 5200, true);
-          }
-        },
-        1600
-      );
+      openT = setTimeout(() => {
+        if (n) {
+          mascotCue('wave', `سلام ${n}، ${timeGreet()}! حالت چطوره؟ امروز میتونم چه کمکی بهت بکنم؟`, 6800, true);
+        } else {
+          greetAnon();
+        }
+      }, 1600);
     }
 
     // ---------- ambient: purposeful, page-aware, capped ----------
@@ -443,9 +469,10 @@ export function useMascotEvents(currentPage: Page) {
     document.documentElement.addEventListener('mouseleave', onDocLeave);
 
     return () => {
-      clearTimeout(openT);
+      if (openT) clearTimeout(openT);
       if (ambT) clearTimeout(ambT);
       window.removeEventListener('nd:mascot-name', onName);
+      window.removeEventListener('nd:welcome-complete', onWelcomeDone);
       window.removeEventListener('scroll', onScrollMark);
       document.removeEventListener('copy', onCopy);
       document.documentElement.removeEventListener('mouseleave', onDocLeave);

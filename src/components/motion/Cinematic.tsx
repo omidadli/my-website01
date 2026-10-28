@@ -1,6 +1,5 @@
 import React, { useRef } from 'react';
-import { motion, useScroll, useSpring, useReducedMotion } from 'motion/react';
-import { useHoverCapable } from '../../utils/useHoverCapable';
+import { motion, useScroll, useSpring } from 'motion/react';
 
 /* ------------------------------------------------------------------ */
 /*  MaskLines — cinematic line-by-line reveal (overflow mask)          */
@@ -37,15 +36,10 @@ export const Magnetic: React.FC<{
   strength?: number;
 }> = ({ children, className = '', strength = 0.25 }) => {
   const ref = useRef<HTMLDivElement>(null);
-  // Same gating as CustomCursor/TiltCard: no cursor-following motion on touch
-  // screens or when the visitor asked for reduced motion.
-  const hoverCapable = useHoverCapable();
-  const reducedMotion = useReducedMotion();
-  const magnetic = hoverCapable && !reducedMotion;
 
   const onMove = (e: React.MouseEvent) => {
     const el = ref.current;
-    if (!magnetic || !el) return;
+    if (!el) return;
     const r = el.getBoundingClientRect();
     const x = (e.clientX - (r.left + r.width / 2)) * strength;
     const y = (e.clientY - (r.top + r.height / 2)) * strength;

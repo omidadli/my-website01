@@ -12,24 +12,24 @@
     "content:gen": "tsx scripts/gen-default-content.mts",
     "content:export": "node scripts/sync-content.mjs export",
     "content:import": "node scripts/sync-content.mjs import",
-    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts",
+    "test": "node scripts/sync-content.test.mjs && tsx scripts/routes.test.ts && tsx scripts/sitemap.test.ts && tsx scripts/taxonomy.test.ts && tsx scripts/lead-fallback.test.ts && tsx scripts/case-studies.test.ts && tsx scripts/content-defaults.test.ts && tsx scripts/date.test.ts && tsx scripts/content-visibility.test.ts && tsx scripts/mascot-integration.test.ts && tsx scripts/tool-coins.test.ts && tsx scripts/sync-machine.test.ts && tsx scripts/save-coordinator.test.ts && tsx scripts/profile-photo.test.ts && tsx scripts/theme-config.test.ts && tsx scripts/ai-timeouts.test.ts && tsx scripts/ai-sections-e2e.test.ts && tsx scripts/canonical-origin.test.ts && tsx scripts/product-promo.test.ts && tsx scripts/product-catalog-migration.test.ts && tsx scripts/ai-keys.test.ts && tsx scripts/chat-answer.test.tsx && tsx scripts/assistant-strategy.test.ts && tsx scripts/chat-request.test.ts && tsx scripts/product-chat.test.ts && tsx scripts/user-auth.test.ts && tsx scripts/telegram-bot.test.ts && tsx scripts/telegram-flow.test.ts && node telegram-bot/test.mjs",
     "lint:functions": "tsc -p functions/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@fontsource-variable/vazirmatn": "^5.3.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "vite": "^6.2.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",
-    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
