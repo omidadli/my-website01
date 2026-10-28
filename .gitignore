@@ -11,3 +11,6 @@ coverage/
 .wrangler/
 .dev.vars
 .dev-*.json
+
+# Telegram bot (secrets stay out; data is runtime state)
+telegram-bot/data/

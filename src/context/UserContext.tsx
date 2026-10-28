@@ -18,8 +18,8 @@ interface UserContextValue {
   activities: UserActivity[];
   isLoggedIn: boolean;
   loading: boolean;
-  register: (payload: { fullName: string; email?: string; phone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
-  login: (payload: { email?: string; phone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
+  register: (payload: { fullName: string; email?: string; phone?: string; emailOrPhone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
+  login: (payload: { email?: string; phone?: string; emailOrPhone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateProfile: (updates: Partial<Omit<UserProfile, 'id' | 'joinedAt'>>) => Promise<{ ok: boolean; error?: string }>;
   saveArticle: (postId: string, notes?: string) => void;
@@ -115,12 +115,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   // avoid racing them with an in-flight 401 and wiping the freshly-logged-in user.
   useEffect(() => {
     let cancelled = false;
-    let inFlightToken = '';
     (async () => {
       // Small delay: let any just-sent register/login response settle its cookie
       // before we probe, otherwise we may fire a GET that sees a not-yet-set cookie.
       await new Promise((res) => setTimeout(res, 200));
       if (cancelled) return;
+      // Capture the auth generation BEFORE the request so a register/login that
+      // completes while getMe() is in flight invalidates this probe.
+      const myGen = authGeneration.current;
       try {
         const r = await api.getMe();
         if (cancelled) return;
@@ -134,28 +136,26 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           if (r.profile?.fullName) syncMascotName(r.profile.fullName);
         } else if (r.error === 'not_authenticated') {
           cloudOk.current = true;
-          // Only clear state if no successful auth has happened since this request started.
-          const myGen = authGeneration.current;
-          setProfile((current) => {
-            if (myGen !== authGeneration.current) return current;
-            if (current) return current;
-            const f = loadFallback();
-            return f.profile || null;
-          });
-          setSavedArticles((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().savedArticles || []));
-          setSubscriptions((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().subscriptions || []));
-          setConsultations((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().consultations || []));
-          setActivities((current) => current.length || myGen !== authGeneration.current ? current : (loadFallback().activities || []));
+          // A successful register/login happened while this probe was in flight —
+          // its state is authoritative; do not touch it.
+          if (myGen !== authGeneration.current) return;
+          setProfile(null);
+          setSavedArticles([]);
+          setSubscriptions([]);
+          setConsultations([]);
+          setActivities([]);
         } else {
+          // network / server error: keep whatever we have (cache) and fall back
+          // to the offline store only when nothing is loaded yet.
           cloudOk.current = false;
-          const f = loadFallback();
-          if (f.profile) {
-            setProfile(f.profile);
-            setSavedArticles(f.savedArticles);
-            setSubscriptions(f.subscriptions);
-            setConsultations(f.consultations);
-            setActivities(f.activities);
-          }
+          setProfile((current) => {
+            if (current) return current;
+            return loadFallback().profile || null;
+          });
+          setSavedArticles((current) => current.length ? current : (loadFallback().savedArticles || []));
+          setSubscriptions((current) => current.length ? current : (loadFallback().subscriptions || []));
+          setConsultations((current) => current.length ? current : (loadFallback().consultations || []));
+          setActivities((current) => current.length ? current : (loadFallback().activities || []));
         }
       } catch {
         cloudOk.current = false;
@@ -192,11 +192,11 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const register = useCallback(async ({ fullName, email, phone, password }: { fullName: string; email?: string; phone?: string; password: string }) => {
-    const loginValue = (email || phone || '').trim();
+  const register = useCallback(async ({ fullName, email, phone, emailOrPhone, password }: { fullName: string; email?: string; phone?: string; emailOrPhone?: string; password: string }) => {
+    const loginValue = (emailOrPhone || email || phone || '').trim();
     if (!loginValue) return { ok: false, error: 'ایمیل یا شماره تلفن را وارد کنید.' };
     if (cloudOk.current !== false) {
-      const r = await api.userRegister({ fullName, email, phone, password });
+      const r = await api.userRegister({ fullName, email, phone, emailOrPhone, password });
       if (r.ok) {
         cloudOk.current = true;
         authGeneration.current += 1;
@@ -252,11 +252,11 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     return { ok: true };
   }, [fallback.profile, persistFallback]);
 
-  const login = useCallback(async ({ email, phone, password }: { email?: string; phone?: string; password: string }) => {
-    const loginValue = (email || phone || '').trim();
+  const login = useCallback(async ({ email, phone, emailOrPhone, password }: { email?: string; phone?: string; emailOrPhone?: string; password: string }) => {
+    const loginValue = (emailOrPhone || email || phone || '').trim();
     if (!loginValue) return { ok: false, error: 'ایمیل یا شماره تلفن را وارد کنید.' };
     if (cloudOk.current !== false) {
-      const r = await api.userLogin({ email, phone, password });
+      const r = await api.userLogin({ email, phone, emailOrPhone, password });
       if (r.ok) {
         cloudOk.current = true;
         authGeneration.current += 1;
@@ -299,7 +299,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (cloudOk.current !== false) {
       const r = await api.userUpdateProfile({ fullName: updates.fullName, phone: updates.phone, bio: updates.bio });
       if (r.ok) {
-        setProfile((p) => p ? { ...p, ...updates } : p);
+        // The server normalises (phone format, trimmed name) — its row wins.
+        setProfile((p) => (p && r.profile ? { ...p, ...r.profile } : p));
         return { ok: true };
       }
       return { ok: false, error: r.error };
@@ -330,6 +331,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (cloudOk.current === false) {
       const entry: SavedArticle = { postId, savedAt: new Date().toISOString(), notes: notes || '', read: false };
       persistFallback({ ...fallback, savedArticles: [entry, ...fallback.savedArticles] });
+    } else {
+      // Persist on the server too — otherwise the list vanishes after a reload.
+      api.userSaveArticle(postId, notes).catch(() => {});
     }
   }, [logActivity, fallback, persistFallback]);
 
@@ -337,6 +341,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     setSavedArticles((prev) => prev.filter((a) => a.postId !== postId));
     if (cloudOk.current === false) {
       persistFallback({ ...fallback, savedArticles: fallback.savedArticles.filter((a) => a.postId !== postId) });
+    } else {
+      api.userUnsaveArticle(postId).catch(() => {});
     }
   }, [fallback, persistFallback]);
 
@@ -348,6 +354,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         ...fallback,
         savedArticles: fallback.savedArticles.map((a) => a.postId === postId ? { ...a, read: true, readAt: new Date().toISOString() } : a),
       });
+    } else {
+      api.userMarkArticleRead(postId, true).catch(() => {});
     }
   }, [logActivity, fallback, persistFallback]);
 
@@ -376,6 +384,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     logActivity({ type: 'consultation_sent', description: `درخواست مشاوره جدید: ${req.subject}`, relatedId: entry.id });
     if (cloudOk.current === false) {
       persistFallback({ ...fallback, consultations: [entry, ...fallback.consultations] });
+    } else {
+      // Persist on the server too — otherwise the request vanishes after a reload.
+      api.userAddConsultation({
+        subject: req.subject,
+        message: req.message,
+        serviceId: req.serviceId,
+        serviceName: req.serviceName,
+      }).catch(() => {});
     }
   }, [logActivity, fallback, persistFallback]);
 
