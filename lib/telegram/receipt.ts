@@ -204,7 +204,7 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
   if (expectedName && !actualName) reasons.push('recipient_name_missing');
   else if (expectedName && !recipientOk) reasons.push('recipient_name_mismatch');
 
-  // ---- date window: [order creation - 2h, now + 2 days] ----
+  // ---- transaction date must be near this order and not materially in the future ----
   let dateOk = true;
   if (vision?.date) {
     const t = Date.parse(vision.date);
@@ -213,7 +213,7 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
       // day of the order; timestamps get a tighter 2-hour grace period.
       const hasTime = /\d{1,2}:\d{2}/.test(String(vision.date));
       const grace = hasTime ? 2 * 3600_000 : 36 * 3600_000;
-      dateOk = t >= e.orderCreatedAtMs - grace && t <= now + 2 * 86400_000;
+      dateOk = t >= e.orderCreatedAtMs - grace && t <= now + 5 * 60_000;
       if (!dateOk) reasons.push('date_out_of_range');
     } else {
       dateOk = false;
