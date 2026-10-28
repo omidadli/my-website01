@@ -75,6 +75,7 @@ t('amount matches in Toman or Rial', () => {
 
 const base = {
   orderToman: 590000,
+  expectedAmountToman: 590000,
   orderCreatedAtMs: Date.parse('2026-10-01T10:00:00Z'),
   nowMs: Date.parse('2026-10-01T12:00:00Z'),
 };
@@ -83,7 +84,8 @@ t('auto-approves when vision reads a matching receipt', () => {
   const d = decideReceipt({
     ...base,
     textRef: '1234567890',
-    vision: { ok: true, ref: '1234567890', amount: 5900000, date: '2026-10-01', looksLikeReceipt: true },
+    expectedRecipientName: 'امید عدلی',
+    vision: { ok: true, ref: '1234567890', amount: 5900000, date: '2026-10-01', recipientName: 'امید عدلی', looksLikeReceipt: true },
   });
   eq(d.status, 'auto_approved');
   ok(d.confidence >= 0.85);
@@ -106,15 +108,16 @@ t('never auto-approves a wrong amount', () => {
   ok(d.reasons.includes('amount_mismatch'));
 });
 
-t('text-only receipt waits for policy, not auto-approved silently', () => {
+t('receipt without OCR date and beneficiary waits for review', () => {
   const d = decideReceipt({ ...base, textRef: '1234567890', textAmount: 590000 });
   eq(d.status, 'needs_review');
-  ok(d.reasons.includes('text_only'));
+  ok(d.reasons.includes('date_missing'));
+  ok(d.reasons.includes('recipient_name_missing'));
 });
 
-t("policy 'always' upgrades a confident text-only receipt", () => {
+t("policy 'always' cannot bypass missing receipt date and beneficiary", () => {
   const d = decideReceipt({ ...base, textRef: '1234567890', textAmount: 590000 });
-  eq(applyAutoApprovePolicy(d, 'always').status, 'auto_approved');
+  eq(applyAutoApprovePolicy(d, 'always').status, 'needs_review');
   eq(applyAutoApprovePolicy(d, 'vision').status, 'needs_review');
 });
 
@@ -122,7 +125,8 @@ t("policy 'off' forces manual review even with a good photo", () => {
   const d = decideReceipt({
     ...base,
     textRef: '1234567890',
-    vision: { ok: true, ref: '1234567890', amount: 590000, looksLikeReceipt: true },
+    expectedRecipientName: 'امید عدلی',
+    vision: { ok: true, ref: '1234567890', amount: 590000, date: '2026-10-01', recipientName: 'امید عدلی', looksLikeReceipt: true },
   });
   eq(applyAutoApprovePolicy(d, 'off').status, 'needs_review');
 });
@@ -131,7 +135,8 @@ t('flags an out-of-window receipt date', () => {
   const d = decideReceipt({
     ...base,
     textRef: '1234567890',
-    vision: { ok: true, ref: '1234567890', amount: 590000, date: '2025-01-01', looksLikeReceipt: true },
+    expectedRecipientName: 'امید عدلی',
+    vision: { ok: true, ref: '1234567890', amount: 590000, date: '2025-01-01', recipientName: 'امید عدلی', looksLikeReceipt: true },
   });
   eq(d.status, 'needs_review');
   ok(d.reasons.includes('date_out_of_range'));
