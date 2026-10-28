@@ -278,13 +278,36 @@ export const applyAutoApprovePolicy = (d: ReceiptDecision, policy: 'vision' | 'a
 
 /** Prompt + JSON contract for the AI vision pass. */
 export const VISION_PROMPT = [
-  'این تصویر یک رسید پرداخت بانکی ایرانی (کارت‌به‌کارت / پایا / ساتنا) است.',
-  'فقط و فقط یک شیء JSON با این ساختار برگردان و هیچ متن دیگری ننویس:',
-  '{"looksLikeReceipt": true|false, "ref": "شماره پیگیری فقط رقم", "amount": عدد_ریال_یا_تومان_بدون_جداکننده, "date": "تاریخ تراکنش به ISO 8601 میلادی؛ اگر قابل تبدیل نیست null", "bank": "نام بانک", "recipientName": "نام صاحب حساب مقصد که پول به او واریز شده", "cardLast4": "۴ رقم آخر کارت مقصد اگر مشخص است"}',
-  'اگر فیلدی خوانا نبود مقدار null بگذار؛ هرگز حدس نزن. amount را دقیقاً همان‌طور که روی رسید چاپ شده (ریال یا تومان) برگردان. تاریخ را از زمان تراکنش استخراج و در صورت امکان به میلادی ISO تبدیل کن، نه زمان گوشی یا دریافت عکس. recipientName نام صاحب حساب مقصد است، نه نام واریزکننده؛ اگر مشخص نیست null بده. شماره کارت مقصد را از کارت مبدا اشتباه نگیر.',
+  'این تصویر رسید بانکی را مثل یک کارشناس OCR دقیق بخوان. تمام متن‌های قابل مشاهده را بررسی کن؛ روی مبلغ، تاریخ/ساعت تراکنش، نام گیرنده وجه و شماره پیگیری زوم ذهنی کن.',
+  'فقط یک JSON معتبر بده. برای فیلدهای نامشخص null بنویس و هرگز از مبلغ سفارش یا اطلاعات بیرونی برای حدس زدن مقدار رسید استفاده نکن.',
+  '{"looksLikeReceipt": true, "ref": "شماره پیگیری فقط رقم یا null", "amount": 595006, "amountRaw": "متن دقیق مبلغ با واحد همان‌طور که روی تصویر چاپ شده", "date": "YYYY-MM-DD یا ISO 8601 میلادی یا null", "transactionDateRaw": "متن دقیق تاریخ/ساعت روی رسید یا null", "bank": "نام بانک یا null", "recipientName": "نام صاحب حساب مقصد عیناً همان‌طور که چاپ شده یا null", "payerName": "نام واریزکننده اگر درج شده یا null", "cardLast4": "۴ رقم آخر کارت مقصد یا null"}',
+  'مبلغ را عدد JSON بدون ویرگول برگردان؛ رقم‌های فارسی/عربی را به رقم لاتین تبدیل کن و جداکننده هزارگان را حذف کن. amount باید همان عدد چاپ‌شده باشد و واحد را در amountRaw نگه دار. اگر مبلغ چاپ‌شده ۵۹۵٬۰۰۶ است amount=595006؛ آن را با قیمت سفارش یکی نکن.',
+  'recipientName فقط صاحب حساب مقصد/گیرنده پول است، نه واریزکننده. نام را دقیقاً از برچسبی مثل «به نام»، «ذینفع»، «گیرنده»، «مقصد» استخراج کن. payerName را جداگانه از «از طرف»، «واریزکننده» یا مبدا بخوان. این دو را هرگز جابه‌جا نکن.',
+  'تاریخ را از تاریخ انجام تراکنش بخوان، نه تاریخ فعلی، تاریخ گوشی یا زمان دریافت عکس. اگر تاریخ شمسی است، به میلادی تبدیل کن و متن خام را هم در transactionDateRaw بگذار. اگر قابل خواندن نیست null بده.',
+  'اگر رسید تصویر بریده، تار یا واقعاً ناخواناست، فقط فیلدهای غیرقابل‌خواندن را null بگذار؛ اگر مبلغ/نام/تاریخ در تصویر خواناست حتماً آن را استخراج کن. looksLikeReceipt فقط وقتی true باشد که تصویر واقعاً رسید بانکی/انتقال وجه باشد.'
 ].join('\n');
 
 /** Parse the vision model response (tolerant to code fences / extra prose). */
+const parseVisionAmount = (value: unknown): number | undefined => {
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+  if (typeof value !== 'string') return undefined;
+  // Gemini may return a formatted string ("595,006", "۵۹۵٬۰۰۶ ریال")
+  // despite being asked for a JSON number. Normalize digit scripts and separators.
+  const normalized = faDigits(value).replace(/[٬،,\s]/g, '').replace(/[^0-9.]/g, '');
+  if (!normalized || !/\d/.test(normalized)) return undefined;
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : undefined;
+};
+
+const firstNonEmpty = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+};
+
+/** Parse Gemini OCR output without mistaking formatted Persian numbers for missing fields. */
 export const parseVisionResponse = (text: string): VisionReading => {
   try {
     const cleaned = String(text || '')
@@ -294,17 +317,20 @@ export const parseVisionResponse = (text: string): VisionReading => {
     const end = cleaned.lastIndexOf('}');
     if (start < 0 || end <= start) return { ok: false, error: 'no_json' };
     const j = JSON.parse(cleaned.slice(start, end + 1));
-    const ref = faDigits(String(j.ref ?? '')).replace(/\D/g, '');
-    const amount = Number(j.amount ?? 0);
+    const ref = faDigits(String(j.ref ?? j.reference ?? j.rrn ?? j.traceNumber ?? '')).replace(/\D/g, '');
+    const amount = parseVisionAmount(j.amount ?? j.amountRaw ?? j.paidAmount ?? j.transactionAmount ?? j.transferAmount);
+    const recipientName = firstNonEmpty(j.recipientName, j.beneficiaryName, j.destinationAccountHolder, j.receiverName, j.payeeName, j.destinationName);
+    const date = firstNonEmpty(j.date, j.transactionDate, j.transactionDateRaw, j.paidAt);
+    const cardLast4 = firstNonEmpty(j.cardLast4, j.destinationCardLast4, j.receiverCardLast4);
     return {
       ok: true,
       ref: ref || undefined,
-      amount: Number.isFinite(amount) && amount > 0 ? Math.round(amount) : undefined,
-      date: j.date ? String(j.date) : undefined,
-      bank: j.bank ? String(j.bank) : undefined,
-      recipientName: j.recipientName ? String(j.recipientName) : undefined,
-      cardLast4: j.cardLast4 ? faDigits(String(j.cardLast4)).replace(/\D/g, '').slice(-4) : undefined,
-      looksLikeReceipt: j.looksLikeReceipt !== false,
+      amount,
+      date,
+      bank: firstNonEmpty(j.bank, j.bankName),
+      recipientName,
+      cardLast4: cardLast4 ? faDigits(cardLast4).replace(/\D/g, '').slice(-4) : undefined,
+      looksLikeReceipt: j.looksLikeReceipt === true || j.isReceipt === true || j.receiptType === 'bank_transfer',
     };
   } catch {
     return { ok: false, error: 'bad_json' };
