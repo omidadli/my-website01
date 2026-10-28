@@ -187,6 +187,7 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
   const amounts = [e.textAmount, vision?.amount].filter((x): x is number => typeof x === 'number' && x > 0);
   const expectedAmount = e.expectedAmountToman || e.orderToman;
   const amountOk = amounts.some((a) => amountMatches(a, expectedAmount));
+  const visionAmountOk = typeof vision?.amount === 'number' && amountMatches(vision.amount, expectedAmount);
   const amountBad = amounts.length > 0 && !amountOk;
   if (amountBad) reasons.push('amount_mismatch');
   else if (!amounts.length) reasons.push('amount_missing');
@@ -199,7 +200,7 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
     .replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
   const expectedName = normalizeName(e.expectedRecipientName || '');
   const actualName = normalizeName(vision?.recipientName || '');
-  const recipientOk = !!expectedName && !!actualName && (actualName === expectedName || actualName.includes(expectedName) || expectedName.includes(actualName));
+  const recipientOk = !!expectedName && !!actualName && actualName === expectedName;
   if (expectedName && !actualName) reasons.push('recipient_name_missing');
   else if (expectedName && !recipientOk) reasons.push('recipient_name_mismatch');
 
@@ -214,6 +215,9 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
       const grace = hasTime ? 2 * 3600_000 : 36 * 3600_000;
       dateOk = t >= e.orderCreatedAtMs - grace && t <= now + 2 * 86400_000;
       if (!dateOk) reasons.push('date_out_of_range');
+    } else {
+      dateOk = false;
+      reasons.push('date_unreadable');
     }
   } else {
     reasons.push('date_missing');
@@ -224,7 +228,7 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
   if (vision && !vision.ok) reasons.push('vision_failed');
   if (vision?.ok && vision.looksLikeReceipt === false) reasons.push('not_a_receipt');
 
-  const visionConfirms = !!(vision?.ok && vision.looksLikeReceipt !== false && amountOk && dateOk && recipientOk);
+  const visionConfirms = !!(vision?.ok && vision.looksLikeReceipt !== false && visionAmountOk && dateOk && recipientOk);
   const textOnlyOk = !!(ref && amountOk && uniqueRefs.length <= 1 && dateOk && (!expectedName || recipientOk));
 
   let status: ReceiptDecisionStatus = 'needs_review';
