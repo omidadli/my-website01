@@ -133,6 +133,7 @@ const order = {
   plan_id: plan.id,
   plan_name: plan.name,
   amount_toman: plan.amountToman,
+  expected_amount_toman: plan.amountToman + 1632,
   status: 'awaiting_payment',
   ref_code: '',
   receipt_file_id: '',
@@ -148,7 +149,7 @@ assert.equal((await store.getOrder(env, order.id))?.status, 'awaiting_payment');
 
 // --- 2) receipt arrives: vision reads a matching receipt ---
 const { handleBotUpdate } = await import('../lib/telegram/bot');
-visionAnswer = JSON.stringify({ looksLikeReceipt: true, ref: '1234567890', amount: plan.amountToman * 10, date: new Date().toISOString().slice(0, 10), bank: 'ملت' });
+visionAnswer = JSON.stringify({ looksLikeReceipt: true, ref: '1234567890', amount: (plan.amountToman + 1632) * 10, date: new Date().toISOString().slice(0, 10), bank: 'ملت', recipientName: 'امید عدلی' });
 
 // the customer's pending state points at this order
 await store.upsertBotUser(env, CUSTOMER, { pending: { kind: 'awaiting_receipt', orderId: order.id } });
@@ -161,7 +162,6 @@ await handleBotUpdate(env, {
     chat: { id: Number(CUSTOMER), type: 'private' },
     from: { id: Number(CUSTOMER), first_name: 'رضا' },
     photo: [{ file_id: 'ph1' }, { file_id: 'ph2' }],
-    caption: `مبلغ ${plan.amountToman} تومان — پیگیری 1234567890`,
   },
 });
 
@@ -221,17 +221,22 @@ const wrongAmount = applyAutoApprovePolicy(
     orderCreatedAtMs: Date.now(),
     textRef: '9999999999',
     textAmount: 1000,
-    vision: { ok: true, ref: '9999999999', amount: 1000, looksLikeReceipt: true },
+    expectedAmountToman: plan.amountToman + 1632,
+    expectedRecipientName: 'امید عدلی',
+    vision: { ok: true, ref: '9999999999', amount: 1000, date: '2020-01-01', recipientName: 'شخص دیگر', looksLikeReceipt: true },
   }),
   'vision'
 );
 assert.equal(wrongAmount.status, 'needs_review', 'a wrong amount is never auto-approved');
+assert.ok(wrongAmount.reasons.includes('amount_mismatch'), 'wrong transfer amount is explained');
+assert.ok(wrongAmount.reasons.includes('recipient_name_mismatch'), 'wrong beneficiary is explained');
+assert.ok(wrongAmount.reasons.includes('date_out_of_range'), 'wrong transfer date is explained');
 
 const handsOff = applyAutoApprovePolicy(
   decideReceipt({ orderToman: plan.amountToman, orderCreatedAtMs: Date.now(), textRef: '8888888888', textAmount: plan.amountToman }),
   'always'
 );
-assert.equal(handsOff.status, 'auto_approved', "policy 'always' accepts a typed reference+amount");
+assert.equal(handsOff.status, 'needs_review', "policy 'always' cannot bypass missing OCR date and beneficiary");
 
 const offPolicy = applyAutoApprovePolicy(
   decideReceipt({
@@ -248,7 +253,7 @@ assert.equal(offPolicy.status, 'needs_review', "policy 'off' always asks the adm
 const parsed = await readReceiptWithVision('gk', 'AAAA', 'gemini-2.5-flash');
 assert.equal(parsed.ok, true);
 assert.equal(parsed.ref, '1234567890');
-assert.equal(parsed.amount, plan.amountToman * 10);
+assert.equal(parsed.amount, (plan.amountToman + 1632) * 10);
 
 // --- 10) parsing a real-world caption ---
 const details = parsePaymentDetails(`واریز ${plan.amountToman} تومان شماره پیگیری ۴۵۶۷۸۹۰۱۲۳`);

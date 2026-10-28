@@ -124,7 +124,8 @@ const renderOrderCard = (o: BotOrderRow, extraLines: string[] = []): string =>
   [
     `📦 سفارش <code>${tg.escapeHtml(o.id)}</code>`,
     `محصول: ${tg.escapeHtml(o.product_name)} — ${tg.escapeHtml(o.plan_name)}`,
-    `مبلغ: ${fmtToman(o.amount_toman)}`,
+    `قیمت محصول: ${fmtToman(o.amount_toman)}`,
+    o.expected_amount_toman && o.expected_amount_toman !== o.amount_toman ? `مبلغ دقیق انتقال: ${fmtToman(o.expected_amount_toman)}` : '',
     o.ref_code ? `شماره پیگیری: <code>${tg.escapeHtml(o.ref_code)}</code>` : '',
     ...extraLines,
   ].filter(Boolean).join('\n');
@@ -207,6 +208,18 @@ const showPlans = async (env: BotEnv, chatId: string, productId: string) => {
   );
 };
 
+const createUniquePaymentAmount = async (env: BotEnv, baseToman: number): Promise<number> => {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const candidate = baseToman + 1000 + Math.floor(Math.random() * 9000);
+    const collision = await env.DB.prepare(
+      `SELECT id FROM bot_orders WHERE expected_amount_toman = ?1 AND status IN ('awaiting_payment','receipt_submitted','needs_review') LIMIT 1`
+    ).bind(candidate).first<{ id: string }>();
+    if (!collision) return candidate;
+  }
+  // A low-probability fallback; still preserves the random suffix.
+  return baseToman + 1000 + Math.floor(Math.random() * 9000);
+};
+
 const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow | null, productId: string, planId: string) => {
   const product = botProduct(productId);
   const plan = botPlan(productId, planId);
@@ -222,6 +235,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     plan_id: plan.id,
     plan_name: plan.name,
     amount_toman: plan.amountToman || priceToToman(plan.price),
+    expected_amount_toman: await createUniquePaymentAmount(env, plan.amountToman || priceToToman(plan.price)),
     status: 'awaiting_payment',
     ref_code: '',
     receipt_file_id: '',
@@ -234,7 +248,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
   };
   await insertOrder(env, order);
   await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId: order.id } });
-  await logEvent(env, 'order_created', `${order.id} ${productId}/${planId} amount=${order.amount_toman}`);
+  await logEvent(env, 'order_created', `${order.id} ${productId}/${planId} price=${order.amount_toman} transfer=${order.expected_amount_toman}`);
 
   const card = String(env.BOT_CARD_NUMBER || '').trim();
   const holder = String(env.BOT_CARD_HOLDER || '').trim();
@@ -242,7 +256,8 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     '🧾 <b>سفارش جدید</b>',
     '',
     `📦 ${tg.escapeHtml(product.name)} — ${tg.escapeHtml(plan.name)}`,
-    `💰 مبلغ قابل پرداخت: <b>${fmtToman(order.amount_toman)}</b>`,
+    `💰 مبلغ دقیق قابل پرداخت: <b>${fmtToman(order.expected_amount_toman || order.amount_toman)}</b>`,
+    '⚠️ لطفاً همین مبلغ دقیق را واریز کنید تا سفارش به‌صورت خودکار تطبیق داده شود.',
     `📅 مدت دسترسی: ${plan.durationDays} روز${plan.messageQuota ? ` — ${plan.messageQuota} پیام` : ' — نامحدود'}`,
     '',
     card
@@ -255,6 +270,32 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
 };
 
 /* --------------------------- receipt verification --------------------------- */
+
+const receiptReasonFa: Record<string, string> = {
+  ref_missing: 'شماره پیگیری از روی رسید قابل تشخیص نبود.',
+  ref_mismatch: 'شماره‌های پیگیری موجود در رسید با هم تطبیق ندارند.',
+  duplicate_ref: 'این شماره پیگیری قبلاً برای سفارش دیگری استفاده شده است.',
+  amount_missing: 'مبلغ واریزی از روی رسید قابل تشخیص نبود.',
+  amount_mismatch: 'مبلغ واریزی با مبلغ دقیق اعلام‌شده برای این سفارش مطابقت ندارد.',
+  recipient_name_missing: 'نام صاحب حساب مقصد در رسید خوانا نیست.',
+  recipient_name_mismatch: 'نام صاحب حساب مقصد با نام مورد انتظار برای دریافت وجه مطابقت ندارد.',
+  date_missing: 'تاریخ تراکنش در رسید مشخص نیست.',
+  date_unreadable: 'تاریخ تراکنش از روی رسید قابل خواندن یا تبدیل نبود.',
+  date_out_of_range: 'تاریخ تراکنش با بازه زمانی سفارش مطابقت ندارد.',
+  vision_failed: 'تصویر رسید به‌طور قابل‌اعتماد خوانده نشد.',
+  not_a_receipt: 'تصویر ارسالی شبیه رسید پرداخت بانکی نیست.',
+};
+const renderCustomerReceiptFeedback = (reasons: string[], order: BotOrderRow, expectedRecipientName: string): string => {
+  const visible = [...new Set(reasons)].filter((reason) => receiptReasonFa[reason]);
+  if (!visible.length) return '⏳ رسید دریافت شد، اما هنوز شواهد کافی برای تأیید خودکار وجود ندارد.';
+  const expected = order.expected_amount_toman || order.amount_toman;
+  const lines = visible.map((reason) => {
+    if (reason === 'amount_mismatch') return `• مبلغ رسید با سفارش مطابقت ندارد. مبلغ دقیق درخواستی: ${fmtToman(expected)}.`;
+    if (reason === 'recipient_name_mismatch' && expectedRecipientName) return `• نام صاحب حساب مقصد با «${tg.escapeHtml(expectedRecipientName)}» مطابقت ندارد.`;
+    return `• ${receiptReasonFa[reason]}`;
+  });
+  return ['⚠️ <b>رسید هنوز تأیید نشد</b>', 'مواردی که نیاز به اصلاح یا بررسی دارند:', ...lines].join('\n');
+};
 
 const runReceiptPipeline = async (
   env: BotEnv,
@@ -283,6 +324,8 @@ const runReceiptPipeline = async (
       vision,
       refTaken,
       orderToman: order.amount_toman,
+      expectedAmountToman: order.expected_amount_toman || order.amount_toman,
+      expectedRecipientName: String(env.BOT_CARD_HOLDER || '').trim(),
       orderCreatedAtMs: Date.parse(order.created_at) || Date.now(),
     }),
     autoApprovePolicy(env)
@@ -314,9 +357,8 @@ const runReceiptPipeline = async (
 
   // needs review
   await send(env, order.tg_user_id,
-    '⏳ تصویر رسید دریافت شد و اطلاعات آن به‌صورت خودکار در حال بررسی است.\\n' +
-    'به‌محض تأیید، دسترسی شما فعال و همین‌جا اطلاع داده می‌شود.\n' +
-    'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ نتیجه را همین‌جا اطلاع می‌دهیم.'
+    renderCustomerReceiptFeedback(decision.reasons, order, String(env.BOT_CARD_HOLDER || '').trim()) + '\n\n' +
+    'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ اگر رسید صحیح باشد، نتیجه را همین‌جا اطلاع می‌دهیم.'
   );
   await notifyAdmins(env,
     `⏳ <b>رسید نیاز به بررسی دارد</b>\n${renderOrderCard(order, [
