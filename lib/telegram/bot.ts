@@ -272,13 +272,13 @@ const receiptReasonFa: Record<string, string> = {
   vision_failed: 'تصویر رسید به‌طور قابل‌اعتماد خوانده نشد.',
   not_a_receipt: 'تصویر ارسالی شبیه رسید پرداخت بانکی نیست.',
 };
-const renderCustomerReceiptFeedback = (reasons: string[], order: BotOrderRow, vision: VisionReading | null): string => {
+const renderCustomerReceiptFeedback = (reasons: string[], order: BotOrderRow, expectedRecipientName: string): string => {
   const visible = [...new Set(reasons)].filter((reason) => receiptReasonFa[reason]);
   if (!visible.length) return '⏳ رسید دریافت شد، اما هنوز شواهد کافی برای تأیید خودکار وجود ندارد.';
   const expected = order.expected_amount_toman || order.amount_toman;
   const lines = visible.map((reason) => {
     if (reason === 'amount_mismatch') return `• مبلغ رسید با سفارش مطابقت ندارد. مبلغ دقیق درخواستی: ${fmtToman(expected)}.`;
-    if (reason === 'recipient_name_mismatch' && envNamePlaceholder) return receiptReasonFa[reason];
+    if (reason === 'recipient_name_mismatch' && expectedRecipientName) return `• نام صاحب حساب مقصد با «${tg.escapeHtml(expectedRecipientName)}» مطابقت ندارد.`;
     return `• ${receiptReasonFa[reason]}`;
   });
   return ['⚠️ <b>رسید هنوز تأیید نشد</b>', 'مواردی که نیاز به اصلاح یا بررسی دارند:', ...lines].join('\\n');
@@ -344,7 +344,7 @@ const runReceiptPipeline = async (
 
   // needs review
   await send(env, order.tg_user_id,
-    renderCustomerReceiptFeedback(decision.reasons, order, vision) + '\\n\\n' +
+    renderCustomerReceiptFeedback(decision.reasons, order, String(env.BOT_CARD_HOLDER || '').trim()) + '\\n\\n' +
     'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ اگر رسید صحیح باشد، نتیجه را همین‌جا اطلاع می‌دهیم.'
   );
   await notifyAdmins(env,
