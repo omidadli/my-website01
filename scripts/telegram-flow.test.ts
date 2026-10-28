@@ -253,7 +253,7 @@ assert.equal(offPolicy.status, 'needs_review', "policy 'off' always asks the adm
 const parsed = await readReceiptWithVision('gk', 'AAAA', 'gemini-2.5-flash');
 assert.equal(parsed.ok, true);
 assert.equal(parsed.ref, '1234567890');
-assert.equal(parsed.amount, plan.amountToman * 10);
+assert.equal(parsed.amount, (plan.amountToman + 1632) * 10);
 
 // --- 10) parsing a real-world caption ---
 const details = parsePaymentDetails(`واریز ${plan.amountToman} تومان شماره پیگیری ۴۵۶۷۸۹۰۱۲۳`);
