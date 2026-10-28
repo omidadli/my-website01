@@ -84,7 +84,7 @@ const handleWebhook = async (request: Request, env: TelegramEnv, ctx: ExecutionC
 
 /* ------------------------- website → delivery bridge ------------------------- */
 
-const handleDeliver = async (request: Request, env: TelegramEnv): Promise<Response> => {
+export const handleDeliver = async (request: Request, env: TelegramEnv): Promise<Response> => {
   const secret = String(env.TELEGRAM_WEBHOOK_SECRET || '');
   if (!secret || request.headers.get('X-Bot-Webhook-Secret') !== secret) {
     return json({ ok: false, error: 'forbidden' }, { status: 401 });
