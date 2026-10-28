@@ -109,14 +109,14 @@ t('never auto-approves a wrong amount', () => {
 });
 
 t('receipt without OCR date and beneficiary waits for review', () => {
-  const d = decideReceipt({ ...base, textRef: '1234567890', textAmount: 590000 });
+  const d = decideReceipt({ ...base, expectedRecipientName: 'امید عدلی', textRef: '1234567890', textAmount: 590000 });
   eq(d.status, 'needs_review');
   ok(d.reasons.includes('date_missing'));
   ok(d.reasons.includes('recipient_name_missing'));
 });
 
 t("policy 'always' cannot bypass missing receipt date and beneficiary", () => {
-  const d = decideReceipt({ ...base, textRef: '1234567890', textAmount: 590000 });
+  const d = decideReceipt({ ...base, expectedRecipientName: 'امید عدلی', textRef: '1234567890', textAmount: 590000 });
   eq(applyAutoApprovePolicy(d, 'always').status, 'needs_review');
   eq(applyAutoApprovePolicy(d, 'vision').status, 'needs_review');
 });
