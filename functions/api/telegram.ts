@@ -3,7 +3,8 @@
  *
  * Routes (all on this one file):
  *   POST /api/telegram                     → Telegram updates (webhook)
- *   GET  /api/telegram?setup=<secret>      → register the webhook with Telegram
+ *   POST /api/telegram with X-Telegram-Setup-Secret → register webhook securely
+ *   GET  /api/telegram?setup=<secret>      → legacy webhook setup
  *   GET  /api/telegram                     → health/info
  *   POST /api/telegram/deliver             → website → customer delivery (bridge)
  *
@@ -39,6 +40,7 @@ export interface TelegramEnv {
   BOT_CARD_HOLDER?: string;
   TELEGRAM_AUTO_APPROVE?: string;
   GEMINI_API_KEY?: string;
+  Gemini_api_key?: string;
   TELEGRAM_VISION_MODEL?: string;
   SITE_URL?: string;
   SUPPORT_HANDLE?: string;
@@ -186,7 +188,7 @@ const handleDeliver = async (request: Request, env: TelegramEnv): Promise<Respon
 
 const handleSetup = async (request: Request, env: TelegramEnv): Promise<Response> => {
   const url = new URL(request.url);
-  const provided = url.searchParams.get('setup') || '';
+  const provided = url.searchParams.get('setup') || request.headers.get('X-Telegram-Setup-Secret') || '';
   const secret = String(env.TELEGRAM_WEBHOOK_SECRET || '');
   if (!secret || provided !== secret) return json({ ok: false, error: 'forbidden' }, { status: 401 });
   if (!env.TELEGRAM_BOT_TOKEN) return json({ ok: false, error: 'no_token' }, { status: 503 });
@@ -248,6 +250,7 @@ export const onRequest = async (context: { request: Request; env: TelegramEnv; p
     }
   }
 
+  if (request.method === 'POST' && request.headers.has('X-Telegram-Setup-Secret')) return handleSetup(request, env);
   if (request.method === 'POST') return handleWebhook(request, env, execCtx);
 
   if (request.method === 'GET') {
@@ -259,7 +262,7 @@ export const onRequest = async (context: { request: Request; env: TelegramEnv; p
         token: !!env.TELEGRAM_BOT_TOKEN,
         secret: !!env.TELEGRAM_WEBHOOK_SECRET,
         admins: String(env.TELEGRAM_ADMIN_IDS || '').split(',').filter((s) => s.trim()).length,
-        vision: !!env.GEMINI_API_KEY,
+        vision: !!(env.GEMINI_API_KEY || env.Gemini_api_key),
         autoApprove: String(env.TELEGRAM_AUTO_APPROVE || 'vision'),
         card: !!env.BOT_CARD_NUMBER,
       },
