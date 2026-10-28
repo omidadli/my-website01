@@ -693,7 +693,7 @@ export const handleBotUpdate = async (env: BotEnv, update: any): Promise<void> =
       }
       await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_payment_details', orderId: order.id } });
       return send(env, chatId,
-        '✅ عکس رسید دریافت شد. اطلاعات مبلغ، زمان و شماره پیگیری را خودکار استخراج می‌کنیم؛ لازم نیست چیزی تایپ کنید.' +
+        '✅ عکس رسید دریافت شد. اطلاعات مبلغ، زمان و شماره پیگیری را خودکار استخراج می‌کنیم؛ لازم نیست چیزی تایپ کنید.'
 
 
       );
