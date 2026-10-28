@@ -223,11 +223,14 @@ const wrongAmount = applyAutoApprovePolicy(
     textAmount: 1000,
     expectedAmountToman: plan.amountToman + 1632,
     expectedRecipientName: 'امید عدلی',
-    vision: { ok: true, ref: '9999999999', amount: 1000, date: new Date().toISOString().slice(0, 10), recipientName: 'شخص دیگر', looksLikeReceipt: true },
+    vision: { ok: true, ref: '9999999999', amount: 1000, date: '2020-01-01', recipientName: 'شخص دیگر', looksLikeReceipt: true },
   }),
   'vision'
 );
 assert.equal(wrongAmount.status, 'needs_review', 'a wrong amount is never auto-approved');
+assert.ok(wrongAmount.reasons.includes('amount_mismatch'), 'wrong transfer amount is explained');
+assert.ok(wrongAmount.reasons.includes('recipient_name_mismatch'), 'wrong beneficiary is explained');
+assert.ok(wrongAmount.reasons.includes('date_out_of_range'), 'wrong transfer date is explained');
 
 const handsOff = applyAutoApprovePolicy(
   decideReceipt({ orderToman: plan.amountToman, orderCreatedAtMs: Date.now(), textRef: '8888888888', textAmount: plan.amountToman }),
