@@ -1,5 +1,5 @@
 import { handleDeliver, type TelegramEnv } from '../telegram';
-import { logEvent } from '../../lib/telegram/store';
+import { logEvent } from '../../../lib/telegram/store';
 
 export const onRequest = async (context: { request: Request; env: TelegramEnv }): Promise<Response> => {
   const { request, env } = context;
