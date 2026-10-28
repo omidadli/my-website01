@@ -252,8 +252,8 @@ export const applyAutoApprovePolicy = (d: ReceiptDecision, policy: 'vision' | 'a
 export const VISION_PROMPT = [
   'این تصویر یک رسید پرداخت بانکی ایرانی (کارت‌به‌کارت / پایا / ساتنا) است.',
   'فقط و فقط یک شیء JSON با این ساختار برگردان و هیچ متن دیگری ننویس:',
-  '{"looksLikeReceipt": true|false, "ref": "شماره پیگیری فقط رقم", "amount": عدد_ریال_یا_تومان_بدون_جداکننده, "date": "YYYY-MM-DD یا تاریخ فارسی روی رسید", "bank": "نام بانک", "cardLast4": "۴ رقم آخر کارت"}',
-  'اگر فیلدی خوانا نبود مقدار null بگذار. amount را دقیقاً همان‌طور که روی رسید چاپ شده (ریال یا تومان) برگردان.',
+  '{"looksLikeReceipt": true|false, "ref": "شماره پیگیری فقط رقم", "amount": عدد_ریال_یا_تومان_بدون_جداکننده, "date": "YYYY-MM-DDTHH:mm:ss اگر ساعت خواناست، وگرنه YYYY-MM-DD یا تاریخ فارسی", "bank": "نام بانک", "cardLast4": "۴ رقم آخر کارت مقصد اگر مشخص است"}',
+  'اگر فیلدی خوانا نبود مقدار null بگذار. amount را دقیقاً همان‌طور که روی رسید چاپ شده (ریال یا تومان) برگردان. تاریخ و ساعت را از زمان تراکنش بردار، نه ساعت گوشی یا زمان دریافت عکس. شماره کارت مقصد را از کارت مبدا اشتباه نگیر.',
 ].join('\n');
 
 /** Parse the vision model response (tolerant to code fences / extra prose). */
