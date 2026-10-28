@@ -188,10 +188,10 @@ export const decideReceipt = (e: ReceiptEvidence): ReceiptDecision => {
   const expectedAmount = e.expectedAmountToman || e.orderToman;
   const amountOk = amounts.some((a) => amountMatches(a, expectedAmount));
   const visionAmountOk = typeof vision?.amount === 'number' && amountMatches(vision.amount, expectedAmount);
-  const amountBad = amounts.length > 0 && !amountOk;
+  const amountBad = (typeof vision?.amount === 'number' && !visionAmountOk) || (amounts.length > 0 && !amountOk);
   if (amountBad) reasons.push('amount_mismatch');
   else if (!amounts.length) reasons.push('amount_missing');
-  if (amountOk) reasons.push('amount_ok');
+  if (amountOk && (!vision || visionAmountOk)) reasons.push('amount_ok');
 
   // ---- beneficiary / destination checks ----
   const normalizeName = (s: string) => faDigits(String(s || ''))
