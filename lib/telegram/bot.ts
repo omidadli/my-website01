@@ -249,7 +249,6 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
       ? `💳 <b>کارت به کارت:</b>\n<code>${tg.escapeHtml(card)}</code>${holder ? `\nبه نام: ${tg.escapeHtml(holder)}` : ''}`
       : '💳 شماره کارت بعداً از پشتیبانی اعلام می‌شود.',
     '',
-    'پس از پرداخت، <b>عکس رسید</b> را همین‌جا بفرستید.',
     'پس از پرداخت فقط عکس رسید را همین‌جا بفرستید؛ نیازی به تایپ مبلغ یا شماره پیگیری نیست.',
     `🆔 سفارش: <code>${tg.escapeHtml(order.id)}</code>`,
   ].join('\n'));
@@ -688,15 +687,9 @@ export const handleBotUpdate = async (env: BotEnv, update: any): Promise<void> =
     const order = orderId ? await getOrder(env, orderId) : null;
     if (order && order.status !== 'fulfilled' && order.status !== 'rejected') {
       await updateOrder(env, order.id, { receipt_file_id: fileId, status: 'receipt_submitted' });
-      if (msg.caption && /\d/.test(msg.caption)) {
-        return runReceiptPipeline(env, order, msg.caption, fileId);
-      }
-      await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_payment_details', orderId: order.id } });
-      return send(env, chatId,
-        '✅ عکس رسید دریافت شد. اطلاعات مبلغ، زمان و شماره پیگیری را خودکار استخراج می‌کنیم؛ لازم نیست چیزی تایپ کنید.'
-
-
-      );
+      // A photo is sufficient: run OCR immediately even when no caption is provided.
+      // Gemini extracts amount/reference/date; typed customer details are not required.
+      return runReceiptPipeline(env, order, msg.caption || '', fileId);
     }
     return send(env, chatId, 'برای ارسال رسید اول از «🛒 خرید اشتراک» سفارش بسازید.');
   }
