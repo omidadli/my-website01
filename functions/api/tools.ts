@@ -466,7 +466,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     }
   }
 
-  // ---- PUBLIC (AUTHENTICATED VERIFIED USER): autoUnlock without typing code ----
+  // ---- PUBLIC (AUTHENTICATED USER): autoUnlock without typing code ----
   if (action === 'autoUnlock') {
     if (!secret) return json({ ok: false, error: 'سرویس دسترسی پیکربندی نشده است.' }, { status: 503 });
     const productId = String(body.productId || '');
@@ -475,20 +475,64 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       return json({ ok: false, reason: 'invalid_request' }, { status: 400 });
     }
     const user = await requireUser(request, env);
-    if (!user || !user.phone || !user.phone_verified_at) {
-      return json({ ok: false, reason: 'not_verified' });
+    if (!user) {
+      return json({ ok: false, reason: 'not_authenticated' });
     }
-    const phone = normalizePhone(String(user.phone));
-    const rows = await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND status = 'active'`)
-      .bind(phone)
-      .all<GrantRow>();
+
     const nowMs = Date.now();
-    const grant = (rows.results || []).find(
-      (r) => scopeCovers(r.product_id, productId) && (!r.expires_at || new Date(r.expires_at).getTime() > nowMs)
-    );
-    if (!grant) {
-      return json({ ok: false, reason: 'no_active_grant' });
+    let grant: GrantRow | undefined;
+    let resolvedPhone = '';
+
+    // Path A: Verified phone on user account -> any active grant for that phone
+    if (user.phone && user.phone_verified_at) {
+      const phone = normalizePhone(String(user.phone));
+      if (phone) {
+        const rows = await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND status = 'active'`)
+          .bind(phone)
+          .all<GrantRow>();
+        grant = (rows.results || []).find(
+          (r) => scopeCovers(r.product_id, productId) && (!r.expires_at || new Date(r.expires_at).getTime() > nowMs)
+        );
+        if (grant) resolvedPhone = phone;
+      }
     }
+
+    // Path B: Paid gateway order owned directly by authenticated `user.id`
+    if (!grant) {
+      try {
+        const paidOrders = (
+          await env.DB.prepare(
+            `SELECT phone, access_code, product_id FROM payment_orders
+             WHERE user_id = ?1 AND status = 'paid' AND access_code <> ''
+             ORDER BY paid_at DESC, created_at DESC LIMIT 20`
+          )
+            .bind(String(user.id))
+            .all<{ phone: string; access_code: string; product_id: string }>()
+        ).results || [];
+
+        for (const po of paidOrders) {
+          if (!scopeCovers(po.product_id, productId)) continue;
+          const uidKey = `uid:${String(user.id)}`;
+          const row = await env.DB.prepare(
+            `SELECT * FROM tool_access WHERE (phone = ?1 OR phone = ?2) AND code = ?3 AND status = 'active' LIMIT 1`
+          )
+            .bind(po.phone || uidKey, uidKey, po.access_code)
+            .first<GrantRow>();
+          if (row && (!row.expires_at || new Date(row.expires_at).getTime() > nowMs)) {
+            grant = row;
+            resolvedPhone = row.phone || po.phone || String(user.phone || '');
+            break;
+          }
+        }
+      } catch {
+        /* payment_orders table optional */
+      }
+    }
+
+    if (!grant) {
+      return json({ ok: false, reason: user.phone && user.phone_verified_at ? 'no_active_grant' : 'not_verified' });
+    }
+    const phone = resolvedPhone || grant.phone;
 
     const devices = parseDevices(grant.devices);
     if (!devices.includes(deviceId)) {
@@ -513,6 +557,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return json({
       ok: true,
       autoUnlocked: true,
+      unlocked: true,
       phone,
       token,
       expiresAt: new Date(exp).toISOString(),

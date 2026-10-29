@@ -6,7 +6,18 @@ import path from 'path';
 import { createHmac, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { handlePaymentRequest } from './lib/payment/http';
-import { createPhoneVerificationToken, completePhoneVerificationToken, hydratePaymentEnv, type PaymentEnv } from './lib/payment/gateway';
+import {
+  completePhoneVerificationToken,
+  consumeWebMagicLoginToken,
+  createPhoneVerificationToken,
+  createWebMagicLoginToken,
+  findSiteUserByPhone,
+  hydratePaymentEnv,
+  linkExistingSiteUserFromTelegram,
+  registerSiteUserFromTelegram,
+  syncUserAccountGrants,
+  type PaymentEnv,
+} from './lib/payment/gateway';
 import { onRequest as handleTelegramOnRequest } from './functions/api/telegram';
 import {
   buildDigest,
@@ -50,7 +61,15 @@ import {
 import { runSectionAiWithStore, derivedSessionId, type AiKeyStore, type RunSectionAiResult } from './lib/aiSection';
 import { getPlan, resolveFreeTrial } from './lib/toolPlans';
 import { publicContentView } from './lib/contentVisibility';
-import { normalizeLoginId, normalizePhone as normalizeAccountPhone, validateFullName, resolveAccountContacts } from './lib/userAuth';
+import {
+  constantTimeEqualStr,
+  hashUserPassword,
+  isValidEmail,
+  normalizeLoginId,
+  normalizePhone as normalizeAccountPhone,
+  resolveAccountContacts,
+  validateFullName,
+} from './lib/userAuth';
 import {
   PERSONAL_INFO,
   SERVICES,
@@ -210,9 +229,38 @@ const mapDevSaved = (r: any) => ({
   readAt: r.readAt || r.read_at || null,
 });
 
-const mapDevSub = (s: any) => ({
-  id: s.id, productId: s.productId || '', productName: s.productName, planId: s.planId || '', planName: s.planName,
-  status: s.status, startDate: s.startDate, endDate: s.endDate, price: s.price || '', autoRenew: !!s.autoRenew, features: s.features || [],
+const mapDevSub = (s: any) => {
+  const endMs = s.endDate ? Date.parse(String(s.endDate)) : NaN;
+  const computedExpired = Number.isFinite(endMs) && endMs < Date.now();
+  return {
+    id: s.id,
+    productId: s.productId || '',
+    productName: s.productName,
+    planId: s.planId || '',
+    planName: s.planName,
+    status: computedExpired && s.status === 'active' ? 'expired' : s.status,
+    startDate: s.startDate,
+    endDate: s.endDate,
+    price: s.price || '',
+    autoRenew: !!s.autoRenew,
+    features: s.features || [],
+  };
+};
+
+const mapDevOrder = (r: any) => ({
+  id: r.id,
+  orderId: r.order_id || '',
+  productId: r.product_id || '',
+  productName: r.product_name || r.description || '',
+  planId: r.plan_id || '',
+  planName: r.plan_name || '',
+  amountToman: Math.floor(Number(r.amount_rial || 0) / 10),
+  payableToman: Math.floor(Number(r.payable_amount_rial || 0) / 10),
+  status: r.status || 'pending',
+  source: r.source || 'website',
+  accessCode: r.access_code || '',
+  createdAt: r.created_at || '',
+  paidAt: r.paid_at || '',
 });
 
 const mapDevConsultation = (c: any) => ({
@@ -223,11 +271,32 @@ const mapDevConsultation = (c: any) => ({
 
 const mapDevActivity = (a: any) => ({ id: a.id, type: a.type, description: a.description, relatedId: a.relatedId || '', timestamp: a.timestamp });
 
-const loadDevUserData = (userId: string) => ({
+const loadDevOrdersForUser = (userId: string, verifiedPhone = '') => {
+  getDevGatewayEnv();
+  if (!devGatewaySqlite) return [];
+  try {
+    const cleanPhone = verifiedPhone ? normalizeAccountPhone(verifiedPhone) : '';
+    const rows = cleanPhone
+      ? (devGatewaySqlite
+          .prepare(`SELECT * FROM payment_orders WHERE user_id = ? OR phone = ? ORDER BY created_at DESC LIMIT 25`)
+          .all(userId, cleanPhone) as any[])
+      : (devGatewaySqlite
+          .prepare(`SELECT * FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 25`)
+          .all(userId) as any[]);
+    return (rows || []).map(mapDevOrder);
+  } catch {
+    return [];
+  }
+};
+
+const loadDevUserData = (userId: string, verifiedPhone = '') => ({
   savedArticles: safeReadJson<any[]>(SAVED_FILE, []).filter((x) => x.userId === userId).map(mapDevSaved),
-  subscriptions: safeReadJson<any[]>(SUBS_FILE, []).filter((x) => x.userId === userId).map(mapDevSub),
+  subscriptions: safeReadJson<any[]>(SUBS_FILE, [])
+    .filter((x) => x.userId === userId && String(x.productId || '').trim() !== '')
+    .map(mapDevSub),
   consultations: safeReadJson<any[]>(CONSULTS_FILE, []).filter((x) => x.userId === userId).map(mapDevConsultation),
   activities: safeReadJson<any[]>(ACTIVITIES_FILE, []).filter((x) => x.userId === userId).slice(0, 50).map(mapDevActivity),
+  orders: loadDevOrdersForUser(userId, verifiedPhone),
 });
 
 const logDevActivity = (userId: string, type: string, description: string, relatedId = '') => {
@@ -283,12 +352,18 @@ const getDevGatewayEnv = (): PaymentEnv => {
         id TEXT PRIMARY KEY,
         full_name TEXT NOT NULL DEFAULT '',
         login_id TEXT NOT NULL DEFAULT '',
+        login_type TEXT NOT NULL DEFAULT 'phone',
         email TEXT DEFAULT '',
         phone TEXT DEFAULT '',
+        password_hash TEXT NOT NULL DEFAULT '',
+        password_salt TEXT NOT NULL DEFAULT '',
+        avatar_url TEXT DEFAULT '',
+        bio TEXT DEFAULT '',
         phone_verified_at TEXT DEFAULT '',
         tg_user_id TEXT DEFAULT '',
         tg_username TEXT DEFAULT '',
-        created_at TEXT DEFAULT ''
+        created_at TEXT DEFAULT '',
+        last_login_at TEXT DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS tool_access (
         id TEXT PRIMARY KEY,
@@ -381,28 +456,52 @@ const syncDevFilesIntoGatewaySqlite = () => {
   getDevGatewayEnv();
   if (!devGatewaySqlite) return;
   const users = loadDevUsers();
+  // Ensure any pre-existing .dev-gateway.sqlite has full user columns
+  const extraUserCols = [
+    `ALTER TABLE users ADD COLUMN login_type TEXT DEFAULT 'phone'`,
+    `ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN password_salt TEXT DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`,
+    `ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT ''`,
+  ];
+  for (const alt of extraUserCols) {
+    try { devGatewaySqlite.exec(alt); } catch { /* column exists */ }
+  }
   const upUser = devGatewaySqlite.prepare(
-    `INSERT INTO users (id, full_name, login_id, email, phone, phone_verified_at, tg_user_id, tg_username, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO users (id, full_name, login_id, login_type, email, phone, password_hash, password_salt, avatar_url, bio, phone_verified_at, tg_user_id, tg_username, created_at, last_login_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        full_name = excluded.full_name,
+       login_id = excluded.login_id,
+       login_type = excluded.login_type,
        email = excluded.email,
        phone = excluded.phone,
-       phone_verified_at = excluded.phone_verified_at,
-       tg_user_id = excluded.tg_user_id,
-       tg_username = excluded.tg_username`
+       password_hash = CASE WHEN excluded.password_hash <> '' THEN excluded.password_hash ELSE users.password_hash END,
+       password_salt = CASE WHEN excluded.password_salt <> '' THEN excluded.password_salt ELSE users.password_salt END,
+       avatar_url = excluded.avatar_url,
+       bio = excluded.bio,
+       phone_verified_at = CASE WHEN excluded.phone_verified_at <> '' THEN excluded.phone_verified_at ELSE users.phone_verified_at END,
+       tg_user_id = CASE WHEN excluded.tg_user_id <> '' THEN excluded.tg_user_id ELSE users.tg_user_id END,
+       tg_username = CASE WHEN excluded.tg_username <> '' THEN excluded.tg_username ELSE users.tg_username END`
   );
   for (const u of users) {
     upUser.run(
       u.id,
       u.fullName || '',
       u.loginId || '',
+      u.loginType || 'phone',
       u.email || '',
       u.phone || '',
+      u.passwordHash || '',
+      u.passwordSalt || '',
+      u.avatarUrl || '',
+      u.bio || '',
       u.phoneVerifiedAt || '',
       u.tgUserId || '',
       u.tgUsername || '',
-      u.createdAt || ''
+      u.createdAt || '',
+      u.lastLoginAt || ''
     );
   }
 
@@ -500,16 +599,39 @@ const syncGatewaySqliteBackToDevFiles = () => {
     safeWriteJson(SUBS_FILE, devSubs);
   }
 
-  // 3) Mirror verified phone flags on users -> .dev-users.json
-  const sqlUsers = devGatewaySqlite.prepare(`SELECT * FROM users WHERE phone_verified_at <> ''`).all() as any[];
+  // 3) Mirror ALL SQLite users (including accounts registered directly inside Telegram Bot!) -> .dev-users.json
+  const sqlUsers = devGatewaySqlite.prepare(`SELECT * FROM users`).all() as any[];
   if (sqlUsers.length) {
     const devUsers = loadDevUsers();
     let changed = false;
     for (const su of sqlUsers) {
-      const target = devUsers.find((u) => u.id === su.id);
-      if (target && target.phoneVerifiedAt !== su.phone_verified_at) {
+      const target = devUsers.find((u) => u.id === su.id || (su.phone && u.phone === su.phone));
+      if (!target) {
+        devUsers.push({
+          id: su.id,
+          fullName: su.full_name || '',
+          loginId: su.login_id || su.phone || su.email || '',
+          loginType: (su.login_type === 'email' ? 'email' : 'phone') as any,
+          email: su.email || '',
+          phone: su.phone || '',
+          passwordHash: su.password_hash || '',
+          passwordSalt: su.password_salt || '',
+          avatarUrl: su.avatar_url || '',
+          bio: su.bio || '',
+          phoneVerifiedAt: su.phone_verified_at || '',
+          tgUserId: su.tg_user_id || '',
+          tgUsername: su.tg_username || '',
+          createdAt: su.created_at || new Date().toISOString(),
+          lastLoginAt: su.last_login_at || '',
+        });
+        changed = true;
+      } else if (
+        target.phoneVerifiedAt !== (su.phone_verified_at || '') ||
+        target.tgUserId !== (su.tg_user_id || '') ||
+        target.tgUsername !== (su.tg_username || '')
+      ) {
         target.phone = su.phone || target.phone;
-        target.phoneVerifiedAt = su.phone_verified_at;
+        target.phoneVerifiedAt = su.phone_verified_at || target.phoneVerifiedAt;
         target.tgUserId = su.tg_user_id || target.tgUserId;
         target.tgUsername = su.tg_username || target.tgUsername;
         changed = true;
@@ -880,13 +1002,21 @@ export function cmsDevApiPlugin(): Plugin {
           // --- 2b. /api/user?action=...  (public site user accounts) ---
           if (pathname === '/api/user') {
             if (method === 'GET') {
+              const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
+              const devBotUsername = String(gwEnv.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
               const u = getDevSessionUser(req);
-              if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+              if (!u) return sendJson({ ok: false, error: 'not_authenticated', botUsername: devBotUsername }, 401);
+              syncDevFilesIntoGatewaySqlite();
+              const isPhoneVerified = Boolean(u.phone && u.phoneVerifiedAt);
+              await syncUserAccountGrants(gwEnv, u.id, u.phone || '', isPhoneVerified).catch(() => {});
+              syncGatewaySqliteBackToDevFiles();
+              const fresh = loadDevUsers().find((x) => x.id === u.id) || u;
               return sendJson({
                 ok: true,
-                verified: Boolean(u.phoneVerifiedAt),
-                profile: devPublicUser(u),
-                ...loadDevUserData(u.id),
+                verified: Boolean(fresh.phoneVerifiedAt),
+                botUsername: devBotUsername,
+                profile: devPublicUser(fresh),
+                ...loadDevUserData(fresh.id, fresh.phoneVerifiedAt ? fresh.phone || '' : ''),
               });
             }
             if (method === 'POST') {
@@ -907,25 +1037,23 @@ export function cmsDevApiPlugin(): Plugin {
 
               if (action === 'register') {
                 const fullName = String(body.fullName || '').trim();
-                // Support both separate email/phone fields AND the combined emailOrPhone field.
                 const emailVal = String(body.email || '').trim();
                 const phoneVal = String(body.phone || '').trim();
                 const combined = String(body.emailOrPhone || '').trim();
                 const password = String(body.password || '');
                 const nameCheck = validateFullName(fullName);
                 if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
-                // Both contacts are stored — the phone is never dropped just
-                // because the account also has an email (shared rules with prod).
                 const contacts = resolveAccountContacts(emailVal, phoneVal, combined);
                 if (!contacts.ok) return sendJson({ ok: false, error: contacts.error }, 400);
                 if (!password || password.length < 6) return sendJson({ ok: false, error: 'رمز ورود باید حداقل ۶ کاراکتر باشد.' }, 400);
                 const { loginId, loginType, email, phone } = contacts;
+                syncGatewaySqliteBackToDevFiles();
                 const users = loadDevUsers();
-                // One account per identifier: the login id AND any stored email/phone must be unique.
                 if (users.some((u) => u.loginId === loginId || (email && u.email === email) || (phone && u.phone === phone))) {
                   return sendJson({ ok: false, error: 'این ایمیل یا شماره قبلاً ثبت نام کرده است. لطفاً وارد شوید.' }, 409);
                 }
                 const salt = randomHex(16);
+                const pwdHash = await hashUserPassword(password, salt, DEV_TOOL_SECRET);
                 const uid = newDevId();
                 const now = new Date().toISOString();
                 const user: DevUser = {
@@ -935,7 +1063,7 @@ export function cmsDevApiPlugin(): Plugin {
                   loginType,
                   email,
                   phone,
-                  passwordHash: devHashPassword(password, salt),
+                  passwordHash: pwdHash,
                   passwordSalt: salt,
                   avatarUrl: '',
                   bio: '',
@@ -943,56 +1071,48 @@ export function cmsDevApiPlugin(): Plugin {
                 };
                 users.push(user);
                 saveDevUsers(users);
-                // Seed demo sub
-                const subs = safeReadJson<any[]>(SUBS_FILE, []);
-                subs.unshift({
-                  id: newDevId(),
-                  userId: uid,
-                  productName: 'حساب کاربری امید عدلی',
-                  planName: 'کاربر جدید',
-                  status: 'active',
-                  price: 'رایگان',
-                  startDate: now,
-                  endDate: new Date(Date.now() + 30 * 86400_000).toISOString(),
-                  autoRenew: true,
-                  features: ['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها'],
-                });
-                safeWriteJson(SUBS_FILE, subs);
-                logDevActivity(uid, 'subscription_started', 'حساب کاربری شما ایجاد شد');
+                syncDevFilesIntoGatewaySqlite();
+                logDevActivity(uid, 'account_created', 'حساب کاربری شما ایجاد شد');
                 const expiresAt = Date.now() + USER_SESSION_TTL_MS;
                 const token = randomHex(32);
                 const sessions = loadDevSessions();
                 sessions.push({ token, userId: uid, createdAt: now, expiresAt });
                 saveDevSessions(sessions);
                 setSessionCookie(res, token, expiresAt);
+                const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
                 return sendJson({
                   ok: true,
+                  botUsername: String(gwEnv.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim(),
                   profile: devPublicUser(user),
                   ...loadDevUserData(uid),
                 });
               }
 
               if (action === 'login') {
-                const loginRaw = String(body.emailOrPhone || body.email || body.phone || body.username || '').trim();
+                const loginRaw = String(body.emailOrPhone || body.loginId || body.email || body.phone || body.username || '').trim();
                 const password = String(body.password || '');
                 if (!loginRaw || !password) return sendJson({ ok: false, error: 'ایمیل/شماره و رمز عبور را وارد کنید.' }, 400);
                 const { id: loginId } = normalizeLoginId(loginRaw);
+                syncGatewaySqliteBackToDevFiles();
                 const users = loadDevUsers();
-                // Match the canonical id against login_id AND email/phone so an account
-                // registered with BOTH contacts can log in with either one. The legacy
-                // fallback covers rows written before phone normalisation tightened up.
                 const user = users.find((u) => u.loginId === loginId || u.email === loginId || u.phone === loginId)
                   || users.find((u) => u.loginId === loginRaw.toLowerCase());
                 if (!user) return sendJson({ ok: false, error: 'کاربری با این ایمیل/شماره یافت نشد.' }, 401);
-                const hash = devHashPassword(password, user.passwordSalt);
-                let diff = 0;
-                const a = hash, b = user.passwordHash;
-                if (a.length !== b.length) diff = 1;
-                const len = Math.min(a.length, b.length);
-                for (let i = 0; i < len; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-                if (diff !== 0) return sendJson({ ok: false, error: 'رمز عبور اشتباه است.' }, 401);
+                const pbkdfHash = await hashUserPassword(password, user.passwordSalt, DEV_TOOL_SECRET);
+                const legacyHash = devHashPassword(password, user.passwordSalt);
+                const validPwd =
+                  constantTimeEqualStr(pbkdfHash, user.passwordHash) ||
+                  constantTimeEqualStr(legacyHash, user.passwordHash);
+                if (!validPwd) return sendJson({ ok: false, error: 'رمز عبور اشتباه است.' }, 401);
                 user.lastLoginAt = new Date().toISOString();
+                // Upgrade legacy dev hash on login
+                user.passwordHash = pbkdfHash;
                 saveDevUsers(users);
+                syncDevFilesIntoGatewaySqlite();
+                const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
+                const isPhoneVerified = Boolean(user.phone && user.phoneVerifiedAt);
+                await syncUserAccountGrants(gwEnv, user.id, user.phone || '', isPhoneVerified).catch(() => {});
+                syncGatewaySqliteBackToDevFiles();
                 const expiresAt = Date.now() + USER_SESSION_TTL_MS;
                 const token = randomHex(32);
                 const sessions = loadDevSessions();
@@ -1001,9 +1121,90 @@ export function cmsDevApiPlugin(): Plugin {
                 setSessionCookie(res, token, expiresAt);
                 return sendJson({
                   ok: true,
+                  botUsername: String(gwEnv.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim(),
                   profile: devPublicUser(user),
-                  ...loadDevUserData(user.id),
+                  ...loadDevUserData(user.id, isPhoneVerified ? user.phone || '' : ''),
                 });
+              }
+
+              if (action === 'tg_token_login') {
+                const rawToken = String(body.token || '').trim();
+                if (!rawToken) return sendJson({ ok: false, error: 'توکن ورود ارسال نشده است.' }, 400);
+                syncDevFilesIntoGatewaySqlite();
+                const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
+                const consumed = await consumeWebMagicLoginToken(gwEnv, rawToken);
+                if (!consumed.ok || !consumed.userId) {
+                  return sendJson({ ok: false, error: consumed.error || 'لینک ورود نامعتبر یا منقضی شده است.' }, 401);
+                }
+                syncGatewaySqliteBackToDevFiles();
+                const users = loadDevUsers();
+                const user = users.find((u) => u.id === consumed.userId);
+                if (!user) return sendJson({ ok: false, error: 'حساب کاربری یافت نشد.' }, 404);
+                const isPhoneVerified = Boolean(user.phone && user.phoneVerifiedAt);
+                await syncUserAccountGrants(gwEnv, user.id, user.phone || '', isPhoneVerified).catch(() => {});
+                syncGatewaySqliteBackToDevFiles();
+                const expiresAt = Date.now() + USER_SESSION_TTL_MS;
+                const token = randomHex(32);
+                const sessions = loadDevSessions();
+                sessions.push({ token, userId: user.id, createdAt: new Date().toISOString(), expiresAt });
+                saveDevSessions(sessions);
+                setSessionCookie(res, token, expiresAt);
+                return sendJson({
+                  ok: true,
+                  botUsername: String(gwEnv.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim(),
+                  profile: devPublicUser(user),
+                  ...loadDevUserData(user.id, isPhoneVerified ? user.phone || '' : ''),
+                });
+              }
+
+              if (action === 'bot_sync_user') {
+                syncDevFilesIntoGatewaySqlite();
+                const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
+                const expectedSecret = String(gwEnv.TELEGRAM_WEBHOOK_SECRET || gwEnv.AUTH_SECRET || DEV_TOOL_SECRET).trim();
+                const sentSecret = String(req.headers['x-bot-webhook-secret'] || body.secret || '').trim();
+                if (!expectedSecret || !constantTimeEqualStr(sentSecret, expectedSecret)) {
+                  return sendJson({ ok: false, error: 'unauthorized' }, 401);
+                }
+                const op = String(body.op || 'check');
+                const phone = normalizeAccountPhone(String(body.phone || ''));
+                if (!phone) return sendJson({ ok: false, error: 'invalid_phone' }, 400);
+
+                if (op === 'check') {
+                  const existingUser = await findSiteUserByPhone(gwEnv, phone, String(body.tgUserId || ''));
+                  if (existingUser) {
+                    await linkExistingSiteUserFromTelegram(gwEnv, {
+                      userId: existingUser.id,
+                      phone,
+                      tgUserId: String(body.tgUserId || ''),
+                      tgUsername: String(body.tgUsername || ''),
+                    });
+                    syncGatewaySqliteBackToDevFiles();
+                    const magic = await createWebMagicLoginToken(gwEnv, existingUser.id, phone).catch(() => '');
+                    const u = loadDevUsers().find((x) => x.id === existingUser.id);
+                    return sendJson({ ok: true, exists: true, user: u ? devPublicUser(u) : null, magicToken: magic });
+                  }
+                  return sendJson({ ok: true, exists: false });
+                }
+
+                if (op === 'register') {
+                  const reg = await registerSiteUserFromTelegram(gwEnv, {
+                    tgUserId: String(body.tgUserId || ''),
+                    tgUsername: String(body.tgUsername || ''),
+                    phone,
+                    fullName: String(body.fullName || ''),
+                    email: String(body.email || ''),
+                    password: String(body.password || ''),
+                  });
+                  if (!reg.ok || !reg.user) {
+                    return sendJson({ ok: false, error: reg.error || 'registration_failed' }, 400);
+                  }
+                  syncGatewaySqliteBackToDevFiles();
+                  const magic = await createWebMagicLoginToken(gwEnv, reg.user.id, phone).catch(() => '');
+                  const u = loadDevUsers().find((x) => x.id === reg.user!.id);
+                  return sendJson({ ok: true, created: reg.created, user: u ? devPublicUser(u) : null, magicToken: magic });
+                }
+
+                return sendJson({ ok: false, error: 'unknown_op' }, 400);
               }
 
               if (action === 'update') {
@@ -1018,15 +1219,36 @@ export function cmsDevApiPlugin(): Plugin {
                   const nameCheck = validateFullName(fullName);
                   if (!nameCheck.ok) return sendJson({ ok: false, error: nameCheck.error }, 400);
                 }
+
+                let email = String(u.email || '');
+                if (body.email !== undefined) {
+                  const rawEmail = String(body.email || '').trim().toLowerCase();
+                  if (rawEmail === '') {
+                    if (!String(u.phone || '').trim() && body.phone === undefined) {
+                      return sendJson({ ok: false, error: 'حساب شما باید حداقل ایمیل یا شماره موبایل داشته باشد.' }, 400);
+                    }
+                    email = '';
+                  } else {
+                    if (!isValidEmail(rawEmail)) return sendJson({ ok: false, error: 'فرمت ایمیل واردشده صحیح نیست.' }, 400);
+                    if (rawEmail !== String(u.email || '').toLowerCase() && users.some((x) => x.id !== u.id && (x.email === rawEmail || x.loginId === rawEmail))) {
+                      return sendJson({ ok: false, error: 'این ایمیل متعلق به حساب کاربری دیگری است.' }, 409);
+                    }
+                    email = rawEmail;
+                  }
+                }
+
                 let phone = String(u.phone || '');
                 if (body.phone !== undefined) {
                   const rawPhone = String(body.phone || '').trim();
                   if (rawPhone === '') {
+                    if (!email) {
+                      return sendJson({ ok: false, error: 'حساب شما باید حداقل ایمیل یا شماره موبایل داشته باشد.' }, 400);
+                    }
                     phone = '';
                   } else {
                     phone = normalizeAccountPhone(rawPhone);
                     if (!phone) return sendJson({ ok: false, error: 'شماره موبایل باید با 09 شروع شود (مثل 09123456789).' }, 400);
-                    if (phone !== String(u.phone || '') && loadDevUsers().some((x) => x.id !== u.id && x.phone === phone)) {
+                    if (phone !== String(u.phone || '') && users.some((x) => x.id !== u.id && (x.phone === phone || x.loginId === phone))) {
                       return sendJson({ ok: false, error: 'این شماره موبایل متعلق به حساب دیگری است.' }, 409);
                     }
                   }
@@ -1037,10 +1259,45 @@ export function cmsDevApiPlugin(): Plugin {
                   users[idx].tgUsername = '';
                 }
                 users[idx].fullName = fullName;
+                users[idx].email = email;
                 users[idx].phone = phone;
+                users[idx].loginId = phone || email || users[idx].loginId;
+                users[idx].loginType = phone ? 'phone' : 'email';
                 users[idx].bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : u.bio;
                 saveDevUsers(users);
+                syncDevFilesIntoGatewaySqlite();
                 return sendJson({ ok: true, profile: devPublicUser(users[idx]) });
+              }
+
+              if (action === 'change_password') {
+                const u = getDevSessionUser(req);
+                if (!u) return sendJson({ ok: false, error: 'not_authenticated' }, 401);
+                const currentPassword = String(body.currentPassword || '');
+                const newPassword = String(body.newPassword || '');
+                if (!newPassword || newPassword.length < 6) {
+                  return sendJson({ ok: false, error: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.' }, 400);
+                }
+                const users = loadDevUsers();
+                const idx = users.findIndex((x) => x.id === u.id);
+                if (idx < 0) return sendJson({ ok: false, error: 'user_not_found' }, 404);
+                if (users[idx].passwordHash && users[idx].passwordSalt) {
+                  if (!currentPassword) return sendJson({ ok: false, error: 'لطفاً رمز عبور فعلی خود را وارد کنید.' }, 400);
+                  const pbkdfHash = await hashUserPassword(currentPassword, users[idx].passwordSalt, DEV_TOOL_SECRET);
+                  const legacyHash = devHashPassword(currentPassword, users[idx].passwordSalt);
+                  if (
+                    !constantTimeEqualStr(pbkdfHash, users[idx].passwordHash) &&
+                    !constantTimeEqualStr(legacyHash, users[idx].passwordHash)
+                  ) {
+                    return sendJson({ ok: false, error: 'رمز عبور فعلی اشتباه است.' }, 401);
+                  }
+                }
+                const newSalt = randomHex(16);
+                users[idx].passwordSalt = newSalt;
+                users[idx].passwordHash = await hashUserPassword(newPassword, newSalt, DEV_TOOL_SECRET);
+                saveDevUsers(users);
+                syncDevFilesIntoGatewaySqlite();
+                logDevActivity(u.id, 'password_changed', 'رمز عبور حساب کاربری تغییر یافت');
+                return sendJson({ ok: true });
               }
 
               if (action === 'start_phone_verify') {
@@ -1457,33 +1714,78 @@ export function cmsDevApiPlugin(): Plugin {
                 }
               }
 
-              // ---- autoUnlock (logged-in verified phone user) ----
+              // ---- autoUnlock (logged-in user: verified phone OR owned paid order) ----
               if (action === 'autoUnlock') {
                 const productId = String(body.productId || '');
                 const deviceId = String(body.deviceId || '').slice(0, 80);
                 if (!deviceId || !getTool(productId)) return sendJson({ ok: false, reason: 'invalid_request' }, 400);
                 const u = getDevSessionUser(req);
-                if (!u || !u.phone || !u.phoneVerifiedAt) return sendJson({ ok: false, reason: 'not_verified' });
-                const phone = normalizePhone(u.phone);
+                if (!u) return sendJson({ ok: false, reason: 'not_authenticated' });
+                syncGatewaySqliteBackToDevFiles();
+                const latestGrants = safeReadJson<DevGrant[]>(TOOL_ACCESS_FILE, grants);
                 const nowMs = Date.now();
-                const grant = grants.find(
-                  (g) =>
-                    g.phone === phone &&
-                    g.status === 'active' &&
-                    scopeCovers(g.productId, productId) &&
-                    (!g.expiresAt || new Date(g.expiresAt).getTime() > nowMs)
-                );
-                if (!grant) return sendJson({ ok: false, reason: 'no_active_grant' });
+                let grant: DevGrant | undefined;
+                let resolvedPhone = '';
+
+                if (u.phone && u.phoneVerifiedAt) {
+                  const phone = normalizePhone(u.phone);
+                  grant = latestGrants.find(
+                    (g) =>
+                      g.phone === phone &&
+                      g.status === 'active' &&
+                      scopeCovers(g.productId, productId) &&
+                      (!g.expiresAt || new Date(g.expiresAt).getTime() > nowMs)
+                  );
+                  if (grant) resolvedPhone = phone;
+                }
+
+                if (!grant) {
+                  getDevGatewayEnv();
+                  if (devGatewaySqlite) {
+                    try {
+                      const paidOrders = devGatewaySqlite
+                        .prepare(
+                          `SELECT phone, access_code, product_id FROM payment_orders
+                           WHERE user_id = ? AND status = 'paid' AND access_code <> ''
+                           ORDER BY paid_at DESC, created_at DESC LIMIT 20`
+                        )
+                        .all(u.id) as Array<{ phone: string; access_code: string; product_id: string }>;
+                      for (const po of paidOrders) {
+                        if (!scopeCovers(po.product_id, productId)) continue;
+                        const uidKey = `uid:${u.id}`;
+                        const found = latestGrants.find(
+                          (g) =>
+                            (g.phone === po.phone || g.phone === uidKey) &&
+                            g.code === po.access_code &&
+                            g.status === 'active' &&
+                            (!g.expiresAt || new Date(g.expiresAt).getTime() > nowMs)
+                        );
+                        if (found) {
+                          grant = found;
+                          resolvedPhone = found.phone || po.phone || u.phone || '';
+                          break;
+                        }
+                      }
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+                }
+
+                if (!grant) {
+                  return sendJson({ ok: false, reason: u.phone && u.phoneVerifiedAt ? 'no_active_grant' : 'not_verified' });
+                }
+                const phone = resolvedPhone || grant.phone;
                 if (!grant.devices.includes(deviceId)) {
                   if (grant.devices.length >= grant.maxDevices) {
                     return sendJson({ ok: false, reason: 'device_limit', error: `سقف تعداد دستگاه مجاز (${grant.maxDevices}) تکمیل شده است.` });
                   }
                   grant.devices.push(deviceId);
-                  safeWriteJson(TOOL_ACCESS_FILE, grants);
+                  safeWriteJson(TOOL_ACCESS_FILE, latestGrants);
                 }
                 const exp = grant.expiresAt ? Math.min(new Date(grant.expiresAt).getTime(), nowMs + 30 * 86400_000) : nowMs + 30 * 86400_000;
                 const token = await signAccessToken({ phone, scope: grant.productId, did: deviceId, gid: grant.id, exp }, DEV_TOOL_SECRET);
-                return sendJson({ ok: true, autoUnlocked: true, phone, token, expiresAt: new Date(exp).toISOString(), tool: publicTool(productId) });
+                return sendJson({ ok: true, autoUnlocked: true, unlocked: true, phone, token, expiresAt: new Date(exp).toISOString(), tool: publicTool(productId) });
               }
 
               // ---- unlock ----

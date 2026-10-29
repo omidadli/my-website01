@@ -62,6 +62,9 @@ export const editMessageText = (token: string, chatId: string | number, messageI
 export const answerCallback = (token: string, callbackQueryId: string, text = '', showAlert = false) =>
   tgCall(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: showAlert });
 
+export const deleteMessage = (token: string, chatId: string | number, messageId: number) =>
+  tgCall(token, 'deleteMessage', { chat_id: chatId, message_id: messageId });
+
 /** Download a Telegram file (receipt photo) as base64. */
 export const downloadFileBase64 = async (token: string, fileId: string): Promise<{ base64: string; mime: string } | null> => {
   const info = await tgCall<{ file_path: string }>(token, 'getFile', { file_id: fileId });
@@ -84,9 +87,10 @@ export const sharePhoneKeyboard = (text = '📱 اشتراک شماره تلفن
 
 export const mainMenuKeyboard = () => ({
   keyboard: [
-    [{ text: '📱 احراز هویت شماره' }, { text: '🛒 خرید اشتراک' }],
+    [{ text: '🛒 خرید اشتراک' }, { text: '👤 حساب کاربری سایت' }],
     [{ text: '🎁 اشتراک‌های من' }, { text: '📦 سفارش‌ها' }],
-    [{ text: '💬 پشتیبانی' }, { text: '❓ راهنما' }],
+    [{ text: '📱 احراز هویت شماره' }, { text: '💬 پشتیبانی' }],
+    [{ text: '❓ راهنما' }],
   ],
   resize_keyboard: true,
 });

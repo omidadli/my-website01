@@ -58,6 +58,9 @@ export const editMessageText = (token, chatId, messageId, text, extra = {}) =>
 export const answerCallback = (token, callbackQueryId, text = '', showAlert = false) =>
   tgCall(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: showAlert });
 
+export const deleteMessage = (token, chatId, messageId) =>
+  tgCall(token, 'deleteMessage', { chat_id: chatId, message_id: messageId });
+
 export const sendChatAction = (token, chatId, action = 'typing') =>
   tgCall(token, 'sendChatAction', { chat_id: chatId, action });
 

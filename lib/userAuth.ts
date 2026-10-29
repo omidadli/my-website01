@@ -127,3 +127,53 @@ export const resolveAccountContacts = (emailRaw: string, phoneRaw: string, combi
     loginType: check.type,
   };
 };
+
+/**
+ * Shared PBKDF2-SHA256 password hashing (120,000 iterations, 256-bit hex) —
+ * byte-identical across Cloudflare Pages Functions, Telegram Bot D1 registration,
+ * and Node 20+ Vite dev API so accounts created on either platform work everywhere.
+ */
+export const hashUserPassword = async (
+  password: string,
+  salt: string,
+  secret = 'user-secret'
+): Promise<string> => {
+  const enc = new TextEncoder();
+  const subtle = (globalThis as any).crypto.subtle as SubtleCrypto;
+  const key = await subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const bits = await subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode(`${salt}:${secret}`), iterations: 120_000, hash: 'SHA-256' },
+    key,
+    256
+  );
+  return Array.from(new Uint8Array(bits))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+export const constantTimeEqualStr = (a: string, b: string): boolean => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
+export const verifyUserPassword = async (
+  password: string,
+  salt: string,
+  storedHash: string,
+  secret = 'user-secret'
+): Promise<boolean> => {
+  if (!password || !salt || !storedHash) return false;
+  const computed = await hashUserPassword(password, salt, secret);
+  return constantTimeEqualStr(computed, storedHash);
+};
+
+export const randomUserSalt = (bytes = 16): string => {
+  const arr = new Uint8Array(bytes);
+  (globalThis as any).crypto.getRandomValues(arr);
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+};
+

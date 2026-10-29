@@ -370,14 +370,26 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
 
               <div className="flex flex-col sm:flex-row gap-3">
                 {payment.product_id ? (
-                  <button
-                    onClick={() => navigate(pathForProduct(payment.product_id))}
-                    className="flex-1 py-3.5 px-5 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white font-extrabold text-sm shadow-lg shadow-emerald-500/25 hover:opacity-95 transition flex items-center justify-center gap-2"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    ورود مستقیم به ابزار هوشمند (فعال شد)
-                    <ArrowRight className="w-4 h-4 rotate-180" />
-                  </button>
+                  <>
+                    <button
+                      onClick={() => navigate(`${pathForProduct(payment.product_id)}?open=chat`)}
+                      className="flex-1 py-3.5 px-5 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white font-extrabold text-sm shadow-lg shadow-emerald-500/25 hover:opacity-95 transition flex items-center justify-center gap-2"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      ورود مستقیم به سرویس هوشمند (فعال شد)
+                      <ArrowRight className="w-4 h-4 rotate-180" />
+                    </button>
+                    <button
+                      onClick={() => onNavigate('profile')}
+                      className={`py-3.5 px-4 rounded-2xl border font-bold text-xs transition ${
+                        isDark
+                          ? 'bg-white/5 border-white/15 hover:bg-white/10 text-slate-200'
+                          : 'bg-slate-100 border-slate-200 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      مشاهده در پروفایل کاربری
+                    </button>
+                  </>
                 ) : (
                   <button
                     onClick={() => onNavigate('profile')}

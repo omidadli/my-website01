@@ -16,7 +16,18 @@ import {
   publicUserShape,
   USER_SESSION_TTL_MS,
 } from './_shared';
-import { createPhoneVerificationToken, hydratePaymentEnv, syncPhoneGrantsToUser } from '../../lib/payment/gateway';
+import { constantTimeEqualStr, isValidEmail } from '../../lib/userAuth';
+import {
+  consumeWebMagicLoginToken,
+  createPhoneVerificationToken,
+  createWebMagicLoginToken,
+  ensurePaymentTables,
+  findSiteUserByPhone,
+  hydratePaymentEnv,
+  linkExistingSiteUserFromTelegram,
+  registerSiteUserFromTelegram,
+  syncUserAccountGrants,
+} from '../../lib/payment/gateway';
 
 const WINDOW_MINUTES = 15;
 const MAX_FAILURES = 10;
@@ -55,18 +66,38 @@ const mapSaved = (r: any) => ({
   readAt: r.read_at || null,
 });
 
-const mapSub = (r: any) => ({
+const mapSub = (r: any) => {
+  const endMs = r.end_date ? Date.parse(String(r.end_date)) : NaN;
+  const computedExpired = Number.isFinite(endMs) && endMs < Date.now();
+  return {
+    id: r.id,
+    productId: r.product_id || '',
+    productName: r.product_name,
+    planId: r.plan_id || '',
+    planName: r.plan_name,
+    status: computedExpired && r.status === 'active' ? 'expired' : r.status,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    price: r.price || '',
+    autoRenew: !!r.auto_renew,
+    features: safeParse(r.features, []),
+  };
+};
+
+const mapOrder = (r: any) => ({
   id: r.id,
-  productId: r.product_id,
-  productName: r.product_name,
-  planId: r.plan_id,
-  planName: r.plan_name,
-  status: r.status,
-  startDate: r.start_date,
-  endDate: r.end_date,
-  price: r.price || '',
-  autoRenew: !!r.auto_renew,
-  features: safeParse(r.features, []),
+  orderId: r.order_id || '',
+  productId: r.product_id || '',
+  productName: r.product_name || r.description || '',
+  planId: r.plan_id || '',
+  planName: r.plan_name || '',
+  amountToman: Math.floor(Number(r.amount_rial || 0) / 10),
+  payableToman: Math.floor(Number(r.payable_amount_rial || 0) / 10),
+  status: r.status || 'pending',
+  source: r.source || 'website',
+  accessCode: r.access_code || '',
+  createdAt: r.created_at || '',
+  paidAt: r.paid_at || '',
 });
 
 const mapConsultation = (r: any) => ({
@@ -92,19 +123,33 @@ const mapActivity = (r: any) => ({
 });
 
 /** Everything the profile dashboard hydrates from. */
-async function loadUserData(env: Env, uid: string) {
-  const [savedRows, subRows, conRows, actRows] = await Promise.all([
+async function loadUserData(env: Env, uid: string, verifiedPhone = '') {
+  const cleanPhone = verifiedPhone ? normalizePhone(verifiedPhone) : '';
+  const [savedRows, subRows, conRows, actRows, orderRows] = await Promise.all([
     env.DB.prepare(`SELECT post_id, notes, is_read, saved_at, read_at FROM user_saved_articles WHERE user_id = ?1 ORDER BY saved_at DESC LIMIT ?2`).bind(uid, MAX_SAVED_ARTICLES).all(),
     env.DB.prepare(`SELECT * FROM user_subscriptions WHERE user_id = ?1 ORDER BY start_date DESC`).bind(uid).all(),
     env.DB.prepare(`SELECT * FROM user_consultations WHERE user_id = ?1 ORDER BY created_at DESC`).bind(uid).all(),
     env.DB.prepare(`SELECT * FROM user_activities WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 50`).bind(uid).all(),
+    cleanPhone
+      ? env.DB.prepare(`SELECT * FROM payment_orders WHERE user_id = ?1 OR phone = ?2 ORDER BY created_at DESC LIMIT 25`).bind(uid, cleanPhone).all().catch(() => ({ results: [] }))
+      : env.DB.prepare(`SELECT * FROM payment_orders WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 25`).bind(uid).all().catch(() => ({ results: [] })),
   ]);
   return {
     savedArticles: (savedRows.results || []).map(mapSaved),
-    subscriptions: (subRows.results || []).map(mapSub),
+    subscriptions: (subRows.results || [])
+      .filter((r: any) => String(r.product_id || '').trim() !== '')
+      .map(mapSub),
     consultations: (conRows.results || []).map(mapConsultation),
     activities: (actRows.results || []).map(mapActivity),
+    orders: (orderRows.results || []).map(mapOrder),
   };
+}
+
+async function resolveBotUsername(env: Env): Promise<string> {
+  const hydratedEnv = await hydratePaymentEnv(env as any).catch(() => env as any);
+  return String(hydratedEnv.TELEGRAM_BOT_USERNAME || env.TELEGRAM_BOT_USERNAME || '')
+    .replace(/^@/, '')
+    .trim();
 }
 
 async function logUserActivity(env: Env, userId: string, type: string, description: string, relatedId = '') {
@@ -135,17 +180,19 @@ const isSecureRequest = (request: Request): boolean => {
 // ---- GET /api/user -> current session profile (+ ?action=check_phone_verify) ----
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   await ensureCoreTablesSafe(env);
+  await ensurePaymentTables(env as any).catch(() => {});
+  const botUsername = await resolveBotUsername(env);
   const user = await requireUser(request, env);
-  if (!user) return json({ ok: false, error: 'not_authenticated' }, { status: 401 });
+  if (!user) return json({ ok: false, error: 'not_authenticated', botUsername }, { status: 401 });
 
-  if (user.phone && user.phone_verified_at) {
-    await syncPhoneGrantsToUser(env, String(user.id), String(user.phone)).catch(() => {});
-  }
+  const isPhoneVerified = Boolean(user.phone && user.phone_verified_at);
+  await syncUserAccountGrants(env, String(user.id), String(user.phone || ''), isPhoneVerified).catch(() => {});
 
-  const data = await loadUserData(env, String(user.id));
+  const data = await loadUserData(env, String(user.id), isPhoneVerified ? String(user.phone || '') : '');
   return json({
     ok: true,
-    verified: Boolean(user.phone_verified_at),
+    verified: isPhoneVerified,
+    botUsername,
     profile: publicUserShape(user),
     ...data,
   });
@@ -193,8 +240,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const { loginId, loginType, email, phone } = contacts;
     // One account per identifier: the login id AND any stored email/phone must be unique.
     const existing = await env.DB.prepare(
-      `SELECT id FROM users WHERE login_id = ?1 OR (?2 <> '' AND email = ?2) OR (?3 <> '' AND phone = ?3) LIMIT 1`
-    ).bind(loginId, email, phone).first<{ id: string }>();
+      `SELECT id FROM users WHERE login_id = ?1 OR (?2 <> '' AND email = ?3) OR (?4 <> '' AND phone = ?5) LIMIT 1`
+    ).bind(loginId, email, email, phone, phone).first<{ id: string }>();
     if (existing) return json({ ok: false, error: 'این ایمیل یا شماره قبلاً ثبت نام کرده است. لطفاً وارد شوید.' }, { status: 409 });
 
     const salt = randomHex(16);
@@ -206,15 +253,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
     ).bind(uid, fullName, loginId, loginType, email, phone, hash, salt, now).run();
 
-    // Welcome subscription (demo starter plan) so the profile isn't empty
-    const subId = newId();
-    const subEnd = new Date(Date.now() + 30 * 86400_000).toISOString();
-    await env.DB.prepare(
-      `INSERT INTO user_subscriptions (id, user_id, product_name, plan_name, status, price, features, auto_renew, start_date, end_date, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10)`
-    ).bind(subId, uid, 'حساب کاربری امید عدلی', 'کاربر جدید', 'active', 'رایگان', JSON.stringify(['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها']), now, subEnd, now).run();
-
-    await logUserActivity(env, uid, 'subscription_started', 'حساب کاربری شما ایجاد شد');
+    await logUserActivity(env, uid, 'account_created', 'حساب کاربری شما ایجاد شد');
 
     const { token, expiresAt } = await createSession(env, uid, request);
     const profile = {
@@ -231,49 +270,111 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       joinedAt: now,
     };
     const data = await loadUserData(env, uid);
-    return json({ ok: true, profile, ...data }, {
+    const botUsername = await resolveBotUsername(env);
+    return json({ ok: true, botUsername, profile, ...data }, {
       headers: { 'Set-Cookie': sessionCookie({ token, expiresAt, secure }) },
     });
   }
 
   if (action === 'login') {
-    const loginRaw = String(body.emailOrPhone || body.email || body.phone || body.username || '').trim();
+    const loginRaw = String(body.emailOrPhone || body.loginId || body.email || body.phone || body.username || '').trim();
     const password = String(body.password || '');
     if (!loginRaw || !password) return json({ ok: false, error: 'ایمیل/شماره و رمز عبور را وارد کنید.' }, { status: 400 });
     if (await tooManyAttempts(env, ip)) {
       return json({ ok: false, error: `تلاش‌های ناموفق زیاد. ${WINDOW_MINUTES} دقیقه دیگر دوباره امتحان کنید.` }, { status: 429 });
     }
     const { id: loginId } = normalizeLoginId(loginRaw);
-    // Match the canonical id against login_id AND the email/phone columns so an
-    // account registered with BOTH contacts can log in with either one. The
-    // legacy fallback covers rows written before phone normalisation tightened up.
     const legacyId = loginRaw.toLowerCase();
     const row = await env.DB.prepare(
-      `SELECT * FROM users WHERE login_id = ?1 OR email = ?1 OR phone = ?1 OR login_id = ?2 LIMIT 1`
-    ).bind(loginId, legacyId).first<Record<string, any>>();
+      `SELECT * FROM users WHERE login_id = ?1 OR email = ?2 OR phone = ?3 OR login_id = ?4 LIMIT 1`
+    ).bind(loginId, loginId, loginId, legacyId).first<Record<string, any>>();
     if (!row) {
       await recordAttempt(env, ip, false);
       return json({ ok: false, error: 'کاربری با این ایمیل/شماره یافت نشد.' }, { status: 401 });
     }
     const expected = await hashPassword(password, String(row.password_salt), env.AUTH_SECRET || 'user-secret');
-    const expectedBuf = new Uint8Array(expected.length / 2);
-    for (let i = 0; i < expected.length; i += 2) expectedBuf[i / 2] = parseInt(expected.substr(i, 2), 16);
-    const gotBuf = new Uint8Array(String(row.password_hash).length / 2);
-    const ph = String(row.password_hash);
-    for (let i = 0; i < ph.length; i += 2) gotBuf[i / 2] = parseInt(ph.substr(i, 2), 16);
-    let diff = expectedBuf.length !== gotBuf.length ? 1 : 0;
-    const len = Math.min(expectedBuf.length, gotBuf.length);
-    for (let i = 0; i < len; i++) diff |= expectedBuf[i] ^ gotBuf[i];
-    if (diff !== 0) {
+    if (!constantTimeEqualStr(expected, String(row.password_hash || ''))) {
       await recordAttempt(env, ip, false);
       return json({ ok: false, error: 'رمز عبور اشتباه است.' }, { status: 401 });
     }
     await recordAttempt(env, ip, true);
+    const isPhoneVerified = Boolean(row.phone && row.phone_verified_at);
+    await syncUserAccountGrants(env, String(row.id), String(row.phone || ''), isPhoneVerified).catch(() => {});
     const { token, expiresAt } = await createSession(env, String(row.id), request);
-    const data = await loadUserData(env, String(row.id));
-    return json({ ok: true, profile: publicUserShape(row), ...data }, {
+    const data = await loadUserData(env, String(row.id), isPhoneVerified ? String(row.phone || '') : '');
+    const botUsername = await resolveBotUsername(env);
+    return json({ ok: true, botUsername, profile: publicUserShape(row), ...data }, {
       headers: { 'Set-Cookie': sessionCookie({ token, expiresAt, secure }) },
     });
+  }
+
+  if (action === 'tg_token_login') {
+    const rawToken = String(body.token || '').trim();
+    if (!rawToken) return json({ ok: false, error: 'توکن ورود ارسال نشده است.' }, { status: 400 });
+    const hydratedEnv = await hydratePaymentEnv(env as any).catch(() => env as any);
+    const consumed = await consumeWebMagicLoginToken(hydratedEnv, rawToken);
+    if (!consumed.ok || !consumed.userId) {
+      return json({ ok: false, error: consumed.error || 'لینک ورود نامعتبر یا منقضی شده است.' }, { status: 401 });
+    }
+    const row = await env.DB.prepare(`SELECT * FROM users WHERE id = ?1 LIMIT 1`)
+      .bind(consumed.userId)
+      .first<Record<string, any>>();
+    if (!row) {
+      return json({ ok: false, error: 'حساب کاربری یافت نشد.' }, { status: 404 });
+    }
+    const isPhoneVerified = Boolean(row.phone && row.phone_verified_at);
+    await syncUserAccountGrants(env, String(row.id), String(row.phone || ''), isPhoneVerified).catch(() => {});
+    const { token, expiresAt } = await createSession(env, String(row.id), request);
+    const data = await loadUserData(env, String(row.id), isPhoneVerified ? String(row.phone || '') : '');
+    const botUsername = String(hydratedEnv.TELEGRAM_BOT_USERNAME || env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
+    return json({ ok: true, botUsername, profile: publicUserShape(row), ...data }, {
+      headers: { 'Set-Cookie': sessionCookie({ token, expiresAt, secure }) },
+    });
+  }
+
+  if (action === 'bot_sync_user') {
+    const hydratedEnv = await hydratePaymentEnv(env as any).catch(() => env as any);
+    const expectedSecret = String(hydratedEnv.TELEGRAM_WEBHOOK_SECRET || env.TELEGRAM_WEBHOOK_SECRET || env.AUTH_SECRET || '').trim();
+    const sentSecret = String(request.headers.get('X-Bot-Webhook-Secret') || body.secret || '').trim();
+    if (!expectedSecret || !constantTimeEqualStr(sentSecret, expectedSecret)) {
+      return json({ ok: false, error: 'unauthorized' }, { status: 401 });
+    }
+    const op = String(body.op || 'check');
+    const phone = normalizePhone(String(body.phone || ''));
+    if (!phone) return json({ ok: false, error: 'invalid_phone' }, { status: 400 });
+
+    if (op === 'check') {
+      const existingUser = await findSiteUserByPhone(hydratedEnv, phone, String(body.tgUserId || ''));
+      if (existingUser) {
+        const linked = await linkExistingSiteUserFromTelegram(hydratedEnv, {
+          userId: existingUser.id,
+          phone,
+          tgUserId: String(body.tgUserId || ''),
+          tgUsername: String(body.tgUsername || ''),
+        });
+        const magic = await createWebMagicLoginToken(hydratedEnv, existingUser.id, phone).catch(() => '');
+        return json({ ok: true, exists: true, user: publicUserShape(linked || existingUser), magicToken: magic });
+      }
+      return json({ ok: true, exists: false });
+    }
+
+    if (op === 'register') {
+      const reg = await registerSiteUserFromTelegram(hydratedEnv, {
+        tgUserId: String(body.tgUserId || ''),
+        tgUsername: String(body.tgUsername || ''),
+        phone,
+        fullName: String(body.fullName || ''),
+        email: String(body.email || ''),
+        password: String(body.password || ''),
+      });
+      if (!reg.ok || !reg.user) {
+        return json({ ok: false, error: reg.error || 'registration_failed' }, { status: 400 });
+      }
+      const magic = await createWebMagicLoginToken(hydratedEnv, reg.user.id, phone).catch(() => '');
+      return json({ ok: true, created: reg.created, user: publicUserShape(reg.user), magicToken: magic });
+    }
+
+    return json({ ok: false, error: 'unknown_op' }, { status: 400 });
   }
 
   if (action === 'update') {
@@ -287,18 +388,47 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       if (!nameCheck.ok) return json({ ok: false, error: nameCheck.error }, { status: 400 });
     }
 
+    let email = String(user.email || '');
+    if (body.email !== undefined) {
+      const rawEmail = String(body.email || '').trim().toLowerCase();
+      if (rawEmail === '') {
+        if (!String(user.phone || '').trim() && body.phone === undefined) {
+          return json({ ok: false, error: 'حساب شما باید حداقل ایمیل یا شماره موبایل داشته باشد.' }, { status: 400 });
+        }
+        email = '';
+      } else {
+        if (!isValidEmail(rawEmail)) {
+          return json({ ok: false, error: 'فرمت ایمیل واردشده صحیح نیست.' }, { status: 400 });
+        }
+        if (rawEmail !== String(user.email || '').toLowerCase()) {
+          const emailClash = await env.DB.prepare(
+            `SELECT id FROM users WHERE (email = ?1 OR login_id = ?2) AND id <> ?3 LIMIT 1`
+          )
+            .bind(rawEmail, rawEmail, user.id)
+            .first<{ id: string }>();
+          if (emailClash) {
+            return json({ ok: false, error: 'این ایمیل متعلق به حساب کاربری دیگری است.' }, { status: 409 });
+          }
+        }
+        email = rawEmail;
+      }
+    }
+
     let phone = String(user.phone || '');
     if (body.phone !== undefined) {
       const rawPhone = String(body.phone || '').trim();
       if (rawPhone === '') {
+        if (!email) {
+          return json({ ok: false, error: 'حساب شما باید حداقل ایمیل یا شماره موبایل داشته باشد.' }, { status: 400 });
+        }
         phone = '';
       } else {
         phone = normalizePhone(rawPhone);
         if (!phone) return json({ ok: false, error: 'شماره موبایل باید با 09 شروع شود (مثل 09123456789).' }, { status: 400 });
         if (phone !== String(user.phone || '')) {
           const clash = await env.DB.prepare(
-            `SELECT id FROM users WHERE phone = ?1 AND id <> ?2 LIMIT 1`
-          ).bind(phone, user.id).first<{ id: string }>();
+            `SELECT id FROM users WHERE (phone = ?1 OR login_id = ?2) AND id <> ?3 LIMIT 1`
+          ).bind(phone, phone, user.id).first<{ id: string }>();
           if (clash) return json({ ok: false, error: 'این شماره موبایل متعلق به حساب دیگری است.' }, { status: 409 });
         }
       }
@@ -306,17 +436,49 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
     const phoneChanged = phone !== String(user.phone || '');
     const bio = body.bio !== undefined ? String(body.bio || '').slice(0, 600) : String(user.bio || '');
+    const nextLoginId = phone || email || String(user.login_id || '');
+    const nextLoginType = phone ? 'phone' : 'email';
+
     if (phoneChanged) {
       await env.DB.prepare(
-        `UPDATE users SET full_name = ?1, phone = ?2, bio = ?3, phone_verified_at = '', tg_user_id = '', tg_username = '' WHERE id = ?4`
-      ).bind(fullName, phone, bio, user.id).run();
+        `UPDATE users SET full_name = ?1, email = ?2, phone = ?3, login_id = ?4, login_type = ?5, bio = ?6, phone_verified_at = '', tg_user_id = '', tg_username = '' WHERE id = ?7`
+      ).bind(fullName, email, phone, nextLoginId, nextLoginType, bio, user.id).run();
     } else {
       await env.DB.prepare(
-        `UPDATE users SET full_name = ?1, phone = ?2, bio = ?3 WHERE id = ?4`
-      ).bind(fullName, phone, bio, user.id).run();
+        `UPDATE users SET full_name = ?1, email = ?2, phone = ?3, login_id = ?4, login_type = ?5, bio = ?6 WHERE id = ?7`
+      ).bind(fullName, email, phone, nextLoginId, nextLoginType, bio, user.id).run();
     }
     const row = await env.DB.prepare(`SELECT * FROM users WHERE id = ?1`).bind(user.id).first<Record<string, any>>();
     return json({ ok: true, profile: publicUserShape(row!) });
+  }
+
+  if (action === 'change_password') {
+    const user = await requireUser(request, env);
+    if (!user) return json({ ok: false, error: 'not_authenticated' }, { status: 401 });
+
+    const currentPassword = String(body.currentPassword || '');
+    const newPassword = String(body.newPassword || '');
+    if (!newPassword || newPassword.length < 6) {
+      return json({ ok: false, error: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.' }, { status: 400 });
+    }
+
+    if (user.password_hash && user.password_salt) {
+      if (!currentPassword) {
+        return json({ ok: false, error: 'لطفاً رمز عبور فعلی خود را وارد کنید.' }, { status: 400 });
+      }
+      const expected = await hashPassword(currentPassword, String(user.password_salt), env.AUTH_SECRET || 'user-secret');
+      if (!constantTimeEqualStr(expected, String(user.password_hash))) {
+        return json({ ok: false, error: 'رمز عبور فعلی اشتباه است.' }, { status: 401 });
+      }
+    }
+
+    const newSalt = randomHex(16);
+    const newHash = await hashPassword(newPassword, newSalt, env.AUTH_SECRET || 'user-secret');
+    await env.DB.prepare(`UPDATE users SET password_hash = ?1, password_salt = ?2 WHERE id = ?3`)
+      .bind(newHash, newSalt, user.id)
+      .run();
+    await logUserActivity(env, String(user.id), 'password_changed', 'رمز عبور حساب کاربری تغییر یافت');
+    return json({ ok: true });
   }
 
   if (action === 'start_phone_verify') {

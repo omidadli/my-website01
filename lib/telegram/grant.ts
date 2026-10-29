@@ -21,6 +21,7 @@ export const nextExpiry = (currentExpiryIso: string, nowMs: number, days: number
 
 export interface GrantArgs {
   phone: string;
+  userId?: string;
   productId: string;
   planId?: string;
   /** override duration (days) — defaults to the plan's */
@@ -31,6 +32,7 @@ export interface GrantArgs {
   productName: string;
   priceLabel: string;
   features?: string[];
+  channelLabel?: string;
 }
 
 export interface GrantResult {
@@ -49,10 +51,13 @@ export const grantToolAccess = async (env: { DB: D1Like }, args: GrantArgs): Pro
   const maxDevices = Math.max(1, Math.min(20, args.maxDevices ?? plan?.maxDevices ?? 1));
   const note = String(args.note || '').slice(0, 200);
 
-  // ---- 1) tool_access (one active grant per phone+product; renew = extend) ----
-  const existing = await env.DB.prepare(
-    `SELECT * FROM tool_access WHERE phone = ?1 AND product_id = ?2 LIMIT 1`
-  ).bind(args.phone, args.productId).first<any>();
+  // ---- 1) tool_access (one active grant per phone/user+product; renew = extend) ----
+  const grantOwnerKey = args.phone || (args.userId ? `uid:${args.userId}` : '');
+  const existing = grantOwnerKey
+    ? await env.DB.prepare(
+        `SELECT * FROM tool_access WHERE phone = ?1 AND product_id = ?2 LIMIT 1`
+      ).bind(grantOwnerKey, args.productId).first<any>()
+    : null;
 
   const expiresAt = nextExpiry(existing?.expires_at || '', now, days);
   let code: string;
@@ -64,53 +69,80 @@ export const grantToolAccess = async (env: { DB: D1Like }, args: GrantArgs): Pro
     ).bind(code, maxDevices, messageQuota, note, expiresAt, nowIso, existing.id).run();
   } else {
     code = genCode();
-    await env.DB.prepare(
-      `INSERT INTO tool_access (id, phone, product_id, code, status, max_devices, message_quota, devices, note, created_at, expires_at)
-       VALUES (?1,?2,?3,?4,'active',?5,?6,'[]',?7,?8,?9)`
-    ).bind(`ta-${Date.now()}-${Math.floor(Math.random() * 9999)}`, args.phone, args.productId, code, maxDevices, messageQuota, note, nowIso, expiresAt).run();
+    if (grantOwnerKey) {
+      await env.DB.prepare(
+        `INSERT INTO tool_access (id, phone, product_id, code, status, max_devices, message_quota, devices, note, created_at, expires_at)
+         VALUES (?1,?2,?3,?4,'active',?5,?6,'[]',?7,?8,?9)`
+      ).bind(`ta-${Date.now()}-${Math.floor(Math.random() * 9999)}`, grantOwnerKey, args.productId, code, maxDevices, messageQuota, note, nowIso, expiresAt).run();
+    }
   }
 
-  // ---- 2) link to the website account (if the phone is registered) ----
+  // ---- 2) link to the website account (by explicit userId OR registered phone) ----
   // Website sync is best-effort: a schema hiccup there must never block the
   // customer's product delivery, which is already guaranteed by tool_access.
   let subscriptionUserId = '';
   try {
-  const user = await env.DB.prepare(
-    `SELECT id FROM users WHERE phone = ?1 OR login_id = ?1 LIMIT 1`
-  ).bind(args.phone).first<{ id: string }>();
-  if (user?.id) {
-    subscriptionUserId = user.id;
-    const features = JSON.stringify(args.features || plan?.perks || []);
-    const planName = plan?.name || args.planId || '';
-    const existingSub = await env.DB.prepare(
-      `SELECT id, end_date FROM user_subscriptions WHERE user_id = ?1 AND product_id = ?2 ORDER BY start_date DESC LIMIT 1`
-    ).bind(user.id, args.productId).first<{ id: string; end_date: string }>();
-
-    const subEnd = nextExpiry(existingSub?.end_date || '', now, days);
-    if (existingSub && Date.parse(existingSub.end_date || '') > now - 90 * 86400_000) {
-      // renewal/upgrade of the latest subscription row
-      await env.DB.prepare(
-        `UPDATE user_subscriptions SET plan_id = ?1, plan_name = ?2, status = 'active', price = ?3, features = ?4, end_date = ?5 WHERE id = ?6`
-      ).bind(args.planId || '', planName, args.priceLabel, features, subEnd, existingSub.id).run();
-    } else {
-      await env.DB.prepare(
-        `INSERT INTO user_subscriptions (id, user_id, product_id, product_name, plan_id, plan_name, status, price, features, auto_renew, start_date, end_date, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,'active',?7,?8,0,?9,?10,?11)`
-      ).bind(new Date(now).getTime().toString(36) + Math.random().toString(36).slice(2, 8), user.id, args.productId, args.productName, args.planId || '', planName, args.priceLabel, features, nowIso, subEnd, nowIso).run();
+    let user: { id: string } | null = null;
+    if (args.userId) {
+      user = await env.DB.prepare(`SELECT id FROM users WHERE id = ?1 LIMIT 1`)
+        .bind(args.userId)
+        .first<{ id: string }>();
     }
+    if (!user && args.phone) {
+      // Prefer verified phone owners first; fall back cleanly if legacy test schemas omit phone_verified_at.
+      try {
+        user = await env.DB.prepare(
+          `SELECT id FROM users
+           WHERE phone = ?1 OR login_id = ?2
+           ORDER BY CASE WHEN COALESCE(phone_verified_at, '') <> '' THEN 0 ELSE 1 END
+           LIMIT 1`
+        ).bind(args.phone, args.phone).first<{ id: string }>();
+      } catch {
+        user = await env.DB.prepare(
+          `SELECT id FROM users WHERE phone = ?1 OR login_id = ?2 LIMIT 1`
+        ).bind(args.phone, args.phone).first<{ id: string }>();
+      }
+    }
+    if (user?.id) {
+      subscriptionUserId = user.id;
+      // Remove legacy empty placeholder subscription if present
+      await env.DB.prepare(`DELETE FROM user_subscriptions WHERE user_id = ?1 AND product_id = ''`)
+        .bind(user.id)
+        .run()
+        .catch(() => {});
 
-    await env.DB.prepare(
-      `INSERT INTO user_activities (id, user_id, type, description, related_id, created_at)
-       VALUES (?1,?2,?3,?4,?5,?6)`
-    ).bind(
-      `ua-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      user.id,
-      existing ? 'subscription_renewed' : 'subscription_started',
-      `${existing ? 'تمدید اشتراک' : 'خرید اشتراک'} از تلگرام: ${args.productName}${planName ? ` — ${planName}` : ''}`,
-      args.productId,
-      nowIso
-    ).run();
-  }
+      const features = JSON.stringify(args.features || plan?.perks || []);
+      const planName = plan?.name || args.planId || 'اشتراک فعال';
+      const existingSub = await env.DB.prepare(
+        `SELECT id, end_date FROM user_subscriptions WHERE user_id = ?1 AND product_id = ?2 ORDER BY start_date DESC LIMIT 1`
+      ).bind(user.id, args.productId).first<{ id: string; end_date: string }>();
+
+      const subEnd = nextExpiry(existingSub?.end_date || '', now, days);
+      if (existingSub && Date.parse(existingSub.end_date || '') > now - 90 * 86400_000) {
+        // renewal/upgrade of the latest subscription row
+        await env.DB.prepare(
+          `UPDATE user_subscriptions SET product_name = ?1, plan_id = ?2, plan_name = ?3, status = 'active', price = ?4, features = ?5, end_date = ?6 WHERE id = ?7`
+        ).bind(args.productName, args.planId || plan?.id || '', planName, args.priceLabel, features, subEnd, existingSub.id).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO user_subscriptions (id, user_id, product_id, product_name, plan_id, plan_name, status, price, features, auto_renew, start_date, end_date, created_at)
+           VALUES (?1,?2,?3,?4,?5,?6,'active',?7,?8,0,?9,?10,?11)`
+        ).bind(new Date(now).getTime().toString(36) + Math.random().toString(36).slice(2, 8), user.id, args.productId, args.productName, args.planId || plan?.id || '', planName, args.priceLabel, features, nowIso, subEnd, nowIso).run();
+      }
+
+      const viaLabel = args.channelLabel || (String(args.note || '').includes('gateway') ? 'درگاه پرداخت' : 'تلگرام');
+      await env.DB.prepare(
+        `INSERT INTO user_activities (id, user_id, type, description, related_id, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6)`
+      ).bind(
+        `ua-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        user.id,
+        existing ? 'subscription_renewed' : 'subscription_started',
+        `${existing ? 'تمدید اشتراک' : 'فعال‌سازی اشتراک'} (${viaLabel}): ${args.productName}${planName ? ` — ${planName}` : ''}`,
+        args.productId,
+        nowIso
+      ).run();
+    }
   } catch {
     subscriptionUserId = '';
   }

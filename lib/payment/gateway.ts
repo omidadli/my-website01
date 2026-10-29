@@ -11,7 +11,14 @@ import { ensureBotTables, insertDelivery, updateOrder as updateBotOrder } from '
 import { grantToolAccess } from '../telegram/grant';
 import { botPlan, botProduct, botProductPath } from '../telegram/pricing';
 import * as tg from '../telegram/tgApi';
-import { normalizePhone } from '../userAuth';
+import {
+  hashUserPassword,
+  isValidEmail,
+  normalizePhone,
+  randomUserSalt,
+  validateFullName,
+  verifyUserPassword,
+} from '../userAuth';
 import {
   cleanCardNumber,
   cleanIban,
@@ -322,11 +329,59 @@ const PAYMENT_DDL = [
     value TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    full_name TEXT NOT NULL DEFAULT '',
+    login_id TEXT NOT NULL UNIQUE,
+    login_type TEXT NOT NULL DEFAULT 'phone',
+    email TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    password_salt TEXT NOT NULL DEFAULT '',
+    avatar_url TEXT DEFAULT '',
+    bio TEXT DEFAULT '',
+    phone_verified_at TEXT DEFAULT '',
+    tg_user_id TEXT DEFAULT '',
+    tg_username TEXT DEFAULT '',
+    created_at TEXT DEFAULT '',
+    last_login_at TEXT DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    product_id TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL,
+    plan_id TEXT DEFAULT '',
+    plan_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    price TEXT DEFAULT '',
+    features TEXT DEFAULT '[]',
+    auto_renew INTEGER DEFAULT 0,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_activities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    related_id TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 const PAYMENT_ALTERS = [
+  `ALTER TABLE users ADD COLUMN login_type TEXT DEFAULT 'phone'`,
+  `ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN password_salt TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''`,
   `ALTER TABLE users ADD COLUMN phone_verified_at TEXT DEFAULT ''`,
   `ALTER TABLE users ADD COLUMN tg_user_id TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN tg_username TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN created_at TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT ''`,
   `ALTER TABLE bot_orders ADD COLUMN payment_id TEXT DEFAULT ''`,
   `ALTER TABLE payment_devices ADD COLUMN pair_code TEXT DEFAULT ''`,
   `ALTER TABLE payment_devices ADD COLUMN pair_token TEXT DEFAULT ''`,
@@ -913,37 +968,52 @@ export const fulfillGatewayPayment = async (
         buyerPhone = normalizePhone(u?.phone || '');
       }
 
-      if (buyerPhone) {
+      if (buyerPhone || order.user_id) {
         const product = botProduct(order.product_id);
         const plan = order.plan_id ? botPlan(order.product_id, order.plan_id) : undefined;
         const productName = order.product_name || product?.name || order.product_id;
         const planName = order.plan_name || plan?.name || '';
         const toman = Math.floor(order.amount_rial / 10);
 
+        const verifiedPhoneOwner = buyerPhone
+          ? await findSiteUserByPhone(env, buyerPhone, order.tg_user_id || '').catch(() => null)
+          : null;
+
         const grant = await grantToolAccess(env, {
           phone: buyerPhone,
+          userId: order.user_id || verifiedPhoneOwner?.id || undefined,
           productId: order.product_id,
           planId: order.plan_id || undefined,
           note: `gateway ${via} (${order.id})`,
           productName,
           priceLabel: plan?.price || `${fmtNumber(toman)} تومان`,
           features: plan?.perks,
+          channelLabel: order.source === 'telegram' ? 'ربات تلگرام' : 'درگاه پرداخت خودکار',
         });
 
+        const resolvedUserId = order.user_id || verifiedPhoneOwner?.id || grant.subscriptionUserId || '';
+
         await env.DB.prepare(
-          `UPDATE payment_orders SET phone = ?1, access_code = ?2, access_expires_at = ?3, updated_at = ?4 WHERE id = ?5`
+          `UPDATE payment_orders
+           SET phone = ?1,
+               user_id = CASE WHEN user_id = '' THEN ?2 ELSE user_id END,
+               access_code = ?3,
+               access_expires_at = ?4,
+               updated_at = ?5
+           WHERE id = ?6`
         )
-          .bind(buyerPhone, grant.code, grant.expiresAt, nowIso, order.id)
+          .bind(buyerPhone, resolvedUserId, grant.code, grant.expiresAt, nowIso, order.id)
           .run();
 
         order.phone = buyerPhone;
+        order.user_id = resolvedUserId;
         order.access_code = grant.code;
         order.access_expires_at = grant.expiresAt;
         order.fulfilled_at = nowIso;
 
-        // Also ensure user_id subscription is linked even if user registered by email and added phone later
-        if (order.user_id && !grant.subscriptionUserId) {
-          await syncPhoneGrantsToUser(env, order.user_id, buyerPhone).catch(() => {});
+        // Ensure user_subscriptions is synced ONLY for verified phone ownership
+        if (verifiedPhoneOwner?.id && buyerPhone) {
+          await syncPhoneGrantsToUser(env, verifiedPhoneOwner.id, buyerPhone).catch(() => {});
         }
 
         // Update linked bot_orders row if this originated in Telegram
@@ -964,7 +1034,7 @@ export const fulfillGatewayPayment = async (
 
           // Deliver on Telegram if tg_user_id is known OR phone is linked in bot_users
           let targetTgId = order.tg_user_id;
-          if (!targetTgId) {
+          if (!targetTgId && buyerPhone) {
             const linked = await env.DB.prepare(
               `SELECT tg_user_id FROM bot_users WHERE phone = ?1 AND verified_at <> '' LIMIT 1`
             )
@@ -993,18 +1063,53 @@ export const fulfillGatewayPayment = async (
 
           if (targetTgId && env.TELEGRAM_BOT_TOKEN) {
             const base = siteOrigin(env);
-            const msg = [
-              '✅ <b>پرداخت شما به‌صورت خودکار تأیید شد!</b>',
+            let directLaunchUrl = `${base}${botProductPath(order.product_id)}?open=chat`;
+            let profileLaunchUrl = `${base}/profile`;
+            const tgLinkedUser = buyerPhone
+              ? await findSiteUserByPhone(env, buyerPhone, targetTgId).catch(() => null)
+              : null;
+            if (tgLinkedUser?.id) {
+              const magic = await createWebMagicLoginToken(env, tgLinkedUser.id, buyerPhone).catch(() => '');
+              if (magic) {
+                directLaunchUrl = `${base}${botProductPath(order.product_id)}?tg_auth=${magic}&open=chat`;
+                profileLaunchUrl = `${base}/profile?tg_auth=${magic}`;
+              }
+            }
+            const canUseInlineUrl = /^https:\/\/(?!localhost\b)/i.test(base);
+            const msgLines = [
+              '🎉 <b>پرداخت شما تأیید و اشتراک در اکانت سایت شما فعال شد!</b>',
               '',
-              `📦 محصول: <b>${tg.escapeHtml(productName)}</b>${planName ? ` — ${tg.escapeHtml(planName)}` : ''}`,
-              `🔑 کد دسترسی اختصاصی: <code>${tg.escapeHtml(grant.code)}</code>`,
-              `📅 اعتبار تا: ${grant.expiresAt.slice(0, 10)}`,
+              `📦 سرویس: <b>${tg.escapeHtml(productName)}</b>${planName ? ` — ${tg.escapeHtml(planName)}` : ''}`,
+              `📅 اعتبار تا: <b>${grant.expiresAt.slice(0, 10)}</b>`,
+              `🔑 کد پشتیبانی اختصاصی: <code>${tg.escapeHtml(grant.code)}</code>`,
               '',
-              '📱 در صفحه‌ی محصول در سایت وارد شوید یا شماره و کد بالا را بزنید:',
-              `🔗 ${tg.escapeHtml(base + botProductPath(order.product_id))}`,
-              `🆔 شناسه پرداخت: <code>${tg.escapeHtml(order.id)}</code>`,
-            ].join('\n');
-            await tg.sendMessage(env.TELEGRAM_BOT_TOKEN, targetTgId, msg, { reply_markup: tg.mainMenuKeyboard() }).catch(() => {});
+              tgLinkedUser?.id
+                ? '✨ <b>سرویس در پروفایل کاربری شما فعال است!</b> روی دکمه زیر بزنید تا بدون نیاز به وارد کردن هیچ کدی مستقیماً وارد سرویس شوید:'
+                : '📱 برای استفاده مستقیم وارد لینک زیر شوید:',
+            ];
+            if (!canUseInlineUrl) {
+              msgLines.push(`🚀 ورود مستقیم به سرویس:\n${tg.escapeHtml(directLaunchUrl)}`);
+              msgLines.push(`👤 پروفایل کاربری:\n${tg.escapeHtml(profileLaunchUrl)}`);
+            }
+            msgLines.push(`🆔 شناسه پرداخت: <code>${tg.escapeHtml(order.id)}</code>`);
+
+            if (canUseInlineUrl) {
+              await tg
+                .sendMessage(env.TELEGRAM_BOT_TOKEN, targetTgId, msgLines.join('\n'), {
+                  reply_markup: tg.inlineKeyboard([
+                    [{ text: '🚀 ورود مستقیم و استفاده از سرویس', url: directLaunchUrl }],
+                    [{ text: '👤 مشاهده اشتراک در پروفایل من', url: profileLaunchUrl }],
+                  ]),
+                })
+                .catch(() => {});
+            } else {
+              await tg
+                .sendMessage(env.TELEGRAM_BOT_TOKEN, targetTgId, msgLines.join('\n'), {
+                  reply_markup: tg.mainMenuKeyboard(),
+                })
+                .catch(() => {});
+            }
+
             await env.DB.prepare(`UPDATE bot_deliveries SET status = 'delivered', delivered_at = ?1 WHERE id = ?2`)
               .bind(nowIso, delId)
               .run()
@@ -1021,7 +1126,8 @@ export const fulfillGatewayPayment = async (
             `💸 <b>پرداخت موفق (${via === 'sms' ? 'تأیید خودکار پیامک بانکی' : tg.escapeHtml(via)})</b>`,
             `📦 ${tg.escapeHtml(productName)}${planName ? ` — ${tg.escapeHtml(planName)}` : ''}`,
             `💰 مبلغ یکتا: <b>${fmtNumber(order.payable_amount_rial)} ریال</b> (${fmtNumber(Math.floor(order.payable_amount_rial / 10))} تومان)`,
-            `📱 مشتری: <code>${tg.escapeHtml(buyerPhone)}</code> (${order.source})`,
+            `📱 مشتری: <code>${tg.escapeHtml(buyerPhone || order.user_id)}</code> (${order.source})`,
+            `👤 اکانت سایت: ${resolvedUserId ? 'فعال و متصل ✅' : 'مهمان'}`,
             `🔑 کد دسترسی: <code>${tg.escapeHtml(grant.code)}</code>`,
             `🆔 پرداخت: <code>${tg.escapeHtml(order.id)}</code>`,
           ].join('\n')
@@ -1385,35 +1491,45 @@ export const syncPhoneGrantsToUser = async (
 
   let synced = 0;
   try {
+    // Clean legacy empty placeholder rows ('حساب کاربری امید عدلی' / 'کاربر جدید')
+    await env.DB.prepare(`DELETE FROM user_subscriptions WHERE user_id = ?1 AND product_id = ''`)
+      .bind(userId)
+      .run()
+      .catch(() => {});
+
     const grants = (
       await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND status = 'active'`).bind(phone).all<any>()
     ).results || [];
 
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
     for (const g of grants) {
       const existingSub = await env.DB.prepare(
-        `SELECT id FROM user_subscriptions WHERE user_id = ?1 AND product_id = ?2 LIMIT 1`
+        `SELECT id, status, end_date FROM user_subscriptions WHERE user_id = ?1 AND product_id = ?2 LIMIT 1`
       )
         .bind(userId, g.product_id)
-        .first<{ id: string }>();
+        .first<{ id: string; status: string; end_date: string }>();
 
       const product = botProduct(g.product_id);
       const productName = product?.name || (g.product_id === 'all' ? 'اشتراک کامل همه ابزارها' : g.product_id);
-      const nowIso = new Date().toISOString();
-      const endIso = g.expires_at || new Date(Date.now() + 30 * 86400_000).toISOString();
+      const endIso = g.expires_at || new Date(nowMs + 30 * 86400_000).toISOString();
+      const isExpired = Boolean(g.expires_at && Date.parse(g.expires_at) < nowMs);
+      const targetStatus = isExpired ? 'expired' : 'active';
 
       if (!existingSub) {
         await env.DB.prepare(
           `INSERT INTO user_subscriptions (id, user_id, product_id, product_name, plan_id, plan_name, status, price, features, auto_renew, start_date, end_date, created_at)
-           VALUES (?1,?2,?3,?4,'','اشتراک فعال','active','پرداخت‌شده','[]',0,?5,?6,?7)`
+           VALUES (?1,?2,?3,?4,'','اشتراک فعال',?5,'پرداخت‌شده','[]',0,?6,?7,?8)`
         )
-          .bind(`sub-${Date.now().toString(36)}-${randomHex(3)}`, userId, g.product_id, productName, g.created_at || nowIso, endIso, nowIso)
+          .bind(`sub-${nowMs.toString(36)}-${randomHex(3)}`, userId, g.product_id, productName, targetStatus, g.created_at || nowIso, endIso, nowIso)
           .run();
         synced++;
-      } else {
+      } else if (existingSub.status !== targetStatus || existingSub.end_date !== endIso) {
         await env.DB.prepare(
-          `UPDATE user_subscriptions SET status = 'active', end_date = ?1 WHERE id = ?2`
+          `UPDATE user_subscriptions SET status = ?1, end_date = ?2 WHERE id = ?3`
         )
-          .bind(endIso, existingSub.id)
+          .bind(targetStatus, endIso, existingSub.id)
           .run();
       }
     }
@@ -1421,6 +1537,381 @@ export const syncPhoneGrantsToUser = async (
     /* non-fatal if tables aren't ready yet */
   }
   return synced;
+};
+
+/**
+ * Full account subscription reconciler:
+ *  1) Removes legacy fake starter rows (`product_id = ''`)
+ *  2) Marks expired `user_subscriptions` (`end_date < now`) as `'expired'`
+ *  3) Syncs `payment_orders` owned directly by `user_id` (`status = 'paid'`)
+ *  4) Syncs `tool_access` rows for `phone` when `isPhoneVerified` is true
+ */
+export const syncUserAccountGrants = async (
+  env: { DB: D1Like },
+  userId: string,
+  rawPhone: string,
+  isPhoneVerified: boolean
+): Promise<void> => {
+  if (!userId) return;
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  try {
+    await env.DB.prepare(`DELETE FROM user_subscriptions WHERE user_id = ?1 AND product_id = ''`)
+      .bind(userId)
+      .run()
+      .catch(() => {});
+
+    await env.DB.prepare(
+      `UPDATE user_subscriptions SET status = 'expired'
+       WHERE user_id = ?1 AND status = 'active' AND end_date <> '' AND end_date < ?2`
+    )
+      .bind(userId, nowIso)
+      .run()
+      .catch(() => {});
+
+    // Sync paid orders tied directly to this authenticated user_id
+    const paidOrders = (
+      await env.DB.prepare(
+        `SELECT * FROM payment_orders WHERE user_id = ?1 AND status = 'paid' AND product_id <> '' ORDER BY created_at DESC LIMIT 25`
+      )
+        .bind(userId)
+        .all<PaymentOrderRow>()
+        .catch(() => ({ results: [] as PaymentOrderRow[] }))
+    ).results || [];
+
+    for (const po of paidOrders) {
+      const existingSub = await env.DB.prepare(
+        `SELECT id FROM user_subscriptions WHERE user_id = ?1 AND product_id = ?2 LIMIT 1`
+      )
+        .bind(userId, po.product_id)
+        .first<{ id: string }>();
+      if (!existingSub) {
+        const product = botProduct(po.product_id);
+        const plan = po.plan_id ? botPlan(po.product_id, po.plan_id) : undefined;
+        const endIso = po.access_expires_at || new Date((Date.parse(po.paid_at || po.created_at) || nowMs) + 30 * 86400_000).toISOString();
+        const isExp = Date.parse(endIso) < nowMs;
+        await env.DB.prepare(
+          `INSERT INTO user_subscriptions (id, user_id, product_id, product_name, plan_id, plan_name, status, price, features, auto_renew, start_date, end_date, created_at)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10,?11,?12)`
+        )
+          .bind(
+            `sub-${nowMs.toString(36)}-${randomHex(3)}`,
+            userId,
+            po.product_id,
+            po.product_name || product?.name || po.product_id,
+            po.plan_id || '',
+            po.plan_name || plan?.name || 'اشتراک فعال',
+            isExp ? 'expired' : 'active',
+            plan?.price || `${fmtNumber(Math.floor(po.amount_rial / 10))} تومان`,
+            JSON.stringify(plan?.perks || []),
+            po.paid_at || po.created_at || nowIso,
+            endIso,
+            nowIso
+          )
+          .run()
+          .catch(() => {});
+      }
+    }
+
+    if (isPhoneVerified && rawPhone) {
+      await syncPhoneGrantsToUser(env, userId, rawPhone);
+    }
+  } catch {
+    /* non-fatal */
+  }
+};
+
+export interface SiteUserRow {
+  id: string;
+  full_name: string;
+  login_id: string;
+  login_type?: string;
+  email?: string;
+  phone?: string;
+  phone_verified_at?: string;
+  tg_user_id?: string;
+  tg_username?: string;
+  created_at?: string;
+}
+
+export const findSiteUserByPhone = async (
+  env: PaymentEnv,
+  rawPhone: string,
+  tgUserId = ''
+): Promise<SiteUserRow | null> => {
+  await ensurePaymentTables(env);
+  const phone = normalizePhone(rawPhone);
+  if (!phone) return null;
+  const tgStr = String(tgUserId || '').trim();
+  const row = await env.DB.prepare(
+    `SELECT * FROM users
+     WHERE (phone = ?1 OR login_id = ?2)
+       AND (COALESCE(phone_verified_at, '') <> '' OR (?3 <> '' AND COALESCE(tg_user_id, '') = ?4))
+     LIMIT 1`
+  )
+    .bind(phone, phone, tgStr, tgStr)
+    .first<SiteUserRow>()
+    .catch(() => null);
+  return row || null;
+};
+
+export const linkExistingSiteUserFromTelegram = async (
+  env: PaymentEnv,
+  args: { userId: string; phone: string; tgUserId: string; tgUsername?: string }
+): Promise<SiteUserRow | null> => {
+  await ensurePaymentTables(env);
+  const phone = normalizePhone(args.phone);
+  const nowIso = new Date().toISOString();
+  const cleanUser = String(args.tgUsername || '').replace(/^@/, '').trim();
+  await env.DB.prepare(
+    `UPDATE users
+     SET phone = ?1,
+         phone_verified_at = CASE WHEN phone_verified_at = '' OR phone_verified_at IS NULL THEN ?2 ELSE phone_verified_at END,
+         tg_user_id = ?3,
+         tg_username = CASE WHEN ?4 <> '' THEN ?5 ELSE tg_username END
+     WHERE id = ?6`
+  )
+    .bind(phone, nowIso, String(args.tgUserId), cleanUser, cleanUser, args.userId)
+    .run()
+    .catch(() => {});
+
+  // Backfill user_id onto any past orders from this phone or Telegram user
+  await env.DB.prepare(
+    `UPDATE payment_orders SET user_id = ?1 WHERE user_id = '' AND (phone = ?2 OR tg_user_id = ?3)`
+  )
+    .bind(args.userId, phone, String(args.tgUserId))
+    .run()
+    .catch(() => {});
+
+  await syncUserAccountGrants(env, args.userId, phone, true);
+  return findSiteUserByPhone(env, phone, args.tgUserId);
+};
+
+export const registerSiteUserFromTelegram = async (
+  env: PaymentEnv,
+  args: {
+    tgUserId: string;
+    tgUsername?: string;
+    phone: string;
+    fullName: string;
+    email?: string;
+    password: string;
+  }
+): Promise<{ ok: boolean; created: boolean; error?: string; user?: SiteUserRow }> => {
+  await ensurePaymentTables(env);
+  const phone = normalizePhone(args.phone);
+  if (!phone) return { ok: false, created: false, error: 'شماره موبایل معتبر نیست.' };
+
+  const existing = await findSiteUserByPhone(env, phone, args.tgUserId);
+  if (existing) {
+    const linked = await linkExistingSiteUserFromTelegram(env, {
+      userId: existing.id,
+      phone,
+      tgUserId: args.tgUserId,
+      tgUsername: args.tgUsername,
+    });
+    return { ok: true, created: false, user: linked || existing };
+  }
+
+  const nameCheck = validateFullName(args.fullName);
+  if (!nameCheck.ok) return { ok: false, created: false, error: nameCheck.error };
+
+  const rawEmail = String(args.email || '').trim().toLowerCase();
+  if (rawEmail && !isValidEmail(rawEmail)) {
+    return { ok: false, created: false, error: 'فرمت ایمیل واردشده صحیح نیست.' };
+  }
+
+  const pwd = String(args.password || '');
+  if (pwd.length < 6) {
+    return { ok: false, created: false, error: 'رمز عبور باید حداقل ۶ کاراکتر باشد.' };
+  }
+
+  const secret = String(env.AUTH_SECRET || 'user-secret');
+
+  // Check if an unverified website account currently holds this phone:
+  // - If the user knows its password, it is genuinely their account -> upgrade & verify it!
+  // - Otherwise, it is an unverified claim by someone else -> detach the phone from that unverified row
+  //   so the cryptographically verified Telegram SIM owner can register cleanly.
+  const unverifiedClaim = await env.DB.prepare(
+    `SELECT * FROM users
+     WHERE (phone = ?1 OR login_id = ?2)
+       AND COALESCE(phone_verified_at, '') = ''
+     LIMIT 1`
+  )
+    .bind(phone, phone)
+    .first<SiteUserRow & { password_hash?: string; password_salt?: string }>()
+    .catch(() => null);
+
+  if (unverifiedClaim) {
+    const matchesOwnPwd = await verifyUserPassword(
+      pwd,
+      String(unverifiedClaim.password_salt || ''),
+      String(unverifiedClaim.password_hash || ''),
+      secret
+    );
+    if (matchesOwnPwd) {
+      if (rawEmail && rawEmail !== String(unverifiedClaim.email || '').toLowerCase()) {
+        const clash = await env.DB.prepare(
+          `SELECT id FROM users WHERE (email = ?1 OR login_id = ?2) AND id != ?3 LIMIT 1`
+        )
+          .bind(rawEmail, rawEmail, unverifiedClaim.id)
+          .first<{ id: string }>()
+          .catch(() => null);
+        if (!clash) {
+          await env.DB.prepare(`UPDATE users SET full_name = ?1, email = ?2 WHERE id = ?3`)
+            .bind(nameCheck.id, rawEmail, unverifiedClaim.id)
+            .run()
+            .catch(() => {});
+        }
+      }
+      const linked = await linkExistingSiteUserFromTelegram(env, {
+        userId: unverifiedClaim.id,
+        phone,
+        tgUserId: args.tgUserId,
+        tgUsername: args.tgUsername,
+      });
+      return { ok: true, created: false, user: linked || unverifiedClaim };
+    }
+
+    // Evict unverified phone claim from stranger's row
+    const fallbackLogin = unverifiedClaim.email
+      ? String(unverifiedClaim.email)
+      : `unverified_${unverifiedClaim.id}`;
+    await env.DB.prepare(
+      `UPDATE users
+       SET phone = '',
+           login_id = CASE WHEN login_id = ?1 THEN ?2 ELSE login_id END
+       WHERE id = ?3 AND COALESCE(phone_verified_at, '') = ''`
+    )
+      .bind(phone, fallbackLogin, unverifiedClaim.id)
+      .run()
+      .catch(() => {});
+  }
+
+  if (rawEmail) {
+    const emailClash = await env.DB.prepare(
+      `SELECT id FROM users WHERE email = ?1 OR login_id = ?2 LIMIT 1`
+    )
+      .bind(rawEmail, rawEmail)
+      .first<{ id: string }>()
+      .catch(() => null);
+    if (emailClash) {
+      return { ok: false, created: false, error: 'این ایمیل قبلاً در سایت ثبت شده است. ایمیل دیگری وارد کنید یا گزینه رد شدن را بزنید.' };
+    }
+  }
+
+  const userId = `${Date.now().toString(36)}-${randomHex(6)}`;
+  const salt = randomUserSalt(16);
+  const hash = await hashUserPassword(pwd, salt, secret);
+  const nowIso = new Date().toISOString();
+  const cleanTgUsername = String(args.tgUsername || '').replace(/^@/, '').trim();
+
+  await env.DB.prepare(
+    `INSERT INTO users (id, full_name, login_id, login_type, email, phone, password_hash, password_salt, phone_verified_at, tg_user_id, tg_username, created_at, last_login_at)
+     VALUES (?1, ?2, ?3, 'phone', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+  )
+    .bind(userId, nameCheck.id, phone, rawEmail, phone, hash, salt, nowIso, String(args.tgUserId), cleanTgUsername, nowIso, nowIso)
+    .run();
+
+  await env.DB.prepare(
+    `INSERT INTO user_activities (id, user_id, type, description, related_id, created_at)
+     VALUES (?1, ?2, 'account_created', 'ثبت‌نام یکپارچه حساب کاربری از طریق ربات تلگرام', '', ?3)`
+  )
+    .bind(`ua-${Date.now().toString(36)}-${randomHex(3)}`, userId, nowIso)
+    .run()
+    .catch(() => {});
+
+  // Link any orders already placed by this Telegram user / phone
+  await env.DB.prepare(
+    `UPDATE payment_orders SET user_id = ?1 WHERE user_id = '' AND (phone = ?2 OR tg_user_id = ?3)`
+  )
+    .bind(userId, phone, String(args.tgUserId))
+    .run()
+    .catch(() => {});
+
+  await syncUserAccountGrants(env, userId, phone, true);
+
+  const createdRow = await findSiteUserByPhone(env, phone, args.tgUserId);
+  return {
+    ok: true,
+    created: true,
+    user: createdRow || {
+      id: userId,
+      full_name: nameCheck.id,
+      login_id: phone,
+      login_type: 'phone',
+      email: rawEmail,
+      phone,
+      phone_verified_at: nowIso,
+      tg_user_id: String(args.tgUserId),
+      tg_username: cleanTgUsername,
+      created_at: nowIso,
+    },
+  };
+};
+
+/**
+ * Generates a secure magic login token (`tg_auth`) for 1-click website authentication
+ * from Telegram delivery / profile buttons. Only consumed via JS POST (`tg_token_login`)
+ * so Telegram link preview crawlers never burn it, and stays valid for a 5-minute
+ * handoff grace after first redemption (supporting Telegram WebView -> Safari handoff on iOS).
+ */
+export const createWebMagicLoginToken = async (
+  env: PaymentEnv,
+  userId: string,
+  rawPhone = ''
+): Promise<string> => {
+  await ensurePaymentTables(env);
+  const token = `ml_${randomHex(16)}`;
+  const nowIso = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 3600_000).toISOString();
+  const phone = rawPhone ? normalizePhone(rawPhone) : '';
+  await env.DB.prepare(
+    `INSERT INTO phone_verifications (token, user_id, phone, status, tg_user_id, created_at, expires_at, verified_at)
+     VALUES (?1, ?2, ?3, 'magic_pending', '', ?4, ?5, '')`
+  )
+    .bind(token, userId, phone, nowIso, expiresAt)
+    .run();
+  return token;
+};
+
+export const consumeWebMagicLoginToken = async (
+  env: PaymentEnv,
+  rawToken: string
+): Promise<{ ok: boolean; userId?: string; phone?: string; error?: string }> => {
+  await ensurePaymentTables(env);
+  const token = String(rawToken || '').trim();
+  if (!token.startsWith('ml_')) return { ok: false, error: 'لینک ورود یک‌کلیکی نامعتبر است.' };
+
+  const row = await env.DB.prepare(`SELECT * FROM phone_verifications WHERE token = ?1 LIMIT 1`)
+    .bind(token)
+    .first<{ token: string; user_id: string; phone: string; status: string; expires_at: string; verified_at: string }>();
+
+  if (!row) return { ok: false, error: 'لینک ورود یافت نشد یا منقضی شده است.' };
+  const nowMs = Date.now();
+  if (Date.parse(row.expires_at) < nowMs) {
+    return { ok: false, error: 'مهلت اعتبار این لینک به پایان رسیده است. از ربات لینک جدید دریافت کنید.' };
+  }
+
+  if (row.status === 'magic_used') {
+    const firstUsedMs = Date.parse(row.verified_at || '');
+    // Allow 5-minute handoff window from Telegram In-App Browser to iOS Safari
+    if (!Number.isFinite(firstUsedMs) || nowMs - firstUsedMs > 5 * 60_000) {
+      return { ok: false, error: 'این لینک ورود یک‌بارمصرف قبلاً استفاده شده است.' };
+    }
+    return { ok: true, userId: row.user_id, phone: row.phone };
+  }
+
+  if (row.status !== 'magic_pending') {
+    return { ok: false, error: 'وضعیت لینک ورود معتبر نیست.' };
+  }
+
+  const nowIso = new Date(nowMs).toISOString();
+  await env.DB.prepare(`UPDATE phone_verifications SET status = 'magic_used', verified_at = ?1 WHERE token = ?2`)
+    .bind(nowIso, token)
+    .run();
+
+  return { ok: true, userId: row.user_id, phone: row.phone };
 };
 
 export const createPhoneVerificationToken = async (

@@ -14,7 +14,7 @@
  *   → هر تصمیم برای ادمین‌ها هم اطلاع‌رسانی می‌شود؛ رسیدهای مشکوک با دکمه
  *     تأیید/رد دستی برای ادمین می‌آیند.
  */
-import { normalizePhone } from '../userAuth';
+import { isValidEmail, normalizePhone, validateFullName } from '../userAuth';
 import {
   faDigits,
   botProduct,
@@ -63,12 +63,16 @@ import {
   cleanCardNumber,
   completePhoneVerificationToken,
   createGatewayPayment,
+  createWebMagicLoginToken,
   ensurePaymentTables,
+  findSiteUserByPhone,
   formatCardNumber,
   fulfillGatewayPayment,
   hydratePaymentEnv,
   isReceiptRefUsedAnywhere,
+  linkExistingSiteUserFromTelegram,
   processIncomingBankSms,
+  registerSiteUserFromTelegram,
   sweepExpiredPayments,
   type PaymentOrderRow,
 } from '../payment/gateway';
@@ -115,6 +119,7 @@ const fmtDate = (iso: string): string => {
 };
 
 const siteUrl = (env: BotEnv): string => String(env.SITE_URL || 'https://omidadli.site').replace(/\/+$/, '');
+const canUseTelegramInlineUrl = (url: string): boolean => /^https:\/\/(?!localhost\b)/i.test(url);
 
 const send = (env: BotEnv, chatId: string | number, text: string, extra: Record<string, unknown> = {}) =>
   tg.sendMessage(env.TELEGRAM_BOT_TOKEN || '', chatId, text, extra);
@@ -125,18 +130,85 @@ const notifyAdmins = async (env: BotEnv, text: string, rows?: tg.TgKeyboardButto
   }
 };
 
-/* --------------------------- delivery rendering --------------------------- */
+const generateStrongPassword = (): string => {
+  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const arr = new Uint8Array(10);
+  (globalThis as any).crypto.getRandomValues(arr);
+  let out = '';
+  for (let i = 0; i < arr.length; i++) out += chars[arr[i] % chars.length];
+  return out;
+};
 
-const renderDelivery = (d: { product_name: string; plan_name: string; code: string; expires_at: string; product_id: string; id: string }, baseUrl: string): string =>
+/* ---------------- In-Bot Website Account Registration Wizard ---------------- */
+
+interface ResumeBuyIntent {
+  productId: string;
+  planId: string;
+}
+
+const startInBotWebsiteRegistration = async (
+  env: BotEnv,
+  chatId: string,
+  phone: string,
+  suggestedFirstName = '',
+  resumeBuy: ResumeBuyIntent | null = null
+) => {
+  const cleanSuggested = String(suggestedFirstName || '').trim();
+  const hasValidSuggestion = cleanSuggested.length >= 2 && cleanSuggested.length <= 60;
+  await upsertBotUser(env, chatId, {
+    pending: {
+      kind: 'web_reg_name',
+      phone,
+      suggestedName: hasValidSuggestion ? cleanSuggested : '',
+      resumeBuy,
+    },
+  });
+
+  const kbRows: tg.TgKeyboardButton[][] = [];
+  if (hasValidSuggestion) {
+    kbRows.push([{ text: `✅ ثبت با نام «${cleanSuggested}»` }]);
+  }
+  kbRows.push([{ text: '❌ انصراف' }]);
+
+  await send(
+    env,
+    chatId,
+    [
+      '🌐 <b>تکمیل ثبت‌نام یکپارچه در وب‌سایت</b>',
+      '',
+      `ما متوجه شدیم با شماره <code>${displayPhone(phone)}</code> هنوز در وب‌سایت حساب کاربری ندارید.`,
+      'برای اینکه اشتراک خریداری‌شده مستقیماً داخل پروفایل سایت شما فعال شود و <b>بدون نیاز به کد دسترسی</b> از سرویس استفاده کنید، همین‌جا در ۳۰ ثانیه حساب شما را می‌سازیم:',
+      '',
+      '👤 <b>گام ۱ از ۳ — نام و نام خانوادگی خود را ارسال کنید:</b>',
+    ].join('\n'),
+    {
+      reply_markup: {
+        keyboard: kbRows,
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      },
+    }
+  );
+};
+
+const renderDelivery = (
+  d: { product_name: string; plan_name: string; code: string; expires_at: string; product_id: string; id: string },
+  baseUrl: string,
+  directLaunchUrl = ''
+): string =>
   [
-    '🎁 <b>تحویل محصول شما</b>',
+    '🎁 <b>سرویس شما در اکانت وب‌سایت فعال شد!</b>',
     '',
-    `📦 محصول: <b>${tg.escapeHtml(d.product_name)}</b>${d.plan_name ? ` — ${tg.escapeHtml(d.plan_name)}` : ''}`,
-    `🔑 کد دسترسی: <code>${tg.escapeHtml(d.code)}</code>`,
-    d.expires_at ? `📅 اعتبار تا: ${fmtDate(d.expires_at)}` : '',
+    `📦 سرویس: <b>${tg.escapeHtml(d.product_name)}</b>${d.plan_name ? ` — ${tg.escapeHtml(d.plan_name)}` : ''}`,
+    d.expires_at ? `📅 اعتبار تا: <b>${fmtDate(d.expires_at)}</b>` : '',
+    `🔑 کد پشتیبانی اختصاصی: <code>${tg.escapeHtml(d.code)}</code>`,
     '',
-    '📱 <b>نحوه استفاده:</b> در صفحه‌ی محصول در سایت، شماره موبایل و همین کد را وارد کنید تا دسترسی فعال شود.',
-    d.product_id ? `🔗 ${tg.escapeHtml(baseUrl + botProductPath(d.product_id))}` : '',
+    directLaunchUrl
+      ? '✨ <b>سرویس در پروفایل کاربری شما فعال است!</b> بدون نیاز به وارد کردن کد، مستقیم وارد شوید:'
+      : '📱 <b>نحوه استفاده:</b> از پروفایل سایت وارد شوید یا در صفحه محصول شماره موبایل و کد بالا را بزنید:',
+    !canUseTelegramInlineUrl(directLaunchUrl || baseUrl) && (directLaunchUrl || d.product_id)
+      ? `🔗 ${tg.escapeHtml(directLaunchUrl || baseUrl + botProductPath(d.product_id) + '?open=chat')}`
+      : '',
     `🆔 کد پیگیری تحویل: <code>${tg.escapeHtml(d.id)}</code>`,
   ].filter(Boolean).join('\n');
 
@@ -184,7 +256,8 @@ const completeVerification = async (env: BotEnv, chatId: string, phone: string, 
     await send(env, chatId, '❌ شماره معتبر نیست.');
     return;
   }
-  const before = getPending<any>(await getBotUser(env, chatId));
+  const botUserBefore = await getBotUser(env, chatId);
+  const before = getPending<any>(botUserBefore);
   await upsertBotUser(env, chatId, {
     phone: normalized,
     verified_at: nowIso(),
@@ -193,16 +266,26 @@ const completeVerification = async (env: BotEnv, chatId: string, phone: string, 
   });
   await logEvent(env, 'phone_verified', `tg=${chatId} phone=${normalized} via=${via}`);
 
+  const base = siteUrl(env);
+  let siteUser = await findSiteUserByPhone(env, normalized, chatId);
+
   // If this verification was initiated from the website profile (`verify_<token>`), complete website linkage!
   if (before?.kind === 'verify_web_token' && before.verifyToken) {
     const linked = await completePhoneVerificationToken(env, String(before.verifyToken), chatId, normalized, tgUsername);
     if (linked.ok) {
+      siteUser = await findSiteUserByPhone(env, normalized, chatId);
+      const magic = linked.userId ? await createWebMagicLoginToken(env, linked.userId, normalized).catch(() => '') : '';
+      const profUrl = magic ? `${base}/profile?tg_auth=${magic}` : `${base}/profile`;
+      const inlineKb = canUseTelegramInlineUrl(profUrl)
+        ? tg.inlineKeyboard([[{ text: '👤 بازگشت به پروفایل وب‌سایت', url: profUrl }]])
+        : undefined;
       await send(
         env,
         chatId,
         `✅ شماره‌ی ${displayPhone(normalized)} تأیید شد و حساب کاربری شما در وب‌سایت با موفقیت متصل گردید!\n` +
-          '🎁 تمام اشتراک‌های فعال شما همگام‌سازی شدند و اکنون بدون نیاز به وارد کردن کد، در سایت فعال هستند.',
-        { reply_markup: tg.mainMenuKeyboard() }
+          '🎁 تمام اشتراک‌های فعال شما همگام‌سازی شدند و اکنون بدون نیاز به وارد کردن کد، در سایت فعال هستند.' +
+          (!inlineKb ? `\n🔗 ${tg.escapeHtml(profUrl)}` : ''),
+        inlineKb ? { reply_markup: inlineKb } : { reply_markup: tg.mainMenuKeyboard() }
       );
     } else {
       await send(
@@ -212,10 +295,32 @@ const completeVerification = async (env: BotEnv, chatId: string, phone: string, 
         { reply_markup: tg.mainMenuKeyboard() }
       );
     }
-  } else {
-    await send(env, chatId, `✅ شماره‌ی ${displayPhone(normalized)} با موفقیت تأیید شد.`, {
-      reply_markup: tg.mainMenuKeyboard(),
+  } else if (siteUser) {
+    // Existing website account detected! Auto-link & sync immediately!
+    const linkedUser = await linkExistingSiteUserFromTelegram(env, {
+      userId: siteUser.id,
+      phone: normalized,
+      tgUserId: chatId,
+      tgUsername,
     });
+    siteUser = linkedUser || siteUser;
+    const magic = await createWebMagicLoginToken(env, siteUser.id, normalized).catch(() => '');
+    const profUrl = magic ? `${base}/profile?tg_auth=${magic}` : `${base}/profile`;
+    await send(
+      env,
+      chatId,
+      `✅ شماره‌ی ${displayPhone(normalized)} تأیید شد!\n` +
+        `🌐 حساب وب‌سایت شما (<b>${tg.escapeHtml(siteUser.full_name || normalized)}</b>) به‌صورت خودکار شناسایی، متصل و همگام‌سازی گردید.` +
+        (!canUseTelegramInlineUrl(profUrl) ? `\n🔗 پروفایل: ${tg.escapeHtml(profUrl)}` : ''),
+      { reply_markup: tg.mainMenuKeyboard() }
+    );
+    if (canUseTelegramInlineUrl(profUrl)) {
+      await send(env, chatId, '👇 دسترسی سریع به حساب کاربری شما در وب‌سایت:', {
+        reply_markup: tg.inlineKeyboard([[{ text: '👤 ورود یک‌کلیکی به پروفایل من', url: profUrl }]]),
+      });
+    }
+  } else {
+    await send(env, chatId, `✅ شماره‌ی ${displayPhone(normalized)} با موفقیت تأیید شد.`);
   }
 
   // Deliver anything that was waiting for verification.
@@ -226,15 +331,39 @@ const completeVerification = async (env: BotEnv, chatId: string, phone: string, 
     if (seen.has(d.id)) continue;
     seen.add(d.id);
     if (!d.tg_user_id) await updateDelivery(env, d.id, { tg_user_id: chatId });
-    await send(env, chatId, renderDelivery(d, siteUrl(env)));
+    let directUrl = '';
+    if (siteUser?.id && d.product_id) {
+      const m = await createWebMagicLoginToken(env, siteUser.id, normalized).catch(() => '');
+      directUrl = m ? `${base}${botProductPath(d.product_id)}?tg_auth=${m}&open=chat` : `${base}${botProductPath(d.product_id)}?open=chat`;
+    }
+    await send(
+      env,
+      chatId,
+      renderDelivery(d, base, directUrl),
+      directUrl && canUseTelegramInlineUrl(directUrl)
+        ? { reply_markup: tg.inlineKeyboard([[{ text: '🚀 ورود مستقیم به سرویس', url: directUrl }]]) }
+        : {}
+    );
     await updateDelivery(env, d.id, { status: 'delivered', delivered_at: nowIso(), tg_user_id: chatId });
     flushed++;
   }
   if (flushed) await send(env, chatId, `🎁 ${flushed} محصول در انتظار شما بود — همین حالا تحویل داده شد.`);
 
-  // Resume an interrupted purchase (user tapped buy before verifying).
-  if (before?.kind === 'verify_then_buy' && before.productId && before.planId) {
-    await createPurchaseOrder(env, chatId, await getBotUser(env, chatId), before.productId, before.planId);
+  const resumeBuy: ResumeBuyIntent | null =
+    before?.kind === 'verify_then_buy' && before.productId && before.planId
+      ? { productId: String(before.productId), planId: String(before.planId) }
+      : null;
+
+  // If the user is NOT registered on the website yet (and wasn't completing a web token),
+  // collect their website registration info right here in the bot!
+  if (!siteUser && before?.kind !== 'verify_web_token') {
+    await startInBotWebsiteRegistration(env, chatId, normalized, botUserBefore?.first_name || '', resumeBuy);
+    return;
+  }
+
+  // Resume an interrupted purchase (user tapped buy before verifying, and already had a site account).
+  if (resumeBuy) {
+    await createPurchaseOrder(env, chatId, await getBotUser(env, chatId), resumeBuy.productId, resumeBuy.planId);
   }
 };
 
@@ -270,6 +399,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
   if (!product || !plan) return send(env, chatId, '❌ محصول/پلن نامعتبر است.');
 
   const phone = user?.phone || '';
+  const siteUser = phone ? await findSiteUserByPhone(env, phone, chatId) : null;
   const baseToman = plan.amountToman || priceToToman(plan.price);
   const orderId = newId('ord');
 
@@ -279,6 +409,7 @@ const createPurchaseOrder = async (env: BotEnv, chatId: string, user: BotUserRow
     orderId,
     source: 'telegram',
     phone,
+    userId: siteUser?.id || '',
     tgUserId: chatId,
     productId,
     productName: product.name,
@@ -497,16 +628,20 @@ const runReceiptPipeline = async (
 
 /** Grant access + deliver the product + mark everything done. */
 export const fulfillOrder = async (env: BotEnv, order: BotOrderRow, decidedBy: string): Promise<void> => {
+  const siteUser = order.phone ? await findSiteUserByPhone(env, order.phone, order.tg_user_id).catch(() => null) : null;
   const grant = await grantToolAccess(env, {
     phone: order.phone,
+    userId: siteUser?.id,
     productId: order.product_id,
     planId: order.plan_id,
     note: `telegram order ${order.id}`,
     productName: order.product_name,
     priceLabel: fmtToman(order.amount_toman),
     features: botPlan(order.product_id, order.plan_id)?.perks,
+    channelLabel: 'ربات تلگرام',
   });
 
+  const resolvedUserId = siteUser?.id || grant.subscriptionUserId || '';
   const deliveryId = newId('del');
   await insertDelivery(env, {
     id: deliveryId,
@@ -525,14 +660,40 @@ export const fulfillOrder = async (env: BotEnv, order: BotOrderRow, decidedBy: s
     delivered_at: '',
   });
 
-  await send(env, order.tg_user_id, renderDelivery({
-    product_name: order.product_name,
-    plan_name: order.plan_name,
-    code: grant.code,
-    expires_at: grant.expiresAt,
-    product_id: order.product_id,
-    id: deliveryId,
-  }, siteUrl(env)), { reply_markup: tg.mainMenuKeyboard() });
+  const base = siteUrl(env);
+  let directLaunchUrl = order.product_id ? `${base}${botProductPath(order.product_id)}?open=chat` : '';
+  let profileLaunchUrl = `${base}/profile`;
+  if (resolvedUserId) {
+    const magic = await createWebMagicLoginToken(env, resolvedUserId, order.phone).catch(() => '');
+    if (magic) {
+      if (order.product_id) directLaunchUrl = `${base}${botProductPath(order.product_id)}?tg_auth=${magic}&open=chat`;
+      profileLaunchUrl = `${base}/profile?tg_auth=${magic}`;
+    }
+  }
+
+  const deliveryText = renderDelivery(
+    {
+      product_name: order.product_name,
+      plan_name: order.plan_name,
+      code: grant.code,
+      expires_at: order.product_id ? grant.expiresAt : '',
+      product_id: order.product_id,
+      id: deliveryId,
+    },
+    base,
+    directLaunchUrl
+  );
+
+  if (directLaunchUrl && canUseTelegramInlineUrl(directLaunchUrl)) {
+    await send(env, order.tg_user_id, deliveryText, {
+      reply_markup: tg.inlineKeyboard([
+        [{ text: '🚀 ورود مستقیم و استفاده از سرویس', url: directLaunchUrl }],
+        [{ text: '👤 مشاهده در پروفایل من', url: profileLaunchUrl }],
+      ]),
+    });
+  } else {
+    await send(env, order.tg_user_id, deliveryText, { reply_markup: tg.mainMenuKeyboard() });
+  }
 
   await updateDelivery(env, deliveryId, { status: 'delivered', delivered_at: nowIso() });
   const decidedIso = nowIso();
@@ -547,15 +708,16 @@ export const fulfillOrder = async (env: BotEnv, order: BotOrderRow, decidedBy: s
     await env.DB.prepare(
       `UPDATE payment_orders
        SET status = 'paid',
-           paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END,
-           fulfilled_at = CASE WHEN fulfilled_at = '' THEN ?2 ELSE fulfilled_at END,
-           access_code = ?3,
-           access_expires_at = ?4,
-           receipt_ref = CASE WHEN receipt_ref = '' THEN ?5 ELSE receipt_ref END,
-           updated_at = ?6
-       WHERE id = ?7`
+           user_id = CASE WHEN user_id = '' THEN ?1 ELSE user_id END,
+           paid_at = CASE WHEN paid_at = '' THEN ?2 ELSE paid_at END,
+           fulfilled_at = CASE WHEN fulfilled_at = '' THEN ?3 ELSE fulfilled_at END,
+           access_code = ?4,
+           access_expires_at = ?5,
+           receipt_ref = CASE WHEN receipt_ref = '' THEN ?6 ELSE receipt_ref END,
+           updated_at = ?7
+       WHERE id = ?8`
     )
-      .bind(decidedIso, decidedIso, grant.code, grant.expiresAt, order.ref_code || '', decidedIso, order.payment_id)
+      .bind(resolvedUserId, decidedIso, decidedIso, grant.code, grant.expiresAt, order.ref_code || '', decidedIso, order.payment_id)
       .run()
       .catch(() => {});
   }
@@ -564,30 +726,99 @@ export const fulfillOrder = async (env: BotEnv, order: BotOrderRow, decidedBy: s
   await notifyAdmins(env, `✅ سفارش ${decidedBy === 'auto' ? '<b>خودکار</b> تأیید و تحویل شد' : 'تأیید و تحویل شد'}\n${renderOrderCard(order, [
     `کد صادرشده: ${grant.code}`,
     `اعتبار تا: ${fmtDate(grant.expiresAt)}`,
-    grant.subscriptionUserId ? 'اشتراک سایت کاربر هم به‌روز شد ✅' : '⚠️ شماره در سایت ثبت نشده — فقط دسترسی محصول صادر شد',
+    resolvedUserId ? 'اشتراک سایت کاربر هم فعال و همگام شد ✅' : '⚠️ شماره در سایت ثبت نشده — فقط دسترسی محصول صادر شد',
   ])}`);
 };
 
 /* --------------------------------- menus --------------------------------- */
+
+const showWebsiteAccount = async (env: BotEnv, chatId: string) => {
+  const user = await getBotUser(env, chatId);
+  if (!user?.verified_at || !user.phone) {
+    return startVerification(env, chatId);
+  }
+  let siteUser = await findSiteUserByPhone(env, user.phone, chatId);
+  if (!siteUser) {
+    return startInBotWebsiteRegistration(env, chatId, user.phone, user.first_name || '', null);
+  }
+  siteUser = (await linkExistingSiteUserFromTelegram(env, {
+    userId: siteUser.id,
+    phone: user.phone,
+    tgUserId: chatId,
+    tgUsername: user.username || '',
+  })) || siteUser;
+
+  const activeGrants =
+    (await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND status = 'active'`).bind(user.phone).all<any>()).results || [];
+  const activeCount = activeGrants.filter((g) => !g.expires_at || Date.parse(g.expires_at) > Date.now()).length;
+
+  const base = siteUrl(env);
+  const magic = await createWebMagicLoginToken(env, siteUser.id, user.phone).catch(() => '');
+  const profUrl = magic ? `${base}/profile?tg_auth=${magic}` : `${base}/profile`;
+
+  const lines = [
+    '👤 <b>وضعیت حساب کاربری شما در وب‌سایت</b>',
+    '',
+    `• نام و نام خانوادگی: <b>${tg.escapeHtml(siteUser.full_name || '—')}</b>`,
+    `• شماره موبایل (شناسه ورود): <code>${displayPhone(user.phone)}</code> ✅`,
+    `• ایمیل ثبت‌شده: <b>${siteUser.email ? tg.escapeHtml(siteUser.email) : 'ثبت نشده (قابل افزودن در پروفایل)'}</b>`,
+    `• اتصال تلگرام: <b>متصل و همگام ✅</b>`,
+    `• سرویس‌های فعال آماده استفاده: <b>${faDigits(String(activeCount))} سرویس</b>`,
+  ];
+
+  const inlineButtons: tg.TgKeyboardButton[][] = [];
+  if (canUseTelegramInlineUrl(profUrl)) {
+    inlineButtons.push([{ text: '👤 ورود یک‌کلیکی به پروفایل سایت', url: profUrl }]);
+    for (const g of activeGrants) {
+      if (g.expires_at && Date.parse(g.expires_at) < Date.now()) continue;
+      if (!g.product_id || g.product_id === 'all') continue;
+      const p = botProduct(g.product_id);
+      const launchUrl = magic
+        ? `${base}${botProductPath(g.product_id)}?tg_auth=${magic}&open=chat`
+        : `${base}${botProductPath(g.product_id)}?open=chat`;
+      inlineButtons.push([{ text: `🚀 استفاده مستقیم از «${p?.name || g.product_id}»`, url: launchUrl }]);
+    }
+  } else {
+    lines.push('', `🔗 ورود یک‌کلیکی به پروفایل:\n${tg.escapeHtml(profUrl)}`);
+  }
+
+  await send(env, chatId, lines.join('\n'), inlineButtons.length ? { reply_markup: tg.inlineKeyboard(inlineButtons) } : { reply_markup: tg.mainMenuKeyboard() });
+};
 
 const showMySubs = async (env: BotEnv, chatId: string) => {
   const user = await getBotUser(env, chatId);
   if (!user?.verified_at) {
     return send(env, chatId, 'برای دیدن اشتراک‌ها اول شماره خود را تأیید کنید.', { reply_markup: tg.sharePhoneKeyboard() });
   }
+  const siteUser = user.phone ? await findSiteUserByPhone(env, user.phone, chatId).catch(() => null) : null;
   const rows = (await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 ORDER BY created_at DESC LIMIT 10`).bind(user.phone).all<any>()).results || [];
   const deliveries = await deliveriesOf(env, chatId);
   if (!rows.length && !deliveries.length) {
     return send(env, chatId, 'فعلاً اشتراک فعالی ندارید. از «🛒 خرید اشتراک» شروع کنید.');
   }
-  const lines = ['🎁 <b>اشتراک‌ها و محصولات شما</b>', ''];
+
+  const base = siteUrl(env);
+  const magic = siteUser?.id ? await createWebMagicLoginToken(env, siteUser.id, user.phone).catch(() => '') : '';
+  const launchButtons: tg.TgKeyboardButton[][] = [];
+
+  const lines = ['🎁 <b>اشتراک‌ها و سرویس‌های فعال شما</b>', ''];
   for (const r of rows) {
     const product = botProduct(r.product_id);
     const expired = r.expires_at && new Date(r.expires_at).getTime() < Date.now();
     lines.push(
-      `• ${tg.escapeHtml(product?.name || r.product_id)} — ${expired ? 'منقضی ❌' : 'فعال ✅'}`,
-      `  کد: <code>${tg.escapeHtml(r.code)}</code>${r.expires_at ? ` | تا ${fmtDate(r.expires_at)}` : ''}`
+      `• <b>${tg.escapeHtml(product?.name || r.product_id)}</b> — ${expired ? 'منقضی ❌' : 'فعال ✅'}`,
+      `  اعتبار: ${r.expires_at ? `تا ${fmtDate(r.expires_at)}` : 'نامحدود'} | کد پشتیبانی: <code>${tg.escapeHtml(r.code)}</code>`
     );
+    if (!expired && r.product_id && r.product_id !== 'all') {
+      const url = magic
+        ? `${base}${botProductPath(r.product_id)}?tg_auth=${magic}&open=chat`
+        : `${base}${botProductPath(r.product_id)}?open=chat`;
+      if (canUseTelegramInlineUrl(url)) {
+        launchButtons.push([{ text: `🚀 ورود مستقیم به ${product?.name || r.product_id}`, url }]);
+      } else {
+        lines.push(`  🔗 ورود مستقیم: ${tg.escapeHtml(url)}`);
+      }
+    }
   }
   if (deliveries.length) {
     lines.push('', '🚚 <b>آخرین تحویل‌ها:</b>');
@@ -595,7 +826,7 @@ const showMySubs = async (env: BotEnv, chatId: string) => {
       lines.push(`• ${tg.escapeHtml(d.product_name)} — ${d.status === 'delivered' ? '✅' : '⏳'} <code>${tg.escapeHtml(d.id)}</code>`);
     }
   }
-  await send(env, chatId, lines.join('\n'));
+  await send(env, chatId, lines.join('\n'), launchButtons.length ? { reply_markup: tg.inlineKeyboard(launchButtons) } : {});
 };
 
 const showOrders = async (env: BotEnv, chatId: string) => {
@@ -620,10 +851,11 @@ const showOrders = async (env: BotEnv, chatId: string) => {
 const HELP_TEXT = [
   '❓ <b>راهنما</b>',
   '',
-  '📱 <b>احراز هویت شماره</b> — تأیید شماره برای خرید و تحویل محصول',
-  '🛒 <b>خرید اشتراک</b> — انتخاب محصول، کارت‌به‌کارت، ارسال رسید، تأیید و تحویل خودکار',
-  '🎁 <b>اشتراک‌های من</b> — کدهای دسترسی و اعتبارها',
+  '🛒 <b>خرید اشتراک</b> — انتخاب محصول، کارت‌به‌کارت یکتا، تأیید خودکار پیامکی یا رسید و فعال‌سازی آنی',
+  '👤 <b>حساب کاربری سایت</b> — مشاهده وضعیت اکانت وب‌سایت، ثبت‌نام یکپارچه و ورود یک‌کلیکی بدون رمز',
+  '🎁 <b>اشتراک‌های من</b> — سرویس‌های فعال و دکمه ورود مستقیم به هر سرویس',
   '📦 <b>سفارش‌ها</b> — پیگیری وضعیت سفارش‌ها',
+  '📱 <b>احراز هویت شماره</b> — تأیید شماره موبایل و همگام‌سازی خودکار با سایت',
   '💬 <b>پشتیبانی</b> — ارتباط مستقیم با تیم',
 ].join('\n');
 
@@ -640,10 +872,16 @@ const onCallback = async (env: BotEnv, chatId: string, messageId: number, cbId: 
     await answer();
     const [, productId = '', planId = ''] = data.split(':');
     const user = await getBotUser(env, chatId);
-    if (!user?.verified_at) {
+    if (!user?.verified_at || !user.phone) {
       await send(env, chatId, 'برای خرید اول شماره خود را تأیید کنید:', { reply_markup: tg.sharePhoneKeyboard() });
       await upsertBotUser(env, chatId, { pending: { kind: 'verify_then_buy', productId, planId } });
       return;
+    }
+    // Ensure the buyer has a synced website account before creating the invoice so
+    // post-purchase auto-activation works straight inside their website profile!
+    const siteUser = await findSiteUserByPhone(env, user.phone, chatId);
+    if (!siteUser) {
+      return startInBotWebsiteRegistration(env, chatId, user.phone, user.first_name || '', { productId, planId });
     }
     return createPurchaseOrder(env, chatId, user, productId, planId);
   }
@@ -761,8 +999,15 @@ const onCallback = async (env: BotEnv, chatId: string, messageId: number, cbId: 
   return answer();
 };
 
-const onText = async (env: BotEnv, chatId: string, text: string, from: { first_name?: string; username?: string }) => {
-  const t = faDigits(String(text || '')).trim();
+const onText = async (
+  env: BotEnv,
+  chatId: string,
+  text: string,
+  from: { first_name?: string; username?: string },
+  messageId = 0
+) => {
+  const rawText = String(text || '').trim();
+  const t = faDigits(rawText).trim();
   const user = await getBotUser(env, chatId);
   const pending = getPending<any>(user);
 
@@ -860,6 +1105,162 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
     );
   }
 
+  // ---- In-Bot Website Account Registration Wizard (Steps 1 -> 2 -> 3) ----
+  if (pending?.kind === 'web_reg_name' && t !== '❌ انصراف' && !t.startsWith('/')) {
+    let candidateName = rawText;
+    if (pending.suggestedName && rawText === `✅ ثبت با نام «${pending.suggestedName}»`) {
+      candidateName = String(pending.suggestedName);
+    }
+    const nameCheck = validateFullName(candidateName);
+    if (!nameCheck.ok) {
+      return send(env, chatId, `⚠️ ${tg.escapeHtml(nameCheck.error)}\nلطفاً نام و نام خانوادگی معتبر (حداقل ۲ حرف) ارسال کنید:`);
+    }
+    await upsertBotUser(env, chatId, {
+      pending: {
+        kind: 'web_reg_email',
+        phone: pending.phone,
+        fullName: nameCheck.id,
+        resumeBuy: pending.resumeBuy || null,
+      },
+    });
+    return send(
+      env,
+      chatId,
+      [
+        `✅ نام ثبت شد: <b>${tg.escapeHtml(nameCheck.id)}</b>`,
+        '',
+        '📧 <b>گام ۲ از ۳ — آدرس ایمیل خود را وارد کنید:</b>',
+        '(یا اگر تمایل به ثبت ایمیل ندارید، دکمه «⏭ رد شدن (ثبت بدون ایمیل)» را بزنید)',
+      ].join('\n'),
+      {
+        reply_markup: {
+          keyboard: [[{ text: '⏭ رد شدن (ثبت بدون ایمیل)' }], [{ text: '❌ انصراف' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      }
+    );
+  }
+
+  if (pending?.kind === 'web_reg_email' && t !== '❌ انصراف' && !t.startsWith('/')) {
+    let chosenEmail = '';
+    if (t !== '⏭ رد شدن (ثبت بدون ایمیل)' && t !== 'رد شدن') {
+      const candidateEmail = t.toLowerCase();
+      if (!isValidEmail(candidateEmail)) {
+        return send(
+          env,
+          chatId,
+          '⚠️ فرمت ایمیل صحیح نیست (مثال: name@gmail.com).\nایمیل معتبر وارد کنید یا دکمه «⏭ رد شدن (ثبت بدون ایمیل)» را بزنید:'
+        );
+      }
+      await ensurePaymentTables(env);
+      const clash = await env.DB.prepare(`SELECT id FROM users WHERE email = ?1 OR login_id = ?2 LIMIT 1`)
+        .bind(candidateEmail, candidateEmail)
+        .first<{ id: string }>()
+        .catch(() => null);
+      if (clash) {
+        return send(
+          env,
+          chatId,
+          '⚠️ این ایمیل قبلاً روی حساب دیگری در وب‌سایت ثبت شده است.\nلطفاً ایمیل دیگری وارد کنید یا دکمه «⏭ رد شدن (ثبت بدون ایمیل)» را بزنید:'
+        );
+      }
+      chosenEmail = candidateEmail;
+    }
+
+    await upsertBotUser(env, chatId, {
+      pending: {
+        kind: 'web_reg_password',
+        phone: pending.phone,
+        fullName: pending.fullName,
+        email: chosenEmail,
+        resumeBuy: pending.resumeBuy || null,
+      },
+    });
+    return send(
+      env,
+      chatId,
+      [
+        chosenEmail ? `✅ ایمیل ثبت شد: <code>${tg.escapeHtml(chosenEmail)}</code>` : '✅ ثبت‌نام بدون ایمیل (قابل افزودن در آینده از پروفایل)',
+        '',
+        '🔐 <b>گام ۳ از ۳ — یک رمز عبور دلخواه (حداقل ۶ کاراکتر) برای ورود به سایت انتخاب و ارسال کنید:</b>',
+        '🛡 پیام حاوی رمز عبور شما بلافاصله پس از ثبت، برای حفظ امنیت از صفحه چت پاک می‌شود (یا دکمه تولید خودکار رمز را بزنید).',
+      ].join('\n'),
+      {
+        reply_markup: {
+          keyboard: [[{ text: '🎲 تولید رمز امن خودکار' }], [{ text: '❌ انصراف' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      }
+    );
+  }
+
+  if (pending?.kind === 'web_reg_password' && t !== '❌ انصراف' && !t.startsWith('/')) {
+    const autoGenerated = rawText === '🎲 تولید رمز امن خودکار';
+    const chosenPassword = autoGenerated ? generateStrongPassword() : rawText;
+    if (chosenPassword.length < 6) {
+      return send(env, chatId, '⚠️ رمز عبور باید حداقل ۶ کاراکتر باشد. لطفاً رمز قوی‌تری وارد کنید:');
+    }
+
+    // Delete the user's plaintext password message from Telegram chat immediately for privacy!
+    if (!autoGenerated && messageId > 0 && env.TELEGRAM_BOT_TOKEN) {
+      await tg.deleteMessage(env.TELEGRAM_BOT_TOKEN, chatId, messageId).catch(() => {});
+    }
+
+    const reg = await registerSiteUserFromTelegram(env, {
+      tgUserId: chatId,
+      tgUsername: from.username || user?.username || '',
+      phone: pending.phone,
+      fullName: pending.fullName,
+      email: pending.email || '',
+      password: chosenPassword,
+    });
+
+    if (!reg.ok || !reg.user) {
+      return send(env, chatId, `❌ خطا در ایجاد حساب: ${tg.escapeHtml(reg.error || 'خطای ناشناخته')}`);
+    }
+
+    await upsertBotUser(env, chatId, { pending: null });
+    await logEvent(env, 'site_user_registered', `tg=${chatId} user=${reg.user.id} phone=${pending.phone}`);
+
+    const base = siteUrl(env);
+    const magic = await createWebMagicLoginToken(env, reg.user.id, pending.phone).catch(() => '');
+    const profUrl = magic ? `${base}/profile?tg_auth=${magic}` : `${base}/profile`;
+
+    const summaryLines = [
+      '🎉 <b>حساب کاربری شما در وب‌سایت با موفقیت ساخته و همگام شد!</b>',
+      '',
+      `👤 نام: <b>${tg.escapeHtml(reg.user.full_name)}</b>`,
+      `📱 شناسه ورود به سایت: <code>${tg.escapeHtml(pending.phone)}</code>`,
+      reg.user.email ? `📧 ایمیل: <code>${tg.escapeHtml(reg.user.email)}</code>` : '',
+      autoGenerated
+        ? `🔑 رمز عبور اختصاصی شما: <code>${tg.escapeHtml(chosenPassword)}</code>\n(این رمز را نزد خود نگه دارید؛ از تنظیمات پروفایل نیز قابل تغییر است)`
+        : '🛡 رمز عبور انتخابی شما ثبت شد (و پیام آن برای امنیت شما از چت حذف گردید).',
+      '',
+      '✨ از این پس هر اشتراکی که بخرید، <b>به‌صورت خودکار داخل پروفایل سایت شما فعال می‌شود</b> و بدون نیاز به وارد کردن کد می‌توانید از سرویس استفاده کنید.',
+      !canUseTelegramInlineUrl(profUrl) ? `🔗 ورود یک‌کلیکی به پروفایل:\n${tg.escapeHtml(profUrl)}` : '',
+    ].filter(Boolean);
+
+    await send(env, chatId, summaryLines.join('\n'), { reply_markup: tg.mainMenuKeyboard() });
+    if (canUseTelegramInlineUrl(profUrl)) {
+      await send(env, chatId, '👇 مشاهده حساب کاربری در سایت با یک کلیک (بدون نیاز به تایپ رمز):', {
+        reply_markup: tg.inlineKeyboard([[{ text: '👤 ورود یک‌کلیکی به پروفایل من در سایت', url: profUrl }]]),
+      });
+    }
+
+    if (pending.resumeBuy?.productId && pending.resumeBuy?.planId) {
+      await createPurchaseOrder(
+        env,
+        chatId,
+        await getBotUser(env, chatId),
+        String(pending.resumeBuy.productId),
+        String(pending.resumeBuy.planId)
+      );
+    }
+    return;
+  }
+
   // receipt follow-up: payment details text while an order awaits the receipt
   if (pending?.kind === 'awaiting_receipt' && /\d/.test(t)) {
     const order = await getOrder(env, pending.orderId || '');
@@ -925,6 +1326,7 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
   }
   if (t === '/help' || t === '❓ راهنما') return send(env, chatId, HELP_TEXT);
   if (t === '/verify' || t === '📱 احراز هویت شماره') return startVerification(env, chatId);
+  if (t === '/account' || t === '/profile' || t === '👤 حساب کاربری سایت') return showWebsiteAccount(env, chatId);
   if (t === '/buy' || t === '🛒 خرید اشتراک') return showProducts(env, chatId);
   if (t === '/mysubs' || t === '🎁 اشتراک‌های من') return showMySubs(env, chatId);
   if (t === '/orders' || t === '📦 سفارش‌ها') return showOrders(env, chatId);
@@ -1058,7 +1460,7 @@ export const handleBotUpdate = async (rawEnv: BotEnv, update: any): Promise<void
 
   const text = msg.text || msg.caption || '';
   if (!text) return;
-  return onText(env, chatId, text, from);
+  return onText(env, chatId, text, from, Number(msg.message_id || 0));
 };
 
 /**
@@ -1103,22 +1505,33 @@ export const deliverViaTelegram = async (
   });
 
   if (tgUserId && env.TELEGRAM_BOT_TOKEN) {
-    await send(
-      env,
-      tgUserId,
-      renderDelivery(
-        {
-          id: deliveryId,
-          product_id: args.productId,
-          product_name: args.productName,
-          plan_name: args.planName || '',
-          code: args.code,
-          expires_at: args.expiresAt,
-        },
-        siteUrl(env)
-      ),
-      { reply_markup: tg.mainMenuKeyboard() }
+    const base = siteUrl(env);
+    const siteUser = phone ? await findSiteUserByPhone(env, phone, tgUserId).catch(() => null) : null;
+    const magic = siteUser?.id ? await createWebMagicLoginToken(env, siteUser.id, phone).catch(() => '') : '';
+    const directUrl = args.productId
+      ? magic
+        ? `${base}${botProductPath(args.productId)}?tg_auth=${magic}&open=chat`
+        : `${base}${botProductPath(args.productId)}?open=chat`
+      : '';
+    const textMsg = renderDelivery(
+      {
+        id: deliveryId,
+        product_id: args.productId,
+        product_name: args.productName,
+        plan_name: args.planName || '',
+        code: args.code,
+        expires_at: args.expiresAt,
+      },
+      base,
+      directUrl
     );
+    if (directUrl && canUseTelegramInlineUrl(directUrl)) {
+      await send(env, tgUserId, textMsg, {
+        reply_markup: tg.inlineKeyboard([[{ text: '🚀 ورود مستقیم به سرویس', url: directUrl }]]),
+      });
+    } else {
+      await send(env, tgUserId, textMsg, { reply_markup: tg.mainMenuKeyboard() });
+    }
     await updateDelivery(env, deliveryId, { status: 'delivered', delivered_at: nowIso() });
     return { status: 'delivered', deliveryId };
   }

@@ -17,6 +17,7 @@ import {
   createGatewayPayment,
   createPhoneVerificationToken,
   ensurePaymentTables,
+  processIncomingBankSms,
   verifyPayexaSignature,
 } from '../lib/payment/gateway';
 import { handlePaymentRequest } from '../lib/payment/http';
@@ -1034,6 +1035,348 @@ const eq = (a: unknown, b: unknown, msg = '') => {
         .prepare(`SELECT COUNT(*) AS c FROM payment_orders WHERE order_id LIKE 'selftest-%'`)
         .get() as any;
       eq(Number(leftoverSelfTest?.c || 0), 0, 'synthetic self-test order cleaned up from payment_orders');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  /* ---------------- 10. Full Telegram In-Bot Registration, Profile Sync & Direct Service Launch ---------------- */
+  await test('in-bot 3-step website registration, password chat deletion, post-purchase auto-activation & 1-click launch', async () => {
+    const userApiPath = ['..', 'functions', 'api', 'user.ts'].join('/');
+    const toolsApiPath = ['..', 'functions', 'api', 'tools.ts'].join('/');
+    const { onRequestGet: userGet, onRequestPost: userPost }: any = await import(userApiPath);
+    const { onRequestPost: toolsPost }: any = await import(toolsApiPath);
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(readFileSync('schema.sql', 'utf8'));
+    const env: any = {
+      DB: makeD1(sqlite),
+      TELEGRAM_BOT_TOKEN: 'TEST_BOT_TOKEN',
+      TELEGRAM_BOT_USERNAME: 'OmidAdliBot',
+      TELEGRAM_WEBHOOK_SECRET: 'bot-secret-123',
+      AUTH_SECRET: 'test-user-secret',
+      TOOL_TOKEN_SECRET: 'test-tool-secret',
+      SITE_URL: 'https://omidadli.site',
+    };
+    await ensurePaymentTables(env);
+
+    // Seed merchant BluBank card + active SMS device
+    sqlite
+      .prepare(
+        `INSERT INTO payment_cards (id, card_number, iban, holder_name, bank_name, is_active, priority, created_at, updated_at)
+         VALUES ('c_blu', '6219861734569008', '', 'امید عدلی', 'بلوبانک', 1, 1, '2026-10-28T00:00:00.000Z', '2026-10-28T00:00:00.000Z')`
+      )
+      .run();
+    sqlite
+      .prepare(
+        `INSERT INTO payment_devices (id, name, device_serial, token_hash, token_mask, is_active, last_seen_at, created_at)
+         VALUES ('d_blu', 'iPhone X Blu', 'ios-x', 'hash', 'pd_***', 1, ?1, '2026-10-28T00:00:00.000Z')`
+      )
+      .run(new Date().toISOString());
+
+    const tgCalls: Array<{ method: string; body: any }> = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('api.telegram.org')) {
+        const method = url.split('/').pop() || '';
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        tgCalls.push({ method, body });
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 900 } }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as any;
+
+    const extractSessionCookie = (res: Response): string => {
+      const sc = res.headers.get('Set-Cookie') || '';
+      const m = sc.match(/nd_session=([^;]+)/);
+      return m ? `nd_session=${m[1]}` : '';
+    };
+
+    try {
+      // 1) Unregistered customer clicks plan:business-therapist:pro in Telegram
+      await handleBotUpdate(env, {
+        update_id: 101,
+        callback_query: {
+          id: 'cb1',
+          from: { id: 8801, first_name: 'Sara', username: 'sara_m' },
+          message: { message_id: 100, chat: { id: 8801, type: 'private' } },
+          data: 'plan:business-therapist:pro',
+        },
+      });
+
+      // 2) Customer shares verified phone 09128881122 -> Bot detects NO website account -> starts 3-step registration!
+      await handleBotUpdate(env, {
+        update_id: 102,
+        message: {
+          message_id: 102,
+          from: { id: 8801, first_name: 'Sara', username: 'sara_m' },
+          chat: { id: 8801, type: 'private' },
+          contact: { phone_number: '+989128881122', user_id: 8801 },
+        },
+      });
+      const pendingStep1 = sqlite.prepare(`SELECT pending_json FROM bot_users WHERE tg_user_id = '8801'`).get() as any;
+      eq(JSON.parse(pendingStep1.pending_json).kind, 'web_reg_name', 'unregistered bot user enters step 1 (full name)');
+
+      // Step 1: Full Name
+      await handleBotUpdate(env, {
+        update_id: 103,
+        message: {
+          message_id: 103,
+          from: { id: 8801, first_name: 'Sara', username: 'sara_m' },
+          chat: { id: 8801, type: 'private' },
+          text: 'سارا محمدی',
+        },
+      });
+      const pendingStep2 = sqlite.prepare(`SELECT pending_json FROM bot_users WHERE tg_user_id = '8801'`).get() as any;
+      eq(JSON.parse(pendingStep2.pending_json).kind, 'web_reg_email', 'wizard advances to step 2 (email)');
+
+      // Step 2: Email
+      await handleBotUpdate(env, {
+        update_id: 104,
+        message: {
+          message_id: 104,
+          from: { id: 8801, first_name: 'Sara', username: 'sara_m' },
+          chat: { id: 8801, type: 'private' },
+          text: 'Sara@Example.com',
+        },
+      });
+      const pendingStep3 = sqlite.prepare(`SELECT pending_json FROM bot_users WHERE tg_user_id = '8801'`).get() as any;
+      eq(JSON.parse(pendingStep3.pending_json).kind, 'web_reg_password', 'wizard advances to step 3 (password)');
+
+      // Step 3: Password -> deletes password message, creates website user, AND auto-resumes pending purchase!
+      await handleBotUpdate(env, {
+        update_id: 105,
+        message: {
+          message_id: 105,
+          from: { id: 8801, first_name: 'Sara', username: 'sara_m' },
+          chat: { id: 8801, type: 'private' },
+          text: 'SaraPass2026!',
+        },
+      });
+
+      const deletedMsg = tgCalls.find((c) => c.method === 'deleteMessage' && c.body.message_id === 105);
+      ok(Boolean(deletedMsg), 'bot immediately deleted plaintext password message from Telegram chat');
+
+      const saraDb = sqlite.prepare(`SELECT * FROM users WHERE phone = '09128881122'`).get() as any;
+      ok(Boolean(saraDb?.id), 'website user record created in users table');
+      eq(saraDb.full_name, 'سارا محمدی');
+      eq(saraDb.email, 'sara@example.com');
+      eq(saraDb.tg_user_id, '8801');
+      eq(saraDb.tg_username, 'sara_m');
+      ok(String(saraDb.phone_verified_at || '').length > 0, 'phone_verified_at set automatically');
+
+      const fakeStarter = sqlite
+        .prepare(`SELECT COUNT(*) AS c FROM user_subscriptions WHERE user_id = ? AND product_id = ''`)
+        .get(saraDb.id) as any;
+      eq(Number(fakeStarter.c), 0, 'zero fake starter subscriptions inserted');
+
+      // Verify purchase invoice was automatically resumed & linked to saraDb.id!
+      const pendingOrder = sqlite
+        .prepare(`SELECT * FROM payment_orders WHERE tg_user_id = '8801' AND status = 'pending'`)
+        .get() as any;
+      ok(Boolean(pendingOrder?.id), 'bot automatically resumed purchase and created gateway invoice');
+      eq(pendingOrder.user_id, saraDb.id, 'gateway invoice linked to newly created website user_id');
+
+      // 3) Customer can log into website /api/user?action=login with BOTH phone and email + password!
+      const loginRes = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: '09128881122', password: 'SaraPass2026!' }),
+        }),
+        env,
+      });
+      eq(loginRes.status, 200, 'website login succeeds with password created inside Telegram bot');
+      const saraCookie = extractSessionCookie(loginRes);
+      ok(saraCookie.startsWith('nd_session='), 'website issued HttpOnly nd_session cookie');
+      const loginJson: any = await loginRes.json();
+      eq(loginJson.botUsername, 'OmidAdliBot', 'API exposes botUsername for profile deep-links');
+      eq(loginJson.profile.phoneVerified, true);
+
+      // 4) BluBank SMS confirms Sara's payment -> auto-activates subscription in website profile & sends 1-click launch URL!
+      tgCalls.length = 0;
+      const smsOut = await processIncomingBankSms(env, 'd_blu', {
+        sender: 'BluBank',
+        body: `بلوبانک\nواریز به حساب\nمبلغ: ${pendingOrder.payable_amount_rial.toLocaleString('en-US')} ریال\nمانده: 50,000,000 ریال`,
+      });
+      eq(smsOut.status, 'matched', 'BluBank SMS matched Sara order');
+
+      // Inspect Telegram delivery message for 1-click ?tg_auth=ml_...&open=chat button
+      const deliverySend = tgCalls.find(
+        (c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes('tg_auth=ml_')
+      );
+      ok(Boolean(deliverySend), 'Telegram delivery includes 1-click ?tg_auth= launch button');
+      const markupStr = JSON.stringify(deliverySend!.body.reply_markup);
+      const mlMatch = markupStr.match(/tg_auth=(ml_[a-f0-9]+)/);
+      ok(Boolean(mlMatch?.[1]), 'magic login token ml_... extracted from button URL');
+      ok(markupStr.includes('open=chat'), 'direct launch button includes open=chat parameter');
+
+      // 5) Redeem 1-click magic link via POST /api/user?action=tg_token_login (+ test 5-min iOS WebView -> Safari handoff!)
+      const magicToken = mlMatch![1];
+      const redeem1 = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=tg_token_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: magicToken }),
+        }),
+        env,
+      });
+      eq(redeem1.status, 200, 'first 1-click magic token redemption succeeds');
+      const redeem1Json: any = await redeem1.json();
+      eq(redeem1Json.subscriptions.length, 1, 'active subscription immediately returned on magic login');
+      eq(redeem1Json.subscriptions[0].productId, 'business-therapist');
+      eq(redeem1Json.subscriptions[0].status, 'active');
+      eq(redeem1Json.orders.length, 1, 'paid order history returned in user profile payload');
+      eq(redeem1Json.orders[0].status, 'paid');
+
+      const redeem2 = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=tg_token_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: magicToken }),
+        }),
+        env,
+      });
+      eq(redeem2.status, 200, 'second redemption within 5-min iOS WebView -> Safari handoff grace succeeds');
+
+      // 6) Direct AI Tool Launch (POST /api/tools autoUnlock) -> unlocks immediately with ZERO manual access code!
+      const unlockSara = await toolsPost({
+        request: new Request('https://omidadli.site/api/tools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: saraCookie },
+          body: JSON.stringify({ action: 'autoUnlock', productId: 'business-therapist', deviceId: 'sara-iphone-x' }),
+        }),
+        env,
+      });
+      const unlockSaraJson: any = await unlockSara.json();
+      eq(unlockSaraJson.ok, true);
+      eq(unlockSaraJson.unlocked, true, 'verified subscriber auto-unlocks AI tool directly without entering code');
+      ok(String(unlockSaraJson.token || '').length > 20, 'signed tool token issued automatically');
+
+      // 7) Profile Settings: edit email & change password
+      const updRes = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: saraCookie },
+          body: JSON.stringify({ fullName: 'سارا محمدی (ویرایش)', email: 'sara.updated@example.com', bio: 'کارآفرین دیجیتال' }),
+        }),
+        env,
+      });
+      eq(updRes.status, 200);
+      const updJson: any = await updRes.json();
+      eq(updJson.profile.email, 'sara.updated@example.com', 'profile email edit saved cleanly');
+
+      const pwdRes = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=change_password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: saraCookie },
+          body: JSON.stringify({ currentPassword: 'SaraPass2026!', newPassword: 'NewStrongPass99!' }),
+        }),
+        env,
+      });
+      eq(pwdRes.status, 200, 'password change succeeded');
+      const oldLoginFail = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: 'sara.updated@example.com', password: 'SaraPass2026!' }),
+        }),
+        env,
+      });
+      eq(oldLoginFail.status, 401, 'old password no longer accepted');
+      const newLoginOk = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loginId: 'sara.updated@example.com', password: 'NewStrongPass99!' }),
+        }),
+        env,
+      });
+      eq(newLoginOk.status, 200, 'login with updated email + new password succeeds');
+
+      // 8) Direct Website Purchase by Email-Only User (Path B autoUnlock without Telegram!)
+      const regAli = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: 'علی رضایی', email: 'ali@web.ir', password: 'AliWebPassword1!' }),
+        }),
+        env,
+      });
+      eq(regAli.status, 200);
+      const aliCookie = extractSessionCookie(regAli);
+      const aliJson: any = await regAli.json();
+      eq(aliJson.subscriptions.length, 0, 'new website user starts with 0 fake subscriptions');
+
+      const aliPay = await createGatewayPayment(env, {
+        amountRial: 4_900_000,
+        orderId: 'ali-web-ord-1',
+        source: 'website',
+        userId: aliJson.profile.id,
+        productId: 'growth-path',
+        productName: 'مسیر رشد',
+        planId: 'basic',
+        planName: 'پلن پایه',
+      });
+      ok(aliPay.ok, 'website order created for email-only user');
+      if (aliPay.ok) {
+        const aliSms = await processIncomingBankSms(env, 'd_blu', {
+          sender: 'BluBank',
+          body: `بلوبانک\nواریز به حساب\nمبلغ: ${aliPay.data.payable_amount.toLocaleString('en-US')} ریال`,
+        });
+        eq(aliSms.status, 'matched', 'BluBank SMS matched Ali website order');
+      }
+
+      const aliProfileRes = await userGet({
+        request: new Request('https://omidadli.site/api/user', { headers: { Cookie: aliCookie } }),
+        env,
+      });
+      const aliProfile: any = await aliProfileRes.json();
+      eq(aliProfile.subscriptions.length, 1, 'email-only website buyer immediately gets active subscription in /profile');
+      eq(aliProfile.subscriptions[0].productId, 'growth-path');
+
+      const unlockAli = await toolsPost({
+        request: new Request('https://omidadli.site/api/tools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: aliCookie },
+          body: JSON.stringify({ action: 'autoUnlock', productId: 'growth-path', deviceId: 'ali-browser' }),
+        }),
+        env,
+      });
+      const unlockAliJson: any = await unlockAli.json();
+      eq(unlockAliJson.unlocked, true, 'Path B autoUnlock unlocks AI service for authenticated website buyer without Telegram');
+
+      // 9) Standalone telegram-bot bridge (/api/user?action=bot_sync_user) check + register
+      const bridgeCheck = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=bot_sync_user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Bot-Webhook-Secret': 'bot-secret-123' },
+          body: JSON.stringify({ op: 'check', phone: '09351112233', tgUserId: '9901' }),
+        }),
+        env,
+      });
+      const bridgeCheckJson: any = await bridgeCheck.json();
+      eq(bridgeCheckJson.exists, false, 'standalone bot bridge reports unregistered user');
+
+      const bridgeReg = await userPost({
+        request: new Request('https://omidadli.site/api/user?action=bot_sync_user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Bot-Webhook-Secret': 'bot-secret-123' },
+          body: JSON.stringify({
+            op: 'register',
+            phone: '09351112233',
+            tgUserId: '9901',
+            tgUsername: 'mina_tg',
+            fullName: 'مینا کریمی',
+            email: '',
+            password: 'MinaPassword88',
+          }),
+        }),
+        env,
+      });
+      const bridgeRegJson: any = await bridgeReg.json();
+      eq(bridgeRegJson.ok, true, 'standalone bot bridge registered website user');
+      ok(String(bridgeRegJson.magicToken || '').startsWith('ml_'), 'standalone bot bridge returned magic login token');
     } finally {
       globalThis.fetch = origFetch;
     }

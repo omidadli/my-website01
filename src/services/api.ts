@@ -657,6 +657,8 @@ export const api = {
     subscriptions?: any[];
     consultations?: any[];
     activities?: any[];
+    orders?: any[];
+    botUsername?: string;
     error?: string;
   }> {
     try {
@@ -670,7 +672,16 @@ export const api = {
       const j = await r.json().catch(() => ({}));
       if (r.ok && j?.ok) {
         try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
-        return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+        return {
+          ok: true,
+          profile: j.profile,
+          savedArticles: j.savedArticles,
+          subscriptions: j.subscriptions,
+          consultations: j.consultations,
+          activities: j.activities,
+          orders: j.orders || [],
+          botUsername: j.botUsername || '',
+        };
       }
       if (r.status === 401) {
         // The session really is gone — drop the cache so the UI can show the login form.
@@ -736,9 +747,48 @@ export const api = {
       if (r.ok && j?.ok) {
         if (j.profile && Array.isArray(j.savedArticles)) {
           try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
-          return { ok: true, profile: j.profile, savedArticles: j.savedArticles, subscriptions: j.subscriptions, consultations: j.consultations, activities: j.activities };
+          return {
+            ok: true,
+            profile: j.profile,
+            savedArticles: j.savedArticles,
+            subscriptions: j.subscriptions,
+            consultations: j.consultations,
+            activities: j.activities,
+            orders: j.orders || [],
+          };
         }
         return await this.getMe();
+      }
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userTokenLogin(token: string) {
+    try {
+      const r = await fetch('/api/user?action=tg_token_login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ token }),
+      });
+      const ct = r.headers.get('Content-Type') || '';
+      if (!ct.includes('application/json')) {
+        return { ok: false, error: 'network' };
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) {
+        try { localStorage.setItem(USER_DATA_CACHE_KEY, JSON.stringify(j)); } catch {}
+        return {
+          ok: true,
+          profile: j.profile,
+          savedArticles: j.savedArticles || [],
+          subscriptions: j.subscriptions || [],
+          consultations: j.consultations || [],
+          activities: j.activities || [],
+          orders: j.orders || [],
+        };
       }
       return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
@@ -754,7 +804,7 @@ export const api = {
     return { ok: true };
   },
 
-  async userUpdateProfile(payload: Partial<{ fullName: string; phone: string; bio: string }>) {
+  async userUpdateProfile(payload: Partial<{ fullName: string; email: string; phone: string; bio: string }>) {
     try {
       const r = await fetch('/api/user?action=update', {
         method: 'POST',
@@ -764,6 +814,22 @@ export const api = {
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j?.ok) return { ok: true, profile: j.profile };
+      return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
+    } catch {
+      return { ok: false, error: 'اتصال به سرور برقرار نشد.' };
+    }
+  },
+
+  async userChangePassword(payload: { currentPassword?: string; newPassword: string }) {
+    try {
+      const r = await fetch('/api/user?action=change_password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.ok) return { ok: true };
       return { ok: false, error: j?.error || `خطای سرور (${r.status})` };
     } catch {
       return { ok: false, error: 'اتصال به سرور برقرار نشد.' };

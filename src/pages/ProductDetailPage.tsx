@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Sparkles,
@@ -16,6 +16,7 @@ import {
   Crown,
 } from 'lucide-react';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { Theme, Page } from '../types';
 import { Head } from '../components/nd/Kit';
 import { ToolChatModal } from '../components/tools/ToolChatModal';
@@ -59,6 +60,29 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
   const [checkoutPlan, setCheckoutPlan] = useState<ToolPlan | null>(null);
   const [openFaqIdx, setOpenFaqIdx] = useState<number | null>(0);
   const [selectedPlan, setSelectedPlan] = useState<string>(plans.find((p) => p.popular)?.id || plans[0]?.id || '');
+
+  const { subscriptions, loading: authLoading } = useUser();
+  const activeUserSub = subscriptions.find(
+    (s) =>
+      s.status === 'active' &&
+      (s.productId === toolMeta.id || s.productId === productId || s.productId === 'all') &&
+      (!s.endDate || Date.parse(s.endDate) > Date.now())
+  );
+
+  // Direct launch support (`?open=chat`) from Profile Dashboard, Post-Payment Page, or Telegram 1-Click Link
+  useEffect(() => {
+    if (authLoading || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('open') === 'chat') {
+      params.delete('open');
+      const remaining = params.toString();
+      const cleanUrl = window.location.pathname + (remaining ? `?${remaining}` : '') + window.location.hash;
+      try {
+        window.history.replaceState(null, '', cleanUrl);
+      } catch {}
+      setIsChatOpen(true);
+    }
+  }, [authLoading, productId]);
 
   const selPlan = plans.find((p) => p.id === selectedPlan);
   const purchaseMsg = `سلام امید 👋 می‌خوام پلنِ «${selPlan?.name || ''}» از ابزار «${toolMeta.name}» رو فعال کنم${
@@ -110,18 +134,31 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
 
         {/* Primary CTA button */}
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <button
-            onClick={() => setIsChatOpen(true)}
-            className="nd-btn nd-btn-accent px-8 py-3.5 text-sm font-black flex items-center justify-center gap-2 shadow-lg cursor-pointer"
-          >
-            <MessageCircle className="w-4 h-4" />
-            <span>شروع تست گفتگو با ۵۰۰ سکه هدیه</span>
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          {activeUserSub ? (
+            <button
+              onClick={() => setIsChatOpen(true)}
+              className="px-8 py-3.5 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 hover:opacity-95 transition cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>ورود مستقیم به سرویس فعال شما ({activeUserSub.planName || 'اشتراک فعال'})</span>
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={() => setIsChatOpen(true)}
+              className="nd-btn nd-btn-accent px-8 py-3.5 text-sm font-black flex items-center justify-center gap-2 shadow-lg cursor-pointer"
+            >
+              <MessageCircle className="w-4 h-4" />
+              <span>شروع تست گفتگو با ۵۰۰ سکه هدیه</span>
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         <p className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
-          بدون نیاز به ثبت کارت بانکی · کسر ۱۵۰ سکه برای هر تحلیل · فعال‌سازی آنی
+          {activeUserSub
+            ? 'اشتراک شما در این سرویس فعال است و بدون نیاز به کد دسترسی مستقیماً متصل می‌شوید'
+            : 'بدون نیاز به ثبت کارت بانکی · کسر ۱۵۰ سکه برای هر تحلیل · فعال‌سازی آنی'}
         </p>
       </section>
 
