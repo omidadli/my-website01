@@ -60,14 +60,19 @@ import {
 import { grantToolAccess } from './grant';
 import * as tg from './tgApi';
 import {
+  cleanCardNumber,
   completePhoneVerificationToken,
   createGatewayPayment,
   ensurePaymentTables,
   formatCardNumber,
   fulfillGatewayPayment,
+  hydratePaymentEnv,
+  isReceiptRefUsedAnywhere,
+  processIncomingBankSms,
   sweepExpiredPayments,
   type PaymentOrderRow,
 } from '../payment/gateway';
+import { parseIranianBankSms } from '../payment/smsParser';
 
 const loadBotCmsData = async (env: BotEnv): Promise<any> => {
   try {
@@ -376,11 +381,15 @@ const receiptReasonFa: Record<string, string> = {
   amount_mismatch: 'مبلغ واریزی با مبلغ دقیق اعلام‌شده برای این سفارش مطابقت ندارد.',
   recipient_name_missing: 'نام صاحب حساب مقصد در رسید خوانا نیست.',
   recipient_name_mismatch: 'نام صاحب حساب مقصد با نام مورد انتظار برای دریافت وجه مطابقت ندارد.',
+  card_last4_mismatch: '۴ رقم آخر کارت مقصد در رسید با کارت معرفی‌شده برای درگاه همخوانی ندارد.',
   date_missing: 'تاریخ تراکنش در رسید مشخص نیست.',
   date_unreadable: 'تاریخ تراکنش از روی رسید قابل خواندن یا تبدیل نبود.',
   date_out_of_range: 'تاریخ تراکنش با بازه زمانی سفارش مطابقت ندارد.',
   vision_failed: 'تصویر رسید به‌طور قابل‌اعتماد خوانده نشد.',
   not_a_receipt: 'تصویر ارسالی شبیه رسید پرداخت بانکی نیست.',
+  unpaid_preview_screen: 'این تصویر مربوط به پیش‌نمایش قبل از پرداخت است و رسید تراکنش نهاییِ موفق نیست.',
+  failed_transfer: 'وضعیت تراکنش در این رسید ناموفق یا خطادار درج شده است.',
+  suspected_tampering: 'تصویر رسید مشکوک به ویرایش یا دستکاری تشخیص داده شد و نیاز به بررسی ادمین دارد.',
 };
 const renderCustomerReceiptFeedback = (reasons: string[], order: BotOrderRow, expectedRecipientName: string): string => {
   const visible = [...new Set(reasons)].filter((reason) => receiptReasonFa[reason]);
@@ -412,7 +421,22 @@ const runReceiptPipeline = async (
   }
 
   const ref = details.ref || vision?.ref || '';
-  const refTaken = ref ? await refAlreadyUsed(env, ref, order.id) : false;
+  const botRefTaken = ref ? await refAlreadyUsed(env, ref, order.id) : false;
+  const gwRefTaken =
+    ref && !botRefTaken
+      ? await isReceiptRefUsedAnywhere(env, ref, order.payment_id || '', order.id).catch(() => false)
+      : false;
+  const refTaken = botRefTaken || gwRefTaken;
+
+  let linkedPayment: PaymentOrderRow | null = null;
+  if (order.payment_id) {
+    linkedPayment = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`)
+      .bind(order.payment_id)
+      .first<PaymentOrderRow>()
+      .catch(() => null);
+  }
+  const expectedHolder = String(linkedPayment?.card_holder || env.BOT_CARD_HOLDER || '').trim();
+  const expectedCardLast4 = cleanCardNumber(String(linkedPayment?.card_number || env.BOT_CARD_NUMBER || '')).slice(-4);
 
   const decision = applyAutoApprovePolicy(
     decideReceipt({
@@ -422,7 +446,9 @@ const runReceiptPipeline = async (
       refTaken,
       orderToman: order.amount_toman,
       expectedAmountToman: order.expected_amount_toman || order.amount_toman,
-      expectedRecipientName: String(env.BOT_CARD_HOLDER || '').trim(),
+      allowRoundedBaseAmount: true,
+      expectedRecipientName: expectedHolder,
+      expectedCardLast4,
       orderCreatedAtMs: Date.parse(order.created_at) || Date.now(),
     }),
     autoApprovePolicy(env)
@@ -454,7 +480,7 @@ const runReceiptPipeline = async (
 
   // needs review
   await send(env, order.tg_user_id,
-    renderCustomerReceiptFeedback(decision.reasons, order, String(env.BOT_CARD_HOLDER || '').trim()) + '\n\n' +
+    renderCustomerReceiptFeedback(decision.reasons, order, expectedHolder) + '\n\n' +
     'نیازی به وارد کردن مبلغ یا شماره پیگیری نیست؛ اگر رسید صحیح باشد، نتیجه را همین‌جا اطلاع می‌دهیم.'
   );
   await notifyAdmins(env,
@@ -509,12 +535,30 @@ export const fulfillOrder = async (env: BotEnv, order: BotOrderRow, decidedBy: s
   }, siteUrl(env)), { reply_markup: tg.mainMenuKeyboard() });
 
   await updateDelivery(env, deliveryId, { status: 'delivered', delivered_at: nowIso() });
+  const decidedIso = nowIso();
   await updateOrder(env, order.id, {
     status: 'fulfilled',
-    decided_at: nowIso(),
+    decided_at: decidedIso,
     decided_by: decidedBy,
     delivery_id: deliveryId,
   });
+  // Keep linked `payment_orders` row synchronized so `/sms-bridge` clears it from pending orders immediately!
+  if (order.payment_id) {
+    await env.DB.prepare(
+      `UPDATE payment_orders
+       SET status = 'paid',
+           paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END,
+           fulfilled_at = CASE WHEN fulfilled_at = '' THEN ?2 ELSE fulfilled_at END,
+           access_code = ?3,
+           access_expires_at = ?4,
+           receipt_ref = CASE WHEN receipt_ref = '' THEN ?5 ELSE receipt_ref END,
+           updated_at = ?6
+       WHERE id = ?7`
+    )
+      .bind(decidedIso, decidedIso, grant.code, grant.expiresAt, order.ref_code || '', decidedIso, order.payment_id)
+      .run()
+      .catch(() => {});
+  }
   await logEvent(env, 'order_fulfilled', `${order.id} by ${decidedBy} code=${grant.code}`);
 
   await notifyAdmins(env, `✅ سفارش ${decidedBy === 'auto' ? '<b>خودکار</b> تأیید و تحویل شد' : 'تأیید و تحویل شد'}\n${renderOrderCard(order, [
@@ -642,12 +686,15 @@ const onCallback = async (env: BotEnv, chatId: string, messageId: number, cbId: 
   // Buyer requests manual receipt fallback (`fbrcpt:<orderId>`)
   if (data.startsWith('fbrcpt:')) {
     const orderId = data.slice(7);
+    const existingOrd = await getOrder(env, orderId);
     await answer();
-    await upsertBotUser(env, chatId, { pending: { kind: 'awaiting_receipt', orderId } });
+    await upsertBotUser(env, chatId, {
+      pending: { kind: 'awaiting_receipt', orderId, paymentId: existingOrd?.payment_id || '' },
+    });
     return send(
       env,
       chatId,
-      '🧾 اگر مبلغ را اشتباهاً رُند واریز کرده‌اید یا پیامک بانک با تأخیر مواجه شده، همین الان <b>تصویر واضح رسید بانکی</b> خود را ارسال کنید تا بررسی شود.'
+      '🧾 اگر مبلغ را اشتباهاً رُند واریز کرده‌اید یا پیامک بانک با تأخیر مواجه شده، همین الان <b>تصویر واضح رسید بانکی</b> خود را ارسال کنید تا اصالت آن به‌صورت هوشمند بررسی شود.'
     );
   }
 
@@ -925,13 +972,46 @@ const onText = async (env: BotEnv, chatId: string, text: string, from: { first_n
     ].join('\n'));
   }
 
+  // ---- Admin BluBank / Bank SMS Direct Forwarding in Telegram ----
+  // Allows the owner on iPhone X to simply paste/forward any BluBank deposit SMS
+  // straight into the Telegram Bot chat to auto-validate open transactions in <1s!
+  if (isAdmin(env, chatId) && !t.startsWith('/')) {
+    const parsedSms = parseIranianBankSms('Telegram-Admin', text);
+    if (parsedSms.isDeposit && parsedSms.amountRial > 0) {
+      await ensurePaymentTables(env);
+      const outcome = await processIncomingBankSms(env, 'tg-admin-forward', {
+        sender: parsedSms.bankName || 'BluBank-TG',
+        body: text,
+      });
+      if (outcome.status === 'matched') {
+        return send(
+          env,
+          chatId,
+          `✅ <b>پیامک واریز ${tg.escapeHtml(parsedSms.bankName || 'بانک')} تطبیق یافت!</b>\n` +
+            `💰 مبلغ: <b>${fmtRial(parsedSms.amountRial)}</b>\n` +
+            `🆔 شناسه پرداخت: <code>${tg.escapeHtml(outcome.matchedPaymentId)}</code>\n` +
+            `🎁 اشتراک مشتری به‌صورت خودکار فعال و تحویل داده شد.`
+        );
+      }
+      if (outcome.status === 'duplicate') {
+        return send(env, chatId, 'ℹ️ این پیامک واریز قبلاً ثبت و پردازش شده است.');
+      }
+      return send(
+        env,
+        chatId,
+        `⚠️ پیامک واریز (${fmtRial(parsedSms.amountRial)}) خوانده شد، اما در حال حاضر فاکتور بازی با دقیقاً همین مبلغ یکتا در انتظار پرداخت نیست.`
+      );
+    }
+  }
+
   // admin product-title style free text — fall through
   return send(env, chatId, 'متوجه نشدم 🤔 از منوی زیر استفاده کنید یا /help بزنید.', { reply_markup: tg.mainMenuKeyboard() });
 };
 
 /** Handle one Telegram update (message / callback_query / contact). */
-export const handleBotUpdate = async (env: BotEnv, update: any): Promise<void> => {
-  await ensureBotTables(env);
+export const handleBotUpdate = async (rawEnv: BotEnv, update: any): Promise<void> => {
+  await ensureBotTables(rawEnv);
+  const env = (await hydratePaymentEnv(rawEnv as any).catch(() => rawEnv)) as BotEnv;
   const token = env.TELEGRAM_BOT_TOKEN || '';
 
   if (update?.callback_query) {

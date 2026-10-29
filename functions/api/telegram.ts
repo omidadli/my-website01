@@ -24,6 +24,7 @@ import { grantToolAccess } from '../../lib/telegram/grant';
 import { normalizePhone } from '../../lib/userAuth';
 import { botProduct, botPlans, botProductPath } from '../../lib/telegram/pricing';
 import { sendMessage } from '../../lib/telegram/tgApi';
+import { hydratePaymentEnv } from '../../lib/payment/gateway';
 
 const json = (data: unknown, init: ResponseInit = {}) =>
   new Response(JSON.stringify(data), {
@@ -225,7 +226,8 @@ const handleSetup = async (request: Request, env: TelegramEnv): Promise<Response
 };
 
 export const onRequest = async (context: { request: Request; env: TelegramEnv; params?: any; waitUntil?: (p: Promise<any>) => void }): Promise<Response> => {
-  const { request, env } = context;
+  const { request } = context;
+  const env = (await hydratePaymentEnv(context.env as any).catch(() => context.env)) as TelegramEnv;
   const execCtx: ExecutionContext = {
     waitUntil: (p: Promise<any>) => {
       if (context.waitUntil) context.waitUntil(p);

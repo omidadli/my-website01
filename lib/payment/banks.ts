@@ -67,7 +67,7 @@ export const cleanIban = (raw: string): string => {
 // Longer prefixes (8-digit neo-banks) checked before 6-digit BINs.
 const BANK_PREFIXES: Array<{ prefixes: string[]; info: IranBankInfo }> = [
   {
-    prefixes: ['62198619', '62198618'],
+    prefixes: ['62198619', '62198618', '62198617'],
     info: { slug: 'blu', name: 'بلوبانک (سامان)', shortName: 'بلوبانک', accent: '#2563eb' },
   },
   {

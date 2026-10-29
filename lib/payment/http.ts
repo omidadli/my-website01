@@ -9,7 +9,13 @@
 import { getPlan, resolvePlanPrice } from '../toolPlans';
 import { getTool, scopeCovers, signAccessToken } from '../tools';
 import { priceToToman } from '../telegram/pricing';
-import { readReceiptWithVision } from '../telegram/receipt';
+import {
+  applyAutoApprovePolicy,
+  decideReceipt,
+  faDigits,
+  parsePaymentDetails,
+  readReceiptWithVision,
+} from '../telegram/receipt';
 import * as tg from '../telegram/tgApi';
 import { normalizePhone } from '../userAuth';
 import {
@@ -23,15 +29,21 @@ import {
   formatCardNumber,
   fulfillGatewayPayment,
   getOnlineDeviceSummary,
+  getPaymentSettingsMap,
+  hmacSha256Hex,
+  hydratePaymentEnv,
+  isReceiptRefUsedAnywhere,
   isValidIranBankCard,
   maskCardNumber,
   processIncomingBankSms,
   randomHex,
   recordDeviceHeartbeat,
+  setPaymentSettings,
   sha256Hex,
   sweepExpiredPayments,
   toLatinDigits,
   verifyGatewayPayment,
+  type PaymentCardRow,
   type PaymentDeviceRow,
   type PaymentEnv,
   type PaymentOrderRow,
@@ -47,9 +59,29 @@ export interface PaymentRequestContext {
   request: Request;
   env: PaymentEnv;
   isAdmin: () => Promise<boolean>;
+  verifyAdminPassword?: (password: string) => Promise<boolean>;
   getCurrentUser: () => Promise<{ id: string; phone?: string; phone_verified_at?: string; full_name?: string } | null>;
   loadCmsData?: () => Promise<any>;
 }
+
+const RECEIPT_REASON_FA: Record<string, string> = {
+  ref_missing: 'شماره پیگیری از روی رسید قابل تشخیص نبود.',
+  ref_mismatch: 'شماره پیگیری تایپ‌شده با شماره چاپ‌شده روی تصویر رسید مغایرت دارد.',
+  duplicate_ref: 'این شماره پیگیری قبلاً استفاده شده است.',
+  amount_missing: 'مبلغ واریزی از روی رسید قابل تشخیص نبود.',
+  amount_mismatch: 'مبلغ مندرج در رسید با مبلغ سفارش مطابقت ندارد.',
+  recipient_name_missing: 'نام صاحب حساب مقصد روی رسید قابل خواندن نیست.',
+  recipient_name_mismatch: 'نام گیرنده در رسید با نام صاحب کارت درگاه مطابقت ندارد.',
+  card_last4_mismatch: '۴ رقم آخر کارت مقصد در رسید با کارت درگاه مطابقت ندارد.',
+  date_missing: 'تاریخ تراکنش روی رسید مشخص نیست.',
+  date_unreadable: 'فرمت تاریخ تراکنش روی رسید قابل تشخیص نبود.',
+  date_out_of_range: 'تاریخ/ساعت رسید خارج از بازه زمانی این سفارش است.',
+  vision_failed: 'تصویر رسید به‌صورت خودکار خوانده نشد و به بررسی دستی ارجاع شد.',
+  not_a_receipt: 'تصویر ارسالی شبیه رسید بانکی معتبر نیست.',
+  unpaid_preview_screen: 'تصویر مربوط به پیش‌نمایش قبل از پرداخت است، نه رسید نهایی تراکنش موفق.',
+  failed_transfer: 'وضعیت تراکنش در رسید «ناموفق» تشخیص داده شد.',
+  suspected_tampering: 'تصویر رسید مشکوک به ویرایش یا دستکاری تشخیص داده شد.',
+};
 
 const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {
@@ -121,8 +153,9 @@ const mintToolSessionFromOrder = async (
 };
 
 export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<Response> => {
-  const { request, env } = ctx;
-  await ensurePaymentTables(env);
+  const { request } = ctx;
+  const rawEnv = ctx.env;
+  await ensurePaymentTables(rawEnv);
 
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
@@ -184,6 +217,9 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
       },
     });
   }
+
+  // Hydrate runtime settings synced via `/sms-bridge` (BluBank card + Telegram bot + Gemini Vision key)
+  const env = await hydratePaymentEnv(rawEnv);
 
   /* =======================================================================
    * 1. ANDROID SMS UPLOADER DEVICE ENDPOINTS (`/api/payment/device/*`)
@@ -264,8 +300,220 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
   }
 
   /* =======================================================================
-   * 1B. iPHONE / iOS < 16 BRIDGE ENDPOINTS (`/api/payment/ios/*`)
+   * 1B. iPHONE / iOS < 16 BRIDGE & 1-STEP BLUBANK/TELEGRAM SYNC (`/api/payment/ios/*`)
    * ======================================================================= */
+  if (subPath === 'ios/setup' && method === 'POST') {
+    const body = await safeJsonBody(request);
+    const rawDevToken = (url.searchParams.get('token') || '').trim() || extractToken(request, 'X-Device-Token');
+    const existingDevice = rawDevToken ? await authenticateDeviceToken(env, rawDevToken) : null;
+    const adminSessionOk = await ctx.isAdmin().catch(() => false);
+
+    let passwordOk = false;
+    const providedPass = String(body?.adminPassword || '').trim();
+    if (!existingDevice && !adminSessionOk) {
+      if (!providedPass) {
+        return payexaErr('UNAUTHORIZED', 'لطفاً رمز مدیریت سایت را وارد کنید تا همگام‌سازی انجام شود.', 401);
+      }
+      if (ctx.verifyAdminPassword) {
+        passwordOk = await ctx.verifyAdminPassword(providedPass);
+      } else if (env.ADMIN_PASSWORD) {
+        const secret = env.AUTH_SECRET || 'omidpay-setup-compare';
+        const [a, b] = await Promise.all([
+          hmacSha256Hex(secret, providedPass),
+          hmacSha256Hex(secret, String(env.ADMIN_PASSWORD)),
+        ]);
+        passwordOk = a === b;
+      }
+      if (!passwordOk) {
+        return payexaErr('UNAUTHORIZED', 'رمز مدیریت سایت اشتباه است.', 401);
+      }
+    }
+
+    const cardDigits = cleanCardNumber(String(body?.cardNumber || ''));
+    const holderName = String(body?.holderName || '').trim().slice(0, 80);
+    if (!isValidIranBankCard(cardDigits)) {
+      return payexaErr('VALIDATION_ERROR', 'شماره کارت ۱۶ رقمی معتبر نیست (رقم کنترلی کارت بانکی را بررسی کنید).', 422);
+    }
+    if (!holderName || holderName.length < 3) {
+      return payexaErr('VALIDATION_ERROR', 'نام و نام خانوادگی صاحب حساب (دقیقاً مطابق بلوبانک/کارت) الزامی است.', 422);
+    }
+
+    const bankInfo = detectIranBank(cardDigits);
+    const nowIso = new Date().toISOString();
+
+    // 1) Upsert destination card as primary active card & deactivate auto-seeded placeholder card
+    await env.DB.prepare(`UPDATE payment_cards SET is_active = 0 WHERE id = 'card-env-default'`)
+      .run()
+      .catch(() => {});
+
+    const sameCard = await env.DB.prepare(`SELECT id FROM payment_cards WHERE card_number = ?1 LIMIT 1`)
+      .bind(cardDigits)
+      .first<{ id: string }>();
+
+    if (sameCard) {
+      await env.DB.prepare(
+        `UPDATE payment_cards
+         SET holder_name = ?1, bank_name = ?2, bank_slug = ?3, is_active = 1, priority = 0, updated_at = ?4
+         WHERE id = ?5`
+      )
+        .bind(holderName, bankInfo.name, bankInfo.slug, nowIso, sameCard.id)
+        .run();
+      await env.DB.prepare(`UPDATE payment_cards SET priority = priority + 1 WHERE id <> ?1 AND priority = 0`)
+        .bind(sameCard.id)
+        .run()
+        .catch(() => {});
+    } else {
+      await env.DB.prepare(`UPDATE payment_cards SET priority = priority + 1 WHERE priority = 0`)
+        .run()
+        .catch(() => {});
+      await env.DB.prepare(
+        `INSERT INTO payment_cards (id, card_number, holder_name, iban, bank_name, bank_slug, is_active, priority, daily_limit_rial, created_at, updated_at)
+         VALUES (?1, ?2, ?3, '', ?4, ?5, 1, 0, 0, ?6, ?7)`
+      )
+        .bind(`card-${Date.now().toString(36)}-${randomHex(3)}`, cardDigits, holderName, bankInfo.name, bankInfo.slug, nowIso, nowIso)
+        .run();
+    }
+
+    // 2) Sync Telegram Bot Token, Admin ID, Webhook Secret & optional Gemini Vision Key
+    const currentSettings = await getPaymentSettingsMap(env);
+    const botTokenInput = String(body?.telegramBotToken || '').trim();
+    const adminIdInput = faDigits(String(body?.telegramAdminId || '')).replace(/[^\d,\s-]/g, '').trim();
+    const visionKeyInput = String(body?.geminiVisionKey || '').trim();
+
+    const settingsPatch: Record<string, string> = {};
+    const finalBotToken =
+      botTokenInput && !botTokenInput.includes('••')
+        ? botTokenInput
+        : currentSettings.telegram_bot_token || String(env.TELEGRAM_BOT_TOKEN || '').trim();
+    const finalAdminIds = adminIdInput || currentSettings.telegram_admin_ids || String(env.TELEGRAM_ADMIN_IDS || '').trim();
+    const finalWebhookSecret =
+      currentSettings.telegram_webhook_secret || String(env.TELEGRAM_WEBHOOK_SECRET || '').trim() || randomHex(20);
+
+    if (botTokenInput && !botTokenInput.includes('••')) settingsPatch.telegram_bot_token = botTokenInput;
+    if (adminIdInput) settingsPatch.telegram_admin_ids = adminIdInput;
+    if (visionKeyInput && !visionKeyInput.includes('••')) settingsPatch.receipt_gemini_key = visionKeyInput;
+    settingsPatch.telegram_webhook_secret = finalWebhookSecret;
+
+    let botUsername = currentSettings.telegram_bot_username || String(env.TELEGRAM_BOT_USERNAME || '').trim();
+    let webhookRegistered = false;
+    let telegramNotified = false;
+
+    if (finalBotToken && /^\d+:/.test(finalBotToken)) {
+      // Discover @username via getMe
+      try {
+        const meRes = await fetch(`https://api.telegram.org/bot${finalBotToken}/getMe`);
+        const meJson: any = await meRes.json().catch(() => null);
+        if (meJson?.ok && meJson.result?.username) {
+          botUsername = String(meJson.result.username);
+          settingsPatch.telegram_bot_username = botUsername;
+        }
+      } catch {
+        /* offline / sandbox egress */
+      }
+
+      // Auto-register Telegram Webhook if running on public HTTPS origin
+      if (/^https:\/\//i.test(url.origin)) {
+        try {
+          const whRes = await fetch(`https://api.telegram.org/bot${finalBotToken}/setWebhook`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: `${url.origin}/api/telegram`,
+              secret_token: finalWebhookSecret,
+              allowed_updates: ['message', 'callback_query'],
+            }),
+          });
+          const whJson: any = await whRes.json().catch(() => null);
+          webhookRegistered = Boolean(whJson?.ok);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      // Send live sync confirmation to Admin on Telegram!
+      const firstAdmin = finalAdminIds.split(',').map((s) => s.trim()).filter(Boolean)[0];
+      if (firstAdmin) {
+        try {
+          await tg.sendMessage(
+            finalBotToken,
+            firstAdmin,
+            [
+              '✅ <b>همگام‌سازی خودکار وب‌اپ آیفون با بلوبانک و تلگرام انجام شد!</b>',
+              '',
+              `🏦 بانک فعال: <b>${tg.escapeHtml(bankInfo.name)}</b>`,
+              `💳 کارت مقصد: <code>${tg.escapeHtml(formatCardNumber(cardDigits))}</code>`,
+              `👤 صاحب حساب: <b>${tg.escapeHtml(holderName)}</b>`,
+              '',
+              '💡 <b>نکته سریع:</b> علاوه بر اتوماسیون Shortcuts آیفون، هر زمان پیامک واریز بلوبانک را مستقیماً در همین چت ربات هم Paste/Forward کنید، ربات در کسری از ثانیه سفارش مشتری را تایید و تحویل می‌دهد!',
+            ].join('\n')
+          );
+          telegramNotified = true;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    await setPaymentSettings(env, settingsPatch);
+
+    // 3) Auto-provision or keep iPhone device token so NO separate 6-digit code step is needed!
+    let outDeviceToken = rawDevToken;
+    let outDeviceId = existingDevice?.id || '';
+    let outDeviceName = existingDevice?.name || String(body?.deviceName || 'آیفون بلوبانک من').trim();
+
+    if (!existingDevice) {
+      outDeviceToken = `omid_dev_${randomHex(20)}`;
+      const tokenHash = await sha256Hex(outDeviceToken);
+      const tokenMask = `${outDeviceToken.slice(0, 12)}…${outDeviceToken.slice(-4)}`;
+      outDeviceId = `dev-ios-${Date.now().toString(36)}`;
+      await env.DB.prepare(
+        `INSERT INTO payment_devices (id, name, device_serial, token_hash, token_mask, pair_code, pair_token, pair_expires_at, is_active, last_seen_at, battery_level, device_model, app_version, sms_count, matched_count, created_at)
+         VALUES (?1,?2,'iPhone-AutoSync',?3,?4,'','','',1,?5,-1,?6,'ios-pwa-2.0',0,0,?7)`
+      )
+        .bind(
+          outDeviceId,
+          outDeviceName,
+          tokenHash,
+          tokenMask,
+          nowIso,
+          String(body?.deviceModel || 'iPhone (BluBank Sync)').slice(0, 80),
+          nowIso
+        )
+        .run();
+    } else {
+      await recordDeviceHeartbeat(env, existingDevice.id, {
+        deviceModel: String(body?.deviceModel || existingDevice.device_model || 'iPhone (BluBank Sync)').slice(0, 80),
+        appVersion: 'ios-pwa-2.0',
+      });
+    }
+
+    const refreshedEnv = await hydratePaymentEnv(rawEnv);
+
+    return json({
+      ok: true,
+      device_id: outDeviceId,
+      device_name: outDeviceName,
+      device_token: outDeviceToken,
+      ios_sms_url: `${url.origin}/api/payment/ios/sms?token=${encodeURIComponent(outDeviceToken)}`,
+      ios_sms_get_url: `${url.origin}/api/payment/ios/sms?token=${encodeURIComponent(outDeviceToken)}&text=`,
+      card: {
+        number: cardDigits,
+        formatted: formatCardNumber(cardDigits),
+        holder_name: holderName,
+        bank: bankInfo.name,
+        bank_slug: bankInfo.slug,
+      },
+      telegram: {
+        configured: Boolean(finalBotToken),
+        bot_username: botUsername || null,
+        admin_ids: finalAdminIds,
+        webhook_registered: webhookRegistered,
+        notified: telegramNotified,
+      },
+      vision_ready: Boolean(refreshedEnv.TELEGRAM_RECEIPT_GEMINI_API_KEY),
+    });
+  }
+
   if (subPath === 'ios/pair' && method === 'POST') {
     const body = await safeJsonBody(request);
     const code = toLatinDigits(String(body?.code || '')).replace(/\D/g, '');
@@ -315,7 +563,14 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
     });
   }
 
-  if (subPath === 'ios/sms' || subPath === 'ios/poll' || subPath === 'ios/quick-confirm') {
+  if (
+    subPath === 'ios/sms' ||
+    subPath === 'ios/poll' ||
+    subPath === 'ios/config' ||
+    subPath === 'ios/quick-confirm' ||
+    subPath === 'ios/review-decision' ||
+    subPath === 'ios/receipt-image'
+  ) {
     const rawDevToken =
       (url.searchParams.get('token') || '').trim() ||
       extractToken(request, 'X-Device-Token');
@@ -324,21 +579,54 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
       return payexaErr('UNAUTHORIZED', 'توکن آیفون معتبر نیست یا غیرفعال شده است.', 401);
     }
 
+    if (subPath === 'ios/config' && method === 'GET') {
+      const activeCard = await env.DB.prepare(
+        `SELECT * FROM payment_cards WHERE is_active = 1 ORDER BY priority ASC, created_at ASC LIMIT 1`
+      ).first<PaymentCardRow>();
+      return json({
+        ok: true,
+        device_name: device.name,
+        card: activeCard
+          ? {
+              number: activeCard.card_number,
+              formatted: formatCardNumber(activeCard.card_number),
+              holder_name: activeCard.holder_name,
+              bank: activeCard.bank_name,
+              bank_slug: activeCard.bank_slug,
+            }
+          : null,
+        telegram: {
+          configured: Boolean(env.TELEGRAM_BOT_TOKEN),
+          bot_username: env.TELEGRAM_BOT_USERNAME || '',
+          admin_ids: env.TELEGRAM_ADMIN_IDS || '',
+        },
+        vision_ready: Boolean(env.TELEGRAM_RECEIPT_GEMINI_API_KEY),
+      });
+    }
+
     if (subPath === 'ios/poll' && method === 'GET') {
       await recordDeviceHeartbeat(env, device.id, {
         deviceModel: device.device_model || 'iPhone (iOS WebApp)',
-        appVersion: device.app_version || 'ios-pwa-1.0',
+        appVersion: device.app_version || 'ios-pwa-2.0',
       });
       await sweepExpiredPayments(env);
-      const [pendingRes, logsRes] = await Promise.all([
+      const [pendingRes, reviewRes, logsRes, cardRow] = await Promise.all([
         env.DB.prepare(
-          `SELECT id, order_id, payable_amount_rial, phone, product_name, description, expires_at
+          `SELECT id, order_id, payable_amount_rial, amount_rial, phone, product_name, description, expires_at
            FROM payment_orders WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20`
+        ).all<any>(),
+        env.DB.prepare(
+          `SELECT id, order_id, payable_amount_rial, amount_rial, phone, product_name, description, receipt_ref, receipt_note,
+                  CASE WHEN receipt_image_b64 <> '' THEN 1 ELSE 0 END AS has_image, receipt_submitted_at
+           FROM payment_orders WHERE status = 'needs_review' ORDER BY updated_at DESC LIMIT 15`
         ).all<any>(),
         env.DB.prepare(
           `SELECT id, status, parsed_amount_rial, body_sanitized, created_at
            FROM payment_sms_logs ORDER BY created_at DESC LIMIT 20`
         ).all<any>(),
+        env.DB.prepare(
+          `SELECT card_number, holder_name, bank_name, bank_slug FROM payment_cards WHERE is_active = 1 ORDER BY priority ASC, created_at ASC LIMIT 1`
+        ).first<any>(),
       ]);
 
       const nowMs = Date.now();
@@ -346,6 +634,7 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
         id: o.id,
         order_id: o.order_id,
         payable_amount_rial: o.payable_amount_rial,
+        amount_rial: o.amount_rial,
         phone: o.phone,
         product_name: o.product_name,
         description: o.description,
@@ -357,9 +646,61 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
         device_id: device.id,
         device_name: device.name,
         matched_count: device.matched_count,
+        card_summary: cardRow
+          ? {
+              masked: maskCardNumber(cardRow.card_number),
+              holder_name: cardRow.holder_name,
+              bank: cardRow.bank_name,
+            }
+          : null,
+        telegram_ready: Boolean(env.TELEGRAM_BOT_TOKEN),
+        vision_ready: Boolean(env.TELEGRAM_RECEIPT_GEMINI_API_KEY),
         pending_orders: pendingOrders,
+        review_orders: reviewRes.results || [],
         recent_logs: logsRes.results || [],
       });
+    }
+
+    if (subPath === 'ios/receipt-image' && method === 'GET') {
+      const paymentId = String(url.searchParams.get('payment_id') || '').trim();
+      const row = await env.DB.prepare(`SELECT receipt_image_b64 FROM payment_orders WHERE id = ?1`)
+        .bind(paymentId)
+        .first<{ receipt_image_b64: string }>();
+      if (!row || !row.receipt_image_b64) return payexaErr('NOT_FOUND', 'تصویر رسیدی ثبت نشده است.', 404);
+      const b64 = row.receipt_image_b64;
+      const mime = b64.startsWith('iVBORw0KGgo') ? 'image/png' : b64.startsWith('UklGR') ? 'image/webp' : 'image/jpeg';
+      return json({ ok: true, data_uri: `data:${mime};base64,${b64}` });
+    }
+
+    if (subPath === 'ios/review-decision' && method === 'POST') {
+      const body = await safeJsonBody(request);
+      const paymentId = String(body?.paymentId || body?.payment_id || '').trim();
+      const op = String(body?.op || 'approve');
+      const row = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`)
+        .bind(paymentId)
+        .first<PaymentOrderRow>();
+      if (!row) return payexaErr('PAYMENT_NOT_FOUND', 'تراکنش یافت نشد.', 404);
+      const nowIso = new Date().toISOString();
+
+      if (op === 'reject') {
+        await env.DB.prepare(`UPDATE payment_orders SET status = 'rejected', updated_at = ?1 WHERE id = ?2`)
+          .bind(nowIso, paymentId)
+          .run();
+        return json({ ok: true, status: 'rejected', payment_id: paymentId });
+      }
+
+      await env.DB.prepare(
+        `UPDATE payment_orders SET status = 'paid', paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END, updated_at = ?2 WHERE id = ?3`
+      )
+        .bind(nowIso, nowIso, paymentId)
+        .run();
+      await env.DB.prepare(
+        `UPDATE payment_devices SET matched_count = matched_count + 1, last_seen_at = ?1 WHERE id = ?2`
+      )
+        .bind(nowIso, device.id)
+        .run();
+      await fulfillGatewayPayment(env, paymentId, 'ios_receipt_approve');
+      return json({ ok: true, status: 'paid', payment_id: paymentId });
     }
 
     if (subPath === 'ios/quick-confirm' && method === 'POST') {
@@ -471,8 +812,42 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
     const amountToman = priceToToman(effectivePriceLabel) || priceToToman(plan.price);
     const amountRial = amountToman * 10;
 
-    // Deterministic order_id per (phone, product, plan) so double-clicking reuses the open pending payment!
-    const orderId = `WEB-${productId}-${planId}-${phone}`;
+    // Safely reuse an open pending invoice ONLY when the caller is the SAME authenticated user
+    // (or holds the existing X-Buyer-Secret), preventing buyer_secret hijacking AND allowing
+    // unlimited repeat renewals once an order is paid/expired!
+    await sweepExpiredPayments(env);
+    let orderId = `WEB-${productId}-${planId}-${Date.now().toString(36)}-${randomHex(3)}`;
+    let preservedBuyerSecret = '';
+
+    if (user?.id) {
+      const openSameUser = await env.DB.prepare(
+        `SELECT order_id, amount_rial FROM payment_orders
+         WHERE source = 'website' AND user_id = ?1 AND phone = ?2 AND product_id = ?3 AND plan_id = ?4 AND status = 'pending'
+         ORDER BY created_at DESC LIMIT 1`
+      )
+        .bind(user.id, phone, productId, plan.id)
+        .first<{ order_id: string; amount_rial: number }>();
+      if (openSameUser && openSameUser.amount_rial === amountRial) {
+        orderId = openSameUser.order_id;
+      }
+    } else {
+      const callerSecret = (request.headers.get('X-Buyer-Secret') || String(body?.buyerSecret || '')).trim();
+      if (callerSecret) {
+        const callerHash = await sha256Hex(callerSecret);
+        const openBySecret = await env.DB.prepare(
+          `SELECT order_id, amount_rial FROM payment_orders
+           WHERE source = 'website' AND buyer_secret_hash = ?1 AND phone = ?2 AND product_id = ?3 AND plan_id = ?4 AND status = 'pending'
+           ORDER BY created_at DESC LIMIT 1`
+        )
+          .bind(callerHash, phone, productId, plan.id)
+          .first<{ order_id: string; amount_rial: number }>();
+        if (openBySecret && openBySecret.amount_rial === amountRial) {
+          orderId = openBySecret.order_id;
+          preservedBuyerSecret = callerSecret;
+        }
+      }
+    }
+
     const created = await createGatewayPayment(env, {
       amountRial,
       orderId,
@@ -492,21 +867,12 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
       return json({ ok: false, error: created.error }, created.httpStatus);
     }
 
-    // Ensure a fresh buyerSecret is bound even when returning an existing pending payment
-    let buyerSecret = created.buyerSecret || '';
-    if (!buyerSecret) {
-      buyerSecret = randomHex(16);
-      const hash = await sha256Hex(buyerSecret);
-      await env.DB.prepare(`UPDATE payment_orders SET buyer_secret_hash = ?1, user_id = CASE WHEN user_id = '' THEN ?2 ELSE user_id END WHERE id = ?3`)
-        .bind(hash, user?.id || '', created.data.payment_id)
-        .run()
-        .catch(() => {});
-    }
+    const buyerSecret = created.buyerSecret || preservedBuyerSecret || '';
 
     return json(
       {
         ok: true,
-        buyer_secret: buyerSecret,
+        buyer_secret: buyerSecret || undefined,
         data: created.data,
       },
       created.httpStatus
@@ -609,39 +975,112 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
     if (row.status === 'paid') return json({ ok: true, status: 'paid', message: 'این پرداخت قبلاً تأیید شده است.' });
 
     const body = await safeJsonBody(request);
-    const refCode = String(body?.ref_code || body?.refCode || '').replace(/\D/g, '').slice(0, 32);
+    const refCode = toLatinDigits(String(body?.ref_code || body?.refCode || '')).replace(/\D/g, '').slice(0, 32);
     const note = String(body?.note || '').trim().slice(0, 400);
     const imageB64 = String(body?.image_base64 || body?.imageBase64 || '').replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
 
     if (!refCode && !imageB64) {
-      return payexaErr('VALIDATION_ERROR', 'لطفاً شماره پیگیری بانکی یا تصویر رسید واریز را وارد کنید.', 422);
+      return payexaErr('VALIDATION_ERROR', 'لطفاً تصویر واضح رسید بانکی (و در صورت تمایل شماره پیگیری) را وارد کنید.', 422);
     }
     if (imageB64.length > 2_500_000) {
       return payexaErr('VALIDATION_ERROR', 'حجم تصویر رسید بیش از حد مجاز است (حداکثر حدود ۱.۸ مگابایت).', 422);
     }
 
-    if (refCode) {
-      const dup = await env.DB.prepare(
-        `SELECT id FROM payment_orders WHERE receipt_ref = ?1 AND status <> 'rejected' AND id <> ?2 LIMIT 1`
-      )
-        .bind(refCode, row.id)
-        .first<{ id: string }>();
-      if (dup) {
-        return payexaErr('VALIDATION_ERROR', 'این شماره پیگیری قبلاً برای تراکنش دیگری ثبت شده است.', 409);
-      }
+    // Parse any clues typed in note/refCode
+    const textClues = parsePaymentDetails(`${refCode ? `پیگیری ${refCode} ` : ''}${note}`);
+    const typedRef = refCode || textClues.ref || '';
+
+    if (typedRef && (await isReceiptRefUsedAnywhere(env, typedRef, row.id, ''))) {
+      return payexaErr(
+        'DUPLICATE_RECEIPT',
+        'این شماره پیگیری بانکی قبلاً برای تراکنش دیگری ثبت و استفاده شده است.',
+        409
+      );
     }
 
-    // Optional AI OCR helper note for admin
-    let ocrNote = '';
+    // Forensic AI Vision Inspection
     const visionKey = String(env.TELEGRAM_RECEIPT_GEMINI_API_KEY || '').trim();
-    if (imageB64 && visionKey) {
-      const vision = await readReceiptWithVision(visionKey, imageB64, env.TELEGRAM_VISION_MODEL || 'gemini-2.5-flash').catch(() => null);
-      if (vision?.ok) {
-        ocrNote = ` | OCR: مبلغ=${vision.amount || '?'} پیگیری=${vision.ref || '?'} گیرنده=${vision.recipientName || '?'}`;
-      }
+    const vision =
+      imageB64 && visionKey
+        ? await readReceiptWithVision(visionKey, imageB64, env.TELEGRAM_VISION_MODEL || 'gemini-2.5-flash').catch(() => null)
+        : null;
+
+    const candidateRef = typedRef || vision?.ref || '';
+    const refTaken = candidateRef ? await isReceiptRefUsedAnywhere(env, candidateRef, row.id, '') : false;
+
+    const policyRaw = String(env.TELEGRAM_AUTO_APPROVE || 'vision').toLowerCase();
+    const policy: 'vision' | 'always' | 'off' = policyRaw === 'always' || policyRaw === 'off' ? policyRaw : 'vision';
+
+    const decision = applyAutoApprovePolicy(
+      decideReceipt({
+        textRef: typedRef || undefined,
+        textAmount: textClues.amount || undefined,
+        vision,
+        refTaken,
+        orderToman: Math.floor(row.amount_rial / 10),
+        expectedAmountToman: Math.floor(row.payable_amount_rial / 10),
+        allowRoundedBaseAmount: true,
+        expectedRecipientName: row.card_holder,
+        expectedCardLast4: cleanCardNumber(row.card_number).slice(-4),
+        orderCreatedAtMs: Date.parse(row.created_at) || Date.now(),
+      }),
+      policy
+    );
+
+    if (decision.status === 'rejected') {
+      return payexaErr('DUPLICATE_RECEIPT', decision.summary, 409);
     }
 
     const nowIso = new Date().toISOString();
+    const reasonsFa = decision.reasons
+      .map((r) => RECEIPT_REASON_FA[r])
+      .filter(Boolean);
+    const forensicSummary = [
+      note,
+      vision?.ok
+        ? `OCR: مبلغ=${vision.amount || '?'} | پیگیری=${vision.ref || '?'} | گیرنده=${vision.recipientName || '?'} | تاریخ=${vision.dateRaw || vision.date || '?'}`
+        : imageB64 && !visionKey
+          ? 'OCR: کلید بینایی تنظیم نشده (بررسی دستی)'
+          : '',
+      reasonsFa.length ? `بررسی: ${reasonsFa.join('، ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 500);
+
+    // === CASE A: VALID AUTHENTIC RECEIPT -> INSTANT AUTO-APPROVAL & DELIVERY! ===
+    if (decision.status === 'auto_approved') {
+      const claim = await env.DB.prepare(
+        `UPDATE payment_orders
+         SET status = 'paid',
+             paid_at = CASE WHEN paid_at = '' THEN ?1 ELSE paid_at END,
+             receipt_ref = ?2,
+             receipt_note = ?3,
+             receipt_image_b64 = ?4,
+             receipt_submitted_at = ?5,
+             updated_at = ?6
+         WHERE id = ?7 AND status <> 'paid'`
+      )
+        .bind(nowIso, decision.ref || candidateRef, forensicSummary, imageB64, nowIso, nowIso, row.id)
+        .run();
+
+      if ((claim.meta?.changes ?? 0) > 0) {
+        await fulfillGatewayPayment(env, row.id, 'auto_receipt_vision');
+      }
+
+      return json({
+        ok: true,
+        data: {
+          payment_id: row.id,
+          status: 'paid',
+          auto_approved: true,
+          confidence: decision.confidence,
+          message: '✅ رسید بانکی شما با موفقیت اصالت‌سنجی و تأیید خودکار شد! اشتراک شما هم‌اکنون فعال است.',
+        },
+      });
+    }
+
+    // === CASE B: SUSPICIOUS / INCOMPLETE RECEIPT -> QUEUE FOR ADMIN REVIEW ===
     await env.DB.prepare(
       `UPDATE payment_orders
        SET status = 'needs_review',
@@ -652,10 +1091,10 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
            updated_at = ?5
        WHERE id = ?6 AND status <> 'paid'`
     )
-      .bind(refCode, (note + ocrNote).slice(0, 500), imageB64, nowIso, nowIso, row.id)
+      .bind(decision.ref || candidateRef, forensicSummary, imageB64, nowIso, nowIso, row.id)
       .run();
 
-    // Alert Telegram Admins with 1-click approve/reject buttons
+    // Alert Telegram Admins with full forensic breakdown + 1-click approve/reject buttons
     const token = String(env.TELEGRAM_BOT_TOKEN || '').trim();
     if (token) {
       const admins = String(env.TELEGRAM_ADMIN_IDS || '')
@@ -663,13 +1102,17 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
         .map((s) => s.trim())
         .filter(Boolean);
       const adminMsg = [
-        '🧾 <b>رسید دستی (مسیر جبرانی درگاه) ثبت شد</b>',
+        '🧐 <b>رسید مشکوک / نیازمند بررسی انسانی ثبت شد</b>',
         `🆔 شناسه پرداخت: <code>${tg.escapeHtml(row.id)}</code>`,
         `📦 سفارش: ${tg.escapeHtml(row.description || row.order_id)}`,
         `💰 مبلغ یکتای درخواستی: <b>${row.payable_amount_rial.toLocaleString('en-US')} ریال</b>`,
-        refCode ? `🔢 شماره پیگیری اعلامی: <code>${tg.escapeHtml(refCode)}</code>` : '',
+        `📊 اطمینان سیستم: <b>${Math.round(decision.confidence * 100)}٪</b>`,
+        candidateRef ? `🔢 شماره پیگیری: <code>${tg.escapeHtml(candidateRef)}</code>` : '',
+        reasonsFa.length ? `⚠️ دلایل نیاز به بررسی:\n• ${reasonsFa.map((r) => tg.escapeHtml(r)).join('\n• ')}` : '',
+        vision?.ok
+          ? `🤖 تشخیص OCR: مبلغ=${vision.amount || '?'} | گیرنده=${tg.escapeHtml(vision.recipientName || '?')} | تاریخ=${tg.escapeHtml(vision.dateRaw || vision.date || '?')}`
+          : '',
         note ? `📝 توضیح خریدار: ${tg.escapeHtml(note)}` : '',
-        ocrNote ? `🤖 ${tg.escapeHtml(ocrNote.replace(/^ \| /, ''))}` : '',
       ]
         .filter(Boolean)
         .join('\n');
@@ -679,7 +1122,7 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
             reply_markup: tg.inlineKeyboard([
               [
                 { text: '✅ تأیید دستی و تحویل محصول', callback_data: `payok:${row.id}` },
-                { text: '❌ رد رسید', callback_data: `payno:${row.id}` },
+                { text: '❌ رد رسید مشکوک', callback_data: `payno:${row.id}` },
               ],
             ]),
           })
@@ -687,12 +1130,19 @@ export const handlePaymentRequest = async (ctx: PaymentRequestContext): Promise<
       }
     }
 
+    const buyerHint = reasonsFa.length
+      ? `رسید شما ثبت شد و به دلیل نیاز به بررسی تکمیلی (${reasonsFa[0]}) به پشتیبانی ارجاع گردید؛ به محض تأیید، اشتراک شما خودکار فعال می‌شود.`
+      : 'رسید شما ثبت شد و برای بررسی به پشتیبانی ارسال گردید. به محض تأیید، اشتراک شما فعال می‌شود.';
+
     return json({
       ok: true,
       data: {
         payment_id: row.id,
         status: 'needs_review',
-        message: 'رسید شما ثبت شد و برای بررسی به پشتیبانی ارسال گردید. به محض تأیید، اشتراک شما فعال می‌شود.',
+        auto_approved: false,
+        confidence: decision.confidence,
+        reasons: decision.reasons,
+        message: buyerHint,
       },
     });
   }

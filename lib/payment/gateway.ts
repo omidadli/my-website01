@@ -31,13 +31,17 @@ export const DEVICE_ONLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes since la
 export interface PaymentEnv {
   DB: D1Like;
   AUTH_SECRET?: string;
+  ADMIN_PASSWORD?: string;
+  GEMINI_API_KEY?: string;
   SITE_URL?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_BOT_USERNAME?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_ADMIN_IDS?: string;
+  TELEGRAM_AUTO_APPROVE?: string;
   BOT_CARD_NUMBER?: string;
   BOT_CARD_HOLDER?: string;
+  BOT_CARD_BANK?: string;
   TELEGRAM_RECEIPT_GEMINI_API_KEY?: string;
   TELEGRAM_VISION_MODEL?: string;
   /** Set to 'true' to reject new payments when no SMS phone pinged in last 10m */
@@ -313,6 +317,11 @@ const PAYMENT_DDL = [
     verified_at TEXT DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS idx_phone_verifications_user ON phone_verifications (user_id, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS payment_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 const PAYMENT_ALTERS = [
@@ -357,6 +366,132 @@ export const ensurePaymentTables = async (env: PaymentEnv): Promise<void> => {
   if (env.DB && typeof env.DB === 'object') {
     initializedDbs.add(env.DB as object);
   }
+};
+
+export const getPaymentSettingsMap = async (env: PaymentEnv): Promise<Record<string, string>> => {
+  await ensurePaymentTables(env);
+  const out: Record<string, string> = {};
+  try {
+    const rows = (await env.DB.prepare(`SELECT key, value FROM payment_settings`).all<{ key: string; value: string }>()).results || [];
+    for (const r of rows) {
+      if (r && r.key) out[r.key] = String(r.value || '');
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+};
+
+export const setPaymentSettings = async (env: PaymentEnv, entries: Record<string, string>): Promise<void> => {
+  await ensurePaymentTables(env);
+  const nowIso = new Date().toISOString();
+  for (const [k, v] of Object.entries(entries)) {
+    await env.DB.prepare(
+      `INSERT INTO payment_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    )
+      .bind(k, String(v ?? ''), nowIso)
+      .run();
+  }
+};
+
+/**
+ * Resolve any configured Gemini API key for forensic bank receipt OCR:
+ *  1) `payment_settings.receipt_gemini_key` (set inside `/sms-bridge` or admin)
+ *  2) `env.TELEGRAM_RECEIPT_GEMINI_API_KEY`
+ *  3) `env.GEMINI_API_KEY`
+ *  4) First enabled Gemini slot in D1 `ai_keys` table (already entered in site AI panel!)
+ */
+export const resolveReceiptVisionKey = async (env: PaymentEnv, settingsMap?: Record<string, string>): Promise<string> => {
+  const s = settingsMap || (await getPaymentSettingsMap(env));
+  const explicit =
+    String(s.receipt_gemini_key || '').trim() ||
+    String(env.TELEGRAM_RECEIPT_GEMINI_API_KEY || '').trim() ||
+    String(env.GEMINI_API_KEY || '').trim();
+  if (explicit) return explicit;
+
+  try {
+    const rows = (
+      await env.DB.prepare(`SELECT keys_json FROM ai_keys`).all<{ keys_json: string }>()
+    ).results || [];
+    for (const row of rows) {
+      if (!row?.keys_json) continue;
+      const parsed = JSON.parse(row.keys_json);
+      const list = Array.isArray(parsed) ? parsed : [];
+      for (const slot of list) {
+        if (slot && slot.enabled !== false && slot.provider === 'gemini' && typeof slot.apiKey === 'string' && slot.apiKey.trim().length > 15) {
+          return slot.apiKey.trim();
+        }
+      }
+    }
+  } catch {
+    /* ai_keys optional in minimal test schemas */
+  }
+  return '';
+};
+
+/**
+ * Hydrate `env` with live dynamic values stored via `/sms-bridge` 1-step setup
+ * (`payment_settings` + primary active `payment_cards` + site Gemini key) so
+ * Website Checkout, Receipt OCR, and Telegram Bot stay 100% synchronized.
+ */
+export const hydratePaymentEnv = async <T extends PaymentEnv>(env: T): Promise<T> => {
+  await ensurePaymentTables(env);
+  const s = await getPaymentSettingsMap(env);
+  const card = await env.DB.prepare(
+    `SELECT * FROM payment_cards WHERE is_active = 1 ORDER BY priority ASC, created_at ASC LIMIT 1`
+  )
+    .first<PaymentCardRow>()
+    .catch(() => null);
+  const visionKey = await resolveReceiptVisionKey(env, s);
+
+  return {
+    ...env,
+    TELEGRAM_BOT_TOKEN: String(s.telegram_bot_token || env.TELEGRAM_BOT_TOKEN || '').trim(),
+    TELEGRAM_WEBHOOK_SECRET: String(s.telegram_webhook_secret || env.TELEGRAM_WEBHOOK_SECRET || '').trim(),
+    TELEGRAM_ADMIN_IDS: String(s.telegram_admin_ids || env.TELEGRAM_ADMIN_IDS || '').trim(),
+    TELEGRAM_BOT_USERNAME: String(s.telegram_bot_username || env.TELEGRAM_BOT_USERNAME || '').trim(),
+    TELEGRAM_RECEIPT_GEMINI_API_KEY: visionKey,
+    BOT_CARD_NUMBER: String(card?.card_number || env.BOT_CARD_NUMBER || '').trim(),
+    BOT_CARD_HOLDER: String(card?.holder_name || env.BOT_CARD_HOLDER || '').trim(),
+    BOT_CARD_BANK: String(card?.bank_name || env.BOT_CARD_BANK || '').trim(),
+  };
+};
+
+/**
+ * Cross-table duplicate tracking reference detector across BOTH `payment_orders`
+ * (website/gateway) and `bot_orders` (Telegram) so a single bank transfer
+ * reference can NEVER be replayed across channels.
+ */
+export const isReceiptRefUsedAnywhere = async (
+  env: PaymentEnv,
+  rawRef: string,
+  excludePaymentId = '',
+  excludeBotOrderId = ''
+): Promise<boolean> => {
+  const ref = toLatinDigits(String(rawRef || '')).replace(/\D/g, '');
+  if (!ref) return false;
+  await ensurePaymentTables(env);
+
+  const gwDup = await env.DB.prepare(
+    `SELECT id FROM payment_orders
+     WHERE receipt_ref = ?1 AND status IN ('paid', 'needs_review') AND id <> ?2
+     LIMIT 1`
+  )
+    .bind(ref, excludePaymentId)
+    .first<{ id: string }>()
+    .catch(() => null);
+  if (gwDup) return true;
+
+  const botDup = await env.DB.prepare(
+    `SELECT id FROM bot_orders
+     WHERE ref_code = ?1 AND status NOT IN ('rejected', 'awaiting_payment') AND id <> ?2
+     LIMIT 1`
+  )
+    .bind(ref, excludeBotOrderId)
+    .first<{ id: string }>()
+    .catch(() => null);
+  return Boolean(botDup);
 };
 
 export const sweepExpiredPayments = async (env: PaymentEnv, nowMs = Date.now()): Promise<void> => {
@@ -753,11 +888,11 @@ const notifyAdminsTelegram = async (env: PaymentEnv, html: string, buttons?: tg.
  *  - Dispatch HMAC-signed webhook to `callback_url` (if configured)
  */
 export const fulfillGatewayPayment = async (
-  env: PaymentEnv,
+  rawEnv: PaymentEnv,
   paymentId: string,
   via: string
 ): Promise<PaymentOrderRow | null> => {
-  await ensurePaymentTables(env);
+  const env = await hydratePaymentEnv(rawEnv);
   const order = await env.DB.prepare(`SELECT * FROM payment_orders WHERE id = ?1`).bind(paymentId).first<PaymentOrderRow>();
   if (!order || order.status !== 'paid') return order || null;
 

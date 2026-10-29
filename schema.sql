@@ -496,3 +496,10 @@ CREATE TABLE IF NOT EXISTS phone_verifications (
   verified_at TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_phone_verifications_user ON phone_verifications (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS payment_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+

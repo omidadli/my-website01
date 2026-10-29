@@ -364,11 +364,13 @@ const getDevGatewayEnv = (): PaymentEnv => {
   return {
     DB: devGatewayD1Obj,
     AUTH_SECRET: DEV_TOOL_SECRET,
+    ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || 'admin',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
     TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
     TELEGRAM_ADMIN_IDS: process.env.TELEGRAM_ADMIN_IDS || '',
     TELEGRAM_BOT_USERNAME: process.env.TELEGRAM_BOT_USERNAME || '',
     TELEGRAM_RECEIPT_GEMINI_API_KEY: process.env.TELEGRAM_RECEIPT_GEMINI_API_KEY || '',
-    BOT_CARD_NUMBER: process.env.BOT_CARD_NUMBER || '6219861034529007',
+    BOT_CARD_NUMBER: process.env.BOT_CARD_NUMBER || '6219861934529008',
     BOT_CARD_HOLDER: process.env.BOT_CARD_HOLDER || 'امید عدلی',
     SITE_URL: process.env.SITE_URL || 'http://localhost:3000',
   };
@@ -680,7 +682,7 @@ export function cmsDevApiPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const reqUrl = req.url || '';
-        if (!reqUrl.startsWith('/api')) {
+        if (!reqUrl.startsWith('/api') && !reqUrl.startsWith('/sms-bridge')) {
           return next();
         }
 
@@ -755,10 +757,12 @@ export function cmsDevApiPlugin(): Plugin {
               body: rawBuf && rawBuf.length ? new Uint8Array(rawBuf) : undefined,
             });
             const gwEnv = { ...getDevGatewayEnv(), SITE_URL: `${proto}://${host}` };
+            const expectedPass = process.env.ADMIN_PASSWORD || 'admin';
             const webRes = await handlePaymentRequest({
               request: webReq,
               env: gwEnv,
               isAdmin: async () => isDevAdminRequest(req),
+              verifyAdminPassword: async (pw: string) => String(pw || '') === expectedPass,
               getCurrentUser: async () => {
                 const u = getDevSessionUser(req);
                 if (!u) return null;

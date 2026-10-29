@@ -89,6 +89,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
   const [receiptFeedback, setReceiptFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const syncedPaidRef = useRef(false);
+  const statusRef = useRef<string>('pending');
 
   const copyValue = async (key: string, val: string) => {
     try {
@@ -116,6 +117,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
 
       setError('');
       setPayment(res.data);
+      statusRef.current = String(res.data.status || 'pending');
       setSecondsLeft(Number(res.data.seconds_remaining || 0));
 
       // Auto-store signed tool session token when paid!
@@ -132,16 +134,14 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
     [paymentId, refresh]
   );
 
-  // Initial load + 5s live polling while pending / needs_review
+  // Initial load + 5s live polling while pending / needs_review (no side effects inside setState!)
   useEffect(() => {
     fetchStatus(false);
     const interval = setInterval(() => {
-      setPayment((cur: any) => {
-        if (!cur || cur.status === 'pending' || cur.status === 'needs_review') {
-          fetchStatus(false);
-        }
-        return cur;
-      });
+      const s = statusRef.current;
+      if (!s || s === 'pending' || s === 'needs_review') {
+        fetchStatus(false);
+      }
     }, 5000);
     return () => clearInterval(interval);
   }, [fetchStatus]);
@@ -150,16 +150,16 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
   useEffect(() => {
     if (!payment || payment.status !== 'pending') return;
     const t = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          fetchStatus(false);
-          return 0;
-        }
-        return prev - 1;
-      });
+      setSecondsLeft((prev) => (prev <= 1 ? 0 : prev - 1));
     }, 1000);
     return () => clearInterval(t);
-  }, [payment?.status, fetchStatus]);
+  }, [payment?.status]);
+
+  useEffect(() => {
+    if (payment?.status === 'pending' && secondsLeft === 0 && !loading) {
+      fetchStatus(false);
+    }
+  }, [secondsLeft, payment?.status, loading, fetchStatus]);
 
   const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

@@ -21,6 +21,7 @@ import {
 } from '../lib/payment/gateway';
 import { handlePaymentRequest } from '../lib/payment/http';
 import { handleBotUpdate } from '../lib/telegram/bot';
+import { jalaliToGregorian, matchRecipientName, parseReceiptTimestamps } from '../lib/telegram/receipt';
 
 const makeD1 = (sqlite: DatabaseSync) => {
   const prep = (sql: string) => {
@@ -444,6 +445,11 @@ const eq = (a: unknown, b: unknown, msg = '') => {
     ok(!bridgeHtml.includes('oklch('), 'zero oklch() CSS so iOS < 16.4 renders all colors');
     ok(!bridgeHtml.includes('color-mix('), 'zero color-mix() CSS for iOS < 16.2');
     ok(!bridgeHtml.includes('@layer'), 'zero @layer CSS for iOS < 15.4');
+    const styleMatch = bridgeHtml.match(/<style>([\s\S]*?)<\/style>/);
+    ok(Boolean(styleMatch), 'contains inline <style>');
+    const inlineCss = styleMatch![1];
+    ok(!/\bgap\s*:/.test(inlineCss), 'zero CSS Flexbox gap (unsupported in iOS < 14.5)');
+    ok(!/\binset\s*:/.test(inlineCss), 'zero CSS inset shorthand (unsupported in iOS < 14.1)');
     // Extract inline <script>, parse it with vm.Script, and verify zero ES2020+/ES2021+ syntax (`?.`, `??`, `.replaceAll(`)
     const scriptMatch = bridgeHtml.match(/<script>([\s\S]*?)<\/script>/);
     ok(Boolean(scriptMatch && scriptMatch[1].length > 500), 'contains inline ES5/ES6 script');
@@ -590,6 +596,410 @@ const eq = (a: unknown, b: unknown, msg = '') => {
     const quickJson: any = await quickRes.json();
     eq(quickJson.ok, true);
     eq(quickJson.status, 'paid', '1-tap iPhone quick-confirm marks order paid and fulfills subscription');
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. BluBank Exhaustive SMS Edge Cases & Regression Suite
+  // -------------------------------------------------------------------------
+  await test('parses all real-world BluBank SMS templates & blocks BluBank withdrawals/OTPs/balance traps', () => {
+    // A) Classic BluBank poetic deposit
+    const blu1 = parseIranianBankSms(
+      '1000621986',
+      'بلوبانک\n۵٬۸۹۴٬۳۰۰ ریال به حسابتان نشست.\nموجودی: ۱۲٬۴۵۰٬۰۰۰ ریال\n۱۴۰۵/۰۸/۰۶ ۱۴:۲۵'
+    );
+    eq(blu1.kind, 'deposit');
+    eq(blu1.bankName, 'بلوبانک');
+    eq(blu1.amountRial, 5_894_300);
+
+    // B) BluBank "شارژ شد" deposit
+    const blu2 = parseIranianBankSms(
+      'Blu',
+      'بلوبانک\nحسابتان ۵,۸۹۴,۳۰۰ ریال شارژ شد.\nموجودی: ۱۲,۴۵۰,۰۰۰ ریال'
+    );
+    eq(blu2.kind, 'deposit');
+    eq(blu2.amountRial, 5_894_300);
+
+    // C) Regression: unformatted digits right after "واریز به حساب" MUST NOT be eaten!
+    const rawAccount = parseIranianBankSms('BANK', 'واریز به حساب 5894300 ریال\nمانده: 19000000 ریال');
+    eq(rawAccount.kind, 'deposit');
+    eq(rawAccount.amountRial, 5_894_300);
+
+    // D) Regression: single-line SMS where مانده & کارمزد appear BEFORE واریز!
+    const singleLine = parseIranianBankSms(
+      'Saman',
+      'بانک سامان مانده: 50,000,000 ریال کارمزد: 5,000 ریال واریز: 5,894,300 ریال 1405/08/06-14:25:10'
+    );
+    eq(singleLine.kind, 'deposit');
+    eq(singleLine.amountRial, 5_894_300);
+
+    // E) BluBank withdrawal ("از حسابتان پرید") MUST NEVER match as deposit!
+    const bluWithdraw = parseIranianBankSms('Blu', 'بلوبانک\n۵,۸۹۴,۳۰۰ ریال از حسابتان پرید!\nموجودی: ۶,۰۰۰,۰۰۰ ریال');
+    eq(bluWithdraw.kind, 'withdrawal');
+    eq(bluWithdraw.isDeposit, false);
+
+    // F) Mobile SIM top-up ("خرید شارژ") MUST NEVER match "شارژ حساب"!
+    const simTopup = parseIranianBankSms('Blu', 'بلوبانک\nخرید شارژ ۵۰۰,۰۰۰ ریال\nموجودی: ۵,۵۰۰,۰۰۰ ریال');
+    eq(simTopup.kind, 'withdrawal');
+    eq(simTopup.isDeposit, false);
+
+    // G) BluBank login OTP ("کد ورود به بلو") MUST be strictly blocked & sanitized!
+    const bluOtp = parseIranianBankSms('Blu', 'بلوبانک\nکد ورود به بلو: ۵۸۲۹۱\nاین کد را در اختیار کسی قرار ندهید.');
+    eq(bluOtp.kind, 'otp_ignored');
+    ok(!bluOtp.sanitizedText.includes('58291'), 'OTP digits scrubbed');
+
+    // H) Jalali calendar & recipient name normalization checks
+    const [gy, gm, gd] = jalaliToGregorian(1405, 8, 6);
+    eq(`${gy}-${gm}-${gd}`, '2026-10-28', '1405/08/06 converts accurately to 2026-10-28');
+    const tsCands = parseReceiptTimestamps('۱۴۰۵/۰۸/۰۶ - ۱۴:۲۵');
+    ok(tsCands.candidatesMs.includes(Date.parse('2026-10-28T14:25:00+03:30')), 'Jalali receipt timestamp parsed in Iran +03:30');
+    eq(matchRecipientName('امید عدلی', 'آقای امید عدلی - بلوبانک'), true);
+    eq(matchRecipientName('امید عدلی', 'امید رضایی'), false);
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. 1-Step `/api/payment/ios/setup` Sync + Telegram Admin BluBank Forward + Anti-Hijack Checkout
+  // -------------------------------------------------------------------------
+  await test('1-step /sms-bridge setup syncs BluBank + Telegram, supports Telegram SMS forward, and prevents checkout hijacking', async () => {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(readFileSync('schema.sql', 'utf8'));
+    const env: any = {
+      DB: makeD1(sqlite),
+      SITE_URL: 'https://omidadli.site',
+      ADMIN_PASSWORD: 'MySuperSecretAdminPass!',
+      AUTH_SECRET: 'test-auth-secret',
+    };
+    await ensurePaymentTables(env);
+
+    const tgCalls: Array<{ url: string; body: any }> = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const u = String(typeof input === 'string' ? input : input?.url || input);
+      if (u.includes('api.telegram.org')) {
+        const b = init?.body ? JSON.parse(String(init.body)) : null;
+        tgCalls.push({ url: u, body: b });
+        if (u.endsWith('/getMe')) {
+          return new Response(JSON.stringify({ ok: true, result: { username: 'omidadli_pay_bot' } }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    try {
+      const callHttp = (req: Request, isAdmin = false) =>
+        handlePaymentRequest({
+          request: req,
+          env,
+          isAdmin: async () => isAdmin,
+          getCurrentUser: async () => null,
+        });
+
+      // 1) Wrong admin password -> 401
+      const badPassRes = await callHttp(
+        new Request('https://omidadli.site/api/payment/ios/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminPassword: 'wrong',
+            cardNumber: '6219861934529008',
+            holderName: 'امید عدلی',
+          }),
+        })
+      );
+      eq(badPassRes.status, 401);
+
+      // 2) Correct 1-step setup -> registers BluBank card + Telegram bot + webhook + returns iPhone device_token!
+      const setupRes = await callHttp(
+        new Request('https://omidadli.site/api/payment/ios/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminPassword: 'MySuperSecretAdminPass!',
+            cardNumber: '6219 8619 3452 9008',
+            holderName: 'امید عدلی',
+            telegramBotToken: '987654:AAH_TEST_TOKEN',
+            telegramAdminId: '777888',
+            geminiVisionKey: 'AIzaSyTestVisionKey1234567890',
+          }),
+        })
+      );
+      eq(setupRes.status, 200);
+      const setupJson: any = await setupRes.json();
+      eq(setupJson.ok, true);
+      eq(setupJson.card.bank_slug, 'blu', 'auto-detected BluBank card');
+      eq(setupJson.telegram.bot_username, 'omidadli_pay_bot', 'fetched bot username via getMe');
+      eq(setupJson.telegram.webhook_registered, true, 'auto-registered Telegram webhook');
+      eq(setupJson.vision_ready, true, 'receipt AI vision active');
+      ok(setupJson.device_token.startsWith('omid_dev_'), 'provisioned iPhone token in 1 step');
+
+      // 3) Buyer A starts website checkout -> receives buyer_secret
+      const chkA = await callHttp(
+        new Request('https://omidadli.site/api/payment/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId: 'business-therapist', planId: 'basic', phone: '09121112222' }),
+        })
+      );
+      eq(chkA.status, 201);
+      const chkAJson: any = await chkA.json();
+      const secretA = chkAJson.buyer_secret;
+      const payIdA = chkAJson.data.payment_id;
+      eq(chkAJson.data.card.bank_slug, 'blu', 'website checkout immediately uses synced BluBank card');
+
+      // 4) Stranger tries checkout with same phone WITHOUT secretA -> MUST NOT hijack payIdA or overwrite secretA!
+      const chkStranger = await callHttp(
+        new Request('https://omidadli.site/api/payment/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId: 'business-therapist', planId: 'basic', phone: '09121112222' }),
+        })
+      );
+      const chkStrangerJson: any = await chkStranger.json();
+      ok(chkStrangerJson.data.payment_id !== payIdA, 'stranger cannot attach to or hijack Buyer A pending payment');
+
+      // 5) Admin forwards BluBank SMS directly into Telegram Bot chat -> matches payIdA & fulfills!
+      await handleBotUpdate(env, {
+        update_id: 901,
+        message: {
+          message_id: 50,
+          from: { id: 777888, first_name: 'Omid' },
+          chat: { id: 777888, type: 'private' },
+          text: `بلوبانک\n${chkAJson.data.payable_amount.toLocaleString('en-US')} ریال به حسابتان نشست.\nموجودی: ۹۵,۰۰۰,۰۰۰ ریال`,
+        },
+      });
+
+      // Buyer A polls with original secretA -> status is 'paid' AND fulfillment credentials intact!
+      const pollBuyerA = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${payIdA}/client`, {
+          headers: { 'X-Buyer-Secret': secretA, 'X-Device-Id': 'dev-buyer-a' },
+        })
+      );
+      const pollBuyerAJson: any = await pollBuyerA.json();
+      eq(pollBuyerAJson.data.status, 'paid', 'Telegram admin BluBank SMS forward paid the invoice');
+      ok(Boolean(pollBuyerAJson.data.fulfillment?.access_code), 'Buyer A original buyer_secret still unlocks access_code');
+      ok(Boolean(pollBuyerAJson.data.fulfillment?.tool_token), 'Buyer A receives signed tool session token');
+
+      // Stranger polling payIdA with stranger's secret MUST NOT see fulfillment!
+      const pollStranger = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${payIdA}/client`, {
+          headers: { 'X-Buyer-Secret': chkStrangerJson.buyer_secret, 'X-Device-Id': 'dev-stranger' },
+        })
+      );
+      const pollStrangerJson: any = await pollStranger.json();
+      eq(pollStrangerJson.data.fulfillment, null, 'stranger cannot steal Buyer A access_code');
+
+      // 6) Buyer A wants to RENEW same product/plan right after paying -> MUST succeed (201), NOT 409!
+      const chkRenew = await callHttp(
+        new Request('https://omidadli.site/api/payment/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId: 'business-therapist', planId: 'basic', phone: '09121112222' }),
+        })
+      );
+      eq(chkRenew.status, 201, 'repeat purchase / renewal succeeds without ORDER_ID_CONFLICT');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 11. Forensic Customer Receipt Validator (Auto-Approve Valid vs Flag Suspicious)
+  // -------------------------------------------------------------------------
+  await test('forensic receipt validator auto-approves genuine Jalali/BluBank receipts and flags every suspicious/fake receipt', async () => {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec(readFileSync('schema.sql', 'utf8'));
+    const env: any = {
+      DB: makeD1(sqlite),
+      SITE_URL: 'https://omidadli.site',
+      ADMIN_PASSWORD: 'pass',
+      TELEGRAM_RECEIPT_GEMINI_API_KEY: 'gk-forensic',
+    };
+    await ensurePaymentTables(env);
+
+    let mockVisionJson: any = {};
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const u = String(typeof input === 'string' ? input : input?.url || input);
+      if (u.includes('generativelanguage.googleapis.com')) {
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(mockVisionJson) }] } }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (u.includes('api.telegram.org')) {
+        return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+      }
+      return origFetch(input, init);
+    }) as any;
+
+    try {
+      const callHttp = (req: Request) =>
+        handlePaymentRequest({
+          request: req,
+          env,
+          isAdmin: async () => false,
+          verifyAdminPassword: async (pw) => pw === 'pass',
+          getCurrentUser: async () => null,
+        });
+
+      // Setup BluBank card (6219-8619-3452-9008 -> last4 = "9008")
+      const setupRes = await callHttp(
+        new Request('https://omidadli.site/api/payment/ios/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminPassword: 'pass',
+            cardNumber: '6219861934529008',
+            holderName: 'امید عدلی',
+          }),
+        })
+      );
+      const { device_token: iosTok } = (await setupRes.json()) as any;
+
+      // Create Order #1 (suppose SMS failed AND buyer rounded to base plan amount!)
+      const o1 = await createGatewayPayment(env, {
+        orderId: 'rcpt_valid_1',
+        amountRial: 5_900_000,
+        source: 'website',
+        productId: 'business-therapist',
+        planId: 'basic',
+        phone: '09125556677',
+      });
+      if ('error' in o1) throw new Error(o1.error.message);
+
+      // Compute current Jalali-equivalent or current Tehran ISO timestamp so test works on any date
+      const nowIran = new Date(Date.now() + 3.5 * 3600_000).toISOString().slice(0, 19); // naive Tehran time (no Z!)
+      mockVisionJson = {
+        looksLikeReceipt: true,
+        transferStatus: 'success',
+        tamperingSuspected: false,
+        ref: '884422119900',
+        amount: '۵٬۹۰۰٬۰۰۰ ریال', // Rounded base price in Rial!
+        date: nowIran, // Timezone-naive Tehran clock time!
+        bank: 'بلوبانک',
+        recipientName: 'آقای امید عدلی - بلوبانک', // Real bank honorific + suffix!
+        cardLast4: '9008',
+      };
+
+      const validRcptRes = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${o1.data.payment_id}/receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' }),
+        })
+      );
+      eq(validRcptRes.status, 200);
+      const validRcptJson: any = await validRcptRes.json();
+      eq(validRcptJson.data.status, 'paid', 'valid genuine receipt is IMMEDIATELY auto-approved');
+      eq(validRcptJson.data.auto_approved, true);
+
+      // Verify grant was issued!
+      const grantRow = sqlite
+        .prepare(`SELECT code, status FROM tool_access WHERE phone = '09125556677' AND product_id = 'business-therapist'`)
+        .get() as any;
+      eq(grantRow?.status, 'active', 'auto-approved receipt issued active subscription');
+
+      // Replay Attack: reusing ref '884422119900' on Order #2 MUST be rejected (409)!
+      const o2 = await createGatewayPayment(env, {
+        orderId: 'rcpt_replay_2',
+        amountRial: 5_900_000,
+        source: 'website',
+        productId: 'growth-path',
+        planId: 'basic',
+        phone: '09125556677',
+      });
+      if ('error' in o2) throw new Error(o2.error.message);
+
+      const replayRes = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${o2.data.payment_id}/receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: 'iVBORw0KGgoAAAA==' }),
+        })
+      );
+      eq(replayRes.status, 409, 'reused bank reference rejected with 409 DUPLICATE_RECEIPT');
+
+      // Fraud Vector A: Pre-payment confirmation preview screen ("پیش‌نمایش قبل از انتقال") -> needs_review!
+      mockVisionJson = {
+        looksLikeReceipt: true,
+        transferStatus: 'preview_unpaid',
+        tamperingSuspected: false,
+        ref: '776655443322',
+        amount: o2.data.payable_amount,
+        date: nowIran,
+        recipientName: 'امید عدلی',
+        cardLast4: '9008',
+      };
+      const previewFraudRes = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${o2.data.payment_id}/receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: 'iVBORw0KGgoAAAA==' }),
+        })
+      );
+      const previewFraudJson: any = await previewFraudRes.json();
+      eq(previewFraudJson.data.status, 'needs_review', 'unpaid preview screenshot flagged for review');
+      ok(previewFraudJson.data.reasons.includes('unpaid_preview_screen'));
+
+      // Fraud Vector B: Wrong destination card last-4 ("1234" != "9008") -> needs_review!
+      const o3 = await createGatewayPayment(env, {
+        orderId: 'rcpt_wrongcard_3',
+        amountRial: 5_900_000,
+        source: 'website',
+        productId: 'problem-solver',
+        planId: 'basic',
+        phone: '09125556677',
+      });
+      if ('error' in o3) throw new Error(o3.error.message);
+
+      mockVisionJson = {
+        looksLikeReceipt: true,
+        transferStatus: 'success',
+        tamperingSuspected: false,
+        ref: '554433221100',
+        amount: o3.data.payable_amount,
+        date: nowIran,
+        recipientName: 'امید عدلی',
+        cardLast4: '1234', // Mismatched card!
+      };
+      const wrongCardRes = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${o3.data.payment_id}/receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: 'iVBORw0KGgoAAAA==' }),
+        })
+      );
+      const wrongCardJson: any = await wrongCardRes.json();
+      eq(wrongCardJson.data.status, 'needs_review', 'mismatched card last-4 flagged as suspicious');
+      ok(wrongCardJson.data.reasons.includes('card_last4_mismatch'));
+
+      // Check iPhone `/sms-bridge` poll sees both suspicious receipts in `review_orders`, can view image & reject!
+      const pollIos = await callHttp(
+        new Request(`https://omidadli.site/api/payment/ios/poll?token=${encodeURIComponent(iosTok)}`)
+      );
+      const pollIosJson: any = await pollIos.json();
+      eq(pollIosJson.review_orders.length, 2, 'suspicious receipts surfaced live in /sms-bridge');
+
+      const imgRes = await callHttp(
+        new Request(
+          `https://omidadli.site/api/payment/ios/receipt-image?token=${encodeURIComponent(iosTok)}&payment_id=${o3.data.payment_id}`
+        )
+      );
+      const imgJson: any = await imgRes.json();
+      ok(String(imgJson.data_uri || '').startsWith('data:image/png;base64,'), 'serves PNG receipt preview to iPhone');
+
+      const rejectRes = await callHttp(
+        new Request('https://omidadli.site/api/payment/ios/review-decision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Device-Token': iosTok },
+          body: JSON.stringify({ paymentId: o3.data.payment_id, op: 'reject' }),
+        })
+      );
+      const rejectJson: any = await rejectRes.json();
+      eq(rejectJson.status, 'rejected', 'admin rejected suspicious receipt directly from iPhone /sms-bridge');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} payment-gateway: ${pass} passed, ${fail} failed`);

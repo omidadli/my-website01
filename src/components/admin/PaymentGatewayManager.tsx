@@ -538,7 +538,7 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
               </div>
             </div>
             <p className="text-xs nd-muted leading-relaxed">
-              این وب‌اپ بدون هیچ وابستگی به CSS/JS مدرن (کاملاً سازگار با Safari قدیمی <b>iOS &lt; 16</b> روی <b>iPhone X</b>) طراحی شده است. کافی است در Safari آیفون آدرس <code dir="ltr">/sms-bridge</code> را باز کرده و <b>Share → Add to Home Screen</b> بزنید؛ سپس <b>کد ۶ رقمی اتصال</b> زیر را وارد کنید تا رادار صوتی سفارش‌ها، خواندن ۱-ضربه‌ای کلیپ‌بورد، اتوماسیون <b>Apple Shortcuts (پیام)</b>، ضربه پشت گوشی (<b>Back Tap</b>) و اسکریپت ۲۴/۷ جیمیل فعال شوند.
+              این وب‌اپ بدون هیچ وابستگی به CSS/JS مدرن (کاملاً سازگار با Safari قدیمی <b>iOS &lt; 16</b> روی <b>iPhone X</b>) طراحی شده است. کافی است در Safari آیفون آدرس <code dir="ltr">/sms-bridge</code> را باز کرده و <b>Share → Add to Home Screen</b> بزنید؛ در همان صفحه با <b>راه‌اندازی ۱-مرحله‌ای</b> (وارد کردن شماره کارت بلوبانک + صاحب حساب + توکن ربات تلگرام یا کد ۶ رقمی زیر)، آیفون، بلوبانک و ربات تلگرام به صورت یکپارچه همگام‌سازی می‌شوند!
             </p>
           </div>
 

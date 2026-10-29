@@ -126,7 +126,7 @@ export const QuickCheckoutModal: React.FC<QuickCheckoutModalProps> = ({
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="09123456789"
                 autoFocus
-                className={`w-full pr-10 pl-4 py-3 rounded-2xl border font-mono text-sm text-left focus:outline-none focus:ring-2 focus:ring-emerald-500/50 ${
+                className={`w-full pr-10 pl-4 py-3 rounded-2xl border font-mono text-base text-left focus:outline-none focus:ring-2 focus:ring-emerald-500/50 ${
                   isDark ? 'bg-slate-800 border-white/15 text-white' : 'bg-white border-slate-300 text-slate-900'
                 }`}
               />
