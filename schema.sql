@@ -326,6 +326,7 @@ CREATE TABLE IF NOT EXISTS bot_orders (
   plan_id         TEXT DEFAULT '',
   plan_name       TEXT DEFAULT '',
   amount_toman    INTEGER NOT NULL DEFAULT 0,
+  expected_amount_toman INTEGER NOT NULL DEFAULT 0,
   payment_id      TEXT DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'awaiting_payment',
   ref_code        TEXT DEFAULT '',

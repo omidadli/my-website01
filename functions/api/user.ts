@@ -16,7 +16,7 @@ import {
   publicUserShape,
   USER_SESSION_TTL_MS,
 } from './_shared';
-import { createPhoneVerificationToken, syncPhoneGrantsToUser } from '../../lib/payment/gateway';
+import { createPhoneVerificationToken, hydratePaymentEnv, syncPhoneGrantsToUser } from '../../lib/payment/gateway';
 
 const WINDOW_MINUTES = 15;
 const MAX_FAILURES = 10;
@@ -342,13 +342,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
         .run();
     }
 
-    const { token, expiresAt } = await createPhoneVerificationToken(env, {
+    const hydratedEnv = await hydratePaymentEnv(env as any).catch(() => env as any);
+    const { token, expiresAt } = await createPhoneVerificationToken(hydratedEnv, {
       userId: String(user.id),
       phone,
       purpose: 'verify_phone',
     });
 
-    const botUsername = String(env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
+    const botUsername = String(hydratedEnv.TELEGRAM_BOT_USERNAME || env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
     const verifyUrl = botUsername ? `https://t.me/${botUsername}?start=verify_${token}` : '';
     const command = `/start verify_${token}`;
 

@@ -172,11 +172,13 @@ const BOT_TABLES = [
   )`,
 ];
 
-let ready: Promise<void> | null = null;
+const readyByDb = new WeakMap<object, Promise<void>>();
 
 export const ensureBotTables = (env: BotEnv): Promise<void> => {
-  if (!ready) {
-    ready = (async () => {
+  const dbKey = env.DB as unknown as object;
+  let pending = readyByDb.get(dbKey);
+  if (!pending) {
+    pending = (async () => {
       await env.DB.batch(BOT_TABLES.map((sql) => env.DB.prepare(sql)));
       // Backward-compatible additive migration for already-created D1 databases.
       for (const colSql of [
@@ -190,11 +192,12 @@ export const ensureBotTables = (env: BotEnv): Promise<void> => {
         }
       }
     })().catch((e) => {
-      ready = null;
+      readyByDb.delete(dbKey);
       throw e;
     });
+    readyByDb.set(dbKey, pending);
   }
-  return ready;
+  return pending;
 };
 
 export const nowIso = (): string => new Date().toISOString();

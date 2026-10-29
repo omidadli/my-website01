@@ -375,11 +375,19 @@ export const PaymentGatewayManager: React.FC<{ onToast?: (msg: string) => void }
                           </code>
                         )}
                         {p.receiptRef && <div className="text-[11px] font-mono">پیگیری: {p.receiptRef}</div>}
-                        {p.receiptNote && <div className="text-[10px] nd-muted max-w-[200px] truncate">{p.receiptNote}</div>}
-                        {p.receiptImageB64 && (
+                        {p.receiptNote && (
+                          <div title={p.receiptNote} className="text-[10px] nd-muted max-w-[220px] truncate">
+                            {p.receiptNote}
+                          </div>
+                        )}
+                        {p.hasReceiptImage && (
                           <button
                             type="button"
-                            onClick={() => setPreviewReceiptImg(`data:image/jpeg;base64,${p.receiptImageB64}`)}
+                            onClick={async () => {
+                              const imgRes = await api.adminGetReceiptImage(p.id);
+                              if (imgRes.ok && imgRes.data_uri) setPreviewReceiptImg(imgRes.data_uri);
+                              else toast(imgRes.error || 'خطا در بارگذاری تصویر رسید');
+                            }}
                             className="mt-1 text-[11px] text-sky-400 underline flex items-center gap-1 cursor-pointer"
                           >
                             <Eye className="w-3 h-3" /> مشاهده تصویر رسید

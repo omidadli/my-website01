@@ -997,6 +997,43 @@ const eq = (a: unknown, b: unknown, msg = '') => {
       );
       const rejectJson: any = await rejectRes.json();
       eq(rejectJson.status, 'rejected', 'admin rejected suspicious receipt directly from iPhone /sms-bridge');
+
+      // Customer recovery after rejection: customer uploads real clean receipt on same invoice -> auto-approved!
+      mockVisionJson = {
+        looksLikeReceipt: true,
+        transferStatus: 'success',
+        tamperingSuspected: false,
+        ref: '554433221100',
+        amount: o3.data.payable_amount,
+        date: nowIran,
+        recipientName: 'امید عدلی',
+        cardLast4: '9008',
+      };
+      const recoverRes = await callHttp(
+        new Request(`https://omidadli.site/api/payment/v2/payments/${o3.data.payment_id}/receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_base64: 'iVBORw0KGgoAAAA==' }),
+        })
+      );
+      const recoverJson: any = await recoverRes.json();
+      eq(recoverJson.data.status, 'paid', 'customer can re-upload clean receipt after rejection and get auto-approved');
+
+      // 1-Tap Self-Test from /sms-bridge verifies BluBank SMS matching & cleans up test order
+      const selfTestRes = await callHttp(
+        new Request('https://omidadli.site/api/payment/ios/self-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Device-Token': iosTok },
+          body: '{}',
+        })
+      );
+      const selfTestJson: any = await selfTestRes.json();
+      eq(selfTestJson.ok, true);
+      eq(selfTestJson.sms_matched, true, '1-tap /sms-bridge self-test verifies BluBank SMS matching');
+      const leftoverSelfTest = sqlite
+        .prepare(`SELECT COUNT(*) AS c FROM payment_orders WHERE order_id LIKE 'selftest-%'`)
+        .get() as any;
+      eq(Number(leftoverSelfTest?.c || 0), 0, 'synthetic self-test order cleaned up from payment_orders');
     } finally {
       globalThis.fetch = origFetch;
     }

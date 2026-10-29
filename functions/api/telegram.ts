@@ -19,7 +19,7 @@
  * directly — no sync job, no second database.
  */
 import { handleBotUpdate } from '../../lib/telegram/bot';
-import { ensureBotTables, claimUpdate, logEvent, newId, insertDelivery, nowIso } from '../../lib/telegram/store';
+import { ensureBotTables, claimUpdate, logEvent, newId, insertDelivery, nowIso, type D1Like } from '../../lib/telegram/store';
 import { grantToolAccess } from '../../lib/telegram/grant';
 import { normalizePhone } from '../../lib/userAuth';
 import { botProduct, botPlans, botProductPath } from '../../lib/telegram/pricing';
@@ -33,7 +33,7 @@ const json = (data: unknown, init: ResponseInit = {}) =>
   });
 
 export interface TelegramEnv {
-  DB: D1Database;
+  DB: D1Like;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_ADMIN_IDS?: string;
@@ -46,11 +46,15 @@ export interface TelegramEnv {
   SUPPORT_HANDLE?: string;
 }
 
+interface WaitUntilCtx {
+  waitUntil(p: Promise<unknown>): void;
+}
+
 const siteBase = (env: TelegramEnv) => String(env.SITE_URL || 'https://omidadli.site').replace(/\/+$/, '');
 
 /* ------------------------------- webhook ------------------------------- */
 
-const handleWebhook = async (request: Request, env: TelegramEnv, ctx: ExecutionContext): Promise<Response> => {
+const handleWebhook = async (request: Request, env: TelegramEnv, ctx: WaitUntilCtx): Promise<Response> => {
   const secret = String(env.TELEGRAM_WEBHOOK_SECRET || '');
   if (!secret) return json({ ok: false, error: 'bot_not_configured' }, { status: 503 });
 
@@ -228,13 +232,12 @@ const handleSetup = async (request: Request, env: TelegramEnv): Promise<Response
 export const onRequest = async (context: { request: Request; env: TelegramEnv; params?: any; waitUntil?: (p: Promise<any>) => void }): Promise<Response> => {
   const { request } = context;
   const env = (await hydratePaymentEnv(context.env as any).catch(() => context.env)) as TelegramEnv;
-  const execCtx: ExecutionContext = {
+  const execCtx: WaitUntilCtx = {
     waitUntil: (p: Promise<any>) => {
       if (context.waitUntil) context.waitUntil(p);
       else void p;
     },
-    passThroughOnException: () => {},
-  } as ExecutionContext;
+  };
 
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '');

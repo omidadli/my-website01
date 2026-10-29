@@ -521,6 +521,22 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
                   بررسی الان
                 </button>
               </div>
+
+              {payment.telegram_url && (
+                <a
+                  href={payment.telegram_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`p-3 rounded-2xl border flex items-center justify-between gap-2 text-xs font-bold transition ${
+                    isDark
+                      ? 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/15'
+                      : 'bg-sky-50 border-sky-200 text-sky-700 hover:bg-sky-100'
+                  }`}
+                >
+                  <span>🤖 تمایل دارید کد اشتراک در تلگرام هم برایتان ارسال شود؟</span>
+                  <span className="underline shrink-0">اتصال به ربات تلگرام ←</span>
+                </a>
+              )}
             </>
           )}
 
@@ -535,7 +551,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
             </div>
           )}
 
-          {/* ================= FALLBACK MANUAL RECEIPT SECTION ================= */}
+          {/* ================= FALLBACK / AUTO-VISION RECEIPT SECTION ================= */}
           {payment.status !== 'paid' && (
             <div className="pt-2 border-t border-slate-500/15 space-y-3">
               {payment.status === 'pending' ? (
@@ -546,7 +562,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
                     className="text-xs text-amber-500 hover:underline font-bold flex items-center gap-1.5"
                   >
                     <HelpCircle className="w-4 h-4" />
-                    مبلغ را اشتباهاً رُند زدید یا پس از ۲ دقیقه تأیید نشد؟ ثبت دستی رسید
+                    مبلغ را اشتباهاً رُند زدید یا پیامک تأخیر داشت؟ ارسال تصویر رسید (تأیید هوشمند آنی)
                   </button>
                   <button
                     type="button"
@@ -556,56 +572,88 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
                     انصراف از پرداخت
                   </button>
                 </div>
+              ) : payment.status === 'rejected' ? (
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs leading-relaxed text-rose-400 font-bold">
+                  رسید قبلی به دلیل ناقص یا ناواضح بودن اطلاعات تأیید نشد. اگر واریز را انجام داده‌اید، تصویر کامل و واضح رسید نهایی تراکنش موفق خود را در فرم زیر بارگذاری کنید:
+                </div>
               ) : (
                 payment.status !== 'needs_review' && (
                   <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-xs leading-relaxed">
-                    مهلت زمانی این فاکتور تمام شده است. اگر وجه را واریز کرده‌اید، در فرم زیر تصویر رسید یا شماره پیگیری را بفرستید تا پشتیبانی برایتان فعال کند:
+                    مهلت زمانی این فاکتور تمام شده است. اگر وجه را واریز کرده‌اید، در فرم زیر تصویر رسید بانکی را بارگذاری کنید تا سامانه به‌صورت هوشمند بررسی و فعال نماید:
                   </div>
                 )
               )}
 
-              {(showFallback || payment.status === 'expired') && payment.status !== 'needs_review' && (
+              {(showFallback || payment.status === 'expired' || payment.status === 'rejected') && payment.status !== 'needs_review' && (
                 <form
                   onSubmit={handleReceiptSubmit}
                   className={`p-4 rounded-2xl border space-y-3 ${
                     isDark ? 'bg-slate-800/50 border-white/10' : 'bg-slate-50 border-slate-200'
                   }`}
                 >
-                  <div className="text-xs font-extrabold">ثبت رسید جبرانی (بررسی توسط پشتیبانی)</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-extrabold">اصالت‌سنجی هوشمند رسید بانکی (فعال‌سازی خودکار رسیدهای معتبر)</div>
+                  </div>
+                  <p className="text-[11px] opacity-75 leading-relaxed">
+                    برای تأیید آنی در چند ثانیه، تصویر کامل رسید نهایی تراکنش موفق (حاوی شماره پیگیری، مبلغ، تاریخ و نام گیرنده) را انتخاب کنید:
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[11px] opacity-70 mb-1">شماره پیگیری / ارجاع بانکی</label>
-                      <input
-                        type="text"
-                        dir="ltr"
-                        value={refCode}
-                        onChange={(e) => setRefCode(e.target.value)}
-                        placeholder="مثلاً 1234567890"
-                        className={`w-full px-3 py-2 rounded-xl border text-xs font-mono ${
-                          isDark ? 'bg-slate-900 border-white/15' : 'bg-white border-slate-300'
-                        }`}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] opacity-70 mb-1">تصویر رسید بانکی (اختیاری)</label>
+                      <label className="block text-[11px] opacity-70 mb-1">تصویر رسید بانکی (پیشنهادی برای تأیید آنی)</label>
                       <label
-                        className={`w-full px-3 py-2 rounded-xl border text-xs flex items-center gap-2 cursor-pointer truncate ${
+                        className={`w-full px-3 py-2.5 rounded-xl border text-xs flex items-center gap-2 cursor-pointer truncate ${
                           isDark ? 'bg-slate-900 border-white/15 hover:bg-slate-800' : 'bg-white border-slate-300 hover:bg-slate-100'
                         }`}
                       >
                         <FileImage className="w-4 h-4 text-indigo-400 shrink-0" />
-                        <span className="truncate">{receiptFileName || 'انتخاب عکس رسید...'}</span>
+                        <span className="truncate">{receiptFileName || 'انتخاب عکس رسید بانکی...'}</span>
                         <input type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
                       </label>
                     </div>
+                    <div>
+                      <label className="block text-[11px] opacity-70 mb-1">شماره پیگیری / ارجاع بانکی (اختیاری با عکس)</label>
+                      <input
+                        type="tel"
+                        dir="ltr"
+                        value={refCode}
+                        onChange={(e) => setRefCode(e.target.value)}
+                        placeholder="مثلاً 1234567890"
+                        className={`w-full px-3 py-2 rounded-xl border text-base font-mono ${
+                          isDark ? 'bg-slate-900 border-white/15' : 'bg-white border-slate-300'
+                        }`}
+                      />
+                    </div>
                   </div>
+
+                  {receiptImageB64 && (
+                    <div className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/25">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={receiptImageB64}
+                          alt="پیش‌نمایش رسید"
+                          className="w-12 h-12 object-cover rounded-lg border border-white/15 shrink-0"
+                        />
+                        <span className="text-xs font-bold truncate">{receiptFileName || 'تصویر رسید آماده بررسی هوشمند'}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReceiptImageB64('');
+                          setReceiptFileName('');
+                        }}
+                        className="text-xs text-rose-400 hover:underline shrink-0 px-2"
+                      >
+                        حذف عکس
+                      </button>
+                    </div>
+                  )}
 
                   <input
                     type="text"
                     value={receiptNote}
                     onChange={(e) => setReceiptNote(e.target.value)}
-                    placeholder="توضیح کوتاه (مثلاً ۴ رقم آخر کارت مبدأ یا ساعت واریز)"
-                    className={`w-full px-3 py-2 rounded-xl border text-xs ${
+                    placeholder="توضیح کوتاه اختیاری (مثلاً ۴ رقم آخر کارت مبدأ)"
+                    className={`w-full px-3 py-2 rounded-xl border text-base ${
                       isDark ? 'bg-slate-900 border-white/15' : 'bg-white border-slate-300'
                     }`}
                   />
@@ -626,7 +674,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ theme, paymentId, onNa
                     className="w-full py-2.5 rounded-xl bg-amber-500 text-slate-950 font-extrabold text-xs hover:bg-amber-400 transition flex items-center justify-center gap-1.5"
                   >
                     {submittingReceipt ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    ارسال رسید برای بررسی و فعال‌سازی
+                    {submittingReceipt ? 'در حال اصالت‌سنجی هوشمند رسید...' : 'بررسی هوشمند رسید و فعال‌سازی اشتراک'}
                   </button>
                 </form>
               )}

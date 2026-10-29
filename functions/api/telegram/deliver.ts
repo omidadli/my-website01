@@ -1,8 +1,10 @@
 import { handleDeliver, type TelegramEnv } from '../telegram';
 import { logEvent } from '../../../lib/telegram/store';
+import { hydratePaymentEnv } from '../../../lib/payment/gateway';
 
 export const onRequest = async (context: { request: Request; env: TelegramEnv }): Promise<Response> => {
-  const { request, env } = context;
+  const { request } = context;
+  const env = (await hydratePaymentEnv(context.env as any).catch(() => context.env)) as TelegramEnv;
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({ ok: false, error: 'method_not_allowed' }), {
       status: 405,

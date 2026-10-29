@@ -6,7 +6,8 @@ import path from 'path';
 import { createHmac, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { handlePaymentRequest } from './lib/payment/http';
-import { createPhoneVerificationToken, completePhoneVerificationToken, type PaymentEnv } from './lib/payment/gateway';
+import { createPhoneVerificationToken, completePhoneVerificationToken, hydratePaymentEnv, type PaymentEnv } from './lib/payment/gateway';
+import { onRequest as handleTelegramOnRequest } from './functions/api/telegram';
 import {
   buildDigest,
   buildSoulPrompt,
@@ -783,6 +784,42 @@ export function cmsDevApiPlugin(): Plugin {
             return;
           }
 
+          // --- 0b. /api/telegram & /api/telegram/deliver (Telegram Bot Webhook + Status in Dev) ---
+          if (pathname === '/api/telegram' || pathname === '/api/telegram/deliver') {
+            syncDevFilesIntoGatewaySqlite();
+            const rawBuf = method === 'GET' || method === 'HEAD' || method === 'OPTIONS' ? undefined : await readRawBody();
+            const proto = String(req.headers['x-forwarded-proto'] || 'http');
+            const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000');
+            const fullUrl = `${proto}://${host}${reqUrl}`;
+            const reqHeaders = new Headers();
+            for (const [k, v] of Object.entries(req.headers)) {
+              if (typeof v === 'string') reqHeaders.set(k, v);
+              else if (Array.isArray(v)) reqHeaders.set(k, v.join(', '));
+            }
+            const webReq = new Request(fullUrl, {
+              method,
+              headers: reqHeaders,
+              body: rawBuf && rawBuf.length ? new Uint8Array(rawBuf) : undefined,
+            });
+            const pendingTasks: Promise<any>[] = [];
+            const tgEnv = { ...getDevGatewayEnv(), SITE_URL: `${proto}://${host}` } as any;
+            const tgRes = await handleTelegramOnRequest({
+              request: webReq,
+              env: tgEnv,
+              waitUntil: (p) => {
+                pendingTasks.push(p);
+              },
+            });
+            if (pendingTasks.length) {
+              await Promise.allSettled(pendingTasks);
+            }
+            syncGatewaySqliteBackToDevFiles();
+            res.statusCode = tgRes.status;
+            tgRes.headers.forEach((val, key) => res.setHeader(key, val));
+            res.end(Buffer.from(await tgRes.arrayBuffer()));
+            return;
+          }
+
           // --- 1. /api/content ---
           if (pathname === '/api/content') {
             if (method === 'GET') {
@@ -1022,7 +1059,7 @@ export function cmsDevApiPlugin(): Plugin {
                   saveDevUsers(users);
                 }
                 syncDevFilesIntoGatewaySqlite();
-                const gwEnv = getDevGatewayEnv();
+                const gwEnv = await hydratePaymentEnv(getDevGatewayEnv());
                 const created = await createPhoneVerificationToken(gwEnv, { userId: u.id, phone, purpose: 'verify_phone' });
                 return sendJson({
                   ok: true,

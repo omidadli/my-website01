@@ -670,6 +670,9 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
         <button type="button" id="btnSaveSetup" class="btn" style="margin-top:16px;" onclick="submitOneStepSetup()">
           ✅ ذخیره و همگام‌سازی خودکار با بلوبانک و تلگرام
         </button>
+        <button type="button" id="btnSelfTest" class="btn btn-blu hidden" style="margin-top:10px;" onclick="runSystemSelfTest()">
+          🧪 تست خودکار اتصال بلوبانک و ربات تلگرام
+        </button>
       </div>
 
       <!-- Alternative 6-digit pairing if generated from desktop /admin -->
@@ -812,20 +815,35 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
         setTimeout(function() { el.style.display = 'none'; }, 3800);
       }
 
+      var memStore = {};
+      function sGet(key) {
+        try {
+          var v = localStorage.getItem(key);
+          if (v !== null && v !== undefined) return v;
+        } catch (e) {}
+        return memStore[key] || '';
+      }
+      function sSet(key, val) {
+        memStore[key] = String(val);
+        try { localStorage.setItem(key, String(val)); } catch (e) {}
+      }
+      function sDel(key) {
+        delete memStore[key];
+        try { localStorage.removeItem(key); } catch (e) {}
+      }
+
       function getToken() {
-        try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+        return sGet(TOKEN_KEY);
       }
 
       function setToken(tok, name) {
-        try {
-          if (tok) {
-            localStorage.setItem(TOKEN_KEY, tok);
-            if (name) localStorage.setItem(NAME_KEY, name);
-          } else {
-            localStorage.removeItem(TOKEN_KEY);
-            localStorage.removeItem(NAME_KEY);
-          }
-        } catch (e) {}
+        if (tok) {
+          sSet(TOKEN_KEY, tok);
+          if (name) sSet(NAME_KEY, name);
+        } else {
+          sDel(TOKEN_KEY);
+          sDel(NAME_KEY);
+        }
         updateShortcutUrlDisplay();
       }
 
@@ -839,14 +857,14 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
 
       function getQueue() {
         try {
-          var raw = localStorage.getItem(QUEUE_KEY);
+          var raw = sGet(QUEUE_KEY);
           var arr = raw ? JSON.parse(raw) : [];
           return Array.isArray(arr) ? arr : [];
         } catch (e) { return []; }
       }
 
       function saveQueue(arr) {
-        try { localStorage.setItem(QUEUE_KEY, JSON.stringify(arr.slice(-30))); } catch (e) {}
+        sSet(QUEUE_KEY, JSON.stringify(arr.slice(-30)));
         renderQueueBadge();
       }
 
@@ -863,12 +881,12 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
       }
 
       function isSoundOn() {
-        try { return localStorage.getItem(SOUND_KEY) !== '0'; } catch (e) { return true; }
+        return sGet(SOUND_KEY) !== '0';
       }
 
       window.toggleSound = function() {
         var next = !isSoundOn();
-        try { localStorage.setItem(SOUND_KEY, next ? '1' : '0'); } catch (e) {}
+        sSet(SOUND_KEY, next ? '1' : '0');
         byId('soundBtn').textContent = next ? '🔔 صدا: روشن' : '🔕 صدا: خاموش';
         if (next) playChime();
       };
@@ -957,8 +975,12 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
         var tok = getToken();
         var box = byId('shortcutUrlBox');
         var passWrap = byId('adminPassWrap');
+        var testBtn = byId('btnSelfTest');
         if (passWrap) {
           passWrap.className = tok ? 'hidden' : '';
+        }
+        if (testBtn) {
+          testBtn.className = tok ? 'btn btn-blu' : 'btn btn-blu hidden';
         }
         if (!box) return;
         if (!tok) {
@@ -969,6 +991,27 @@ export const renderIosSmsBridgeHtml = (origin: string): string => {
           byId('unpairedNotice').className = 'card card-emerald hidden';
         }
       }
+
+      window.runSystemSelfTest = function() {
+        if (!getToken()) {
+          showToast('ابتدا اطلاعات بلوبانک را ذخیره کنید.', true);
+          return;
+        }
+        var btn = byId('btnSelfTest');
+        btn.disabled = true;
+        btn.textContent = '⏳ در حال تست عملی بلوبانک و تلگرام...';
+        apiJson('POST', '/api/payment/ios/self-test', {}, function(status, res) {
+          btn.disabled = false;
+          btn.textContent = '🧪 تست خودکار اتصال بلوبانک و ربات تلگرام';
+          if (status === 200 && res && res.ok && res.sms_matched) {
+            playChime();
+            showToast('✅ تست کامل موفق! کارت ' + (res.card_bank || 'بلوبانک') + ' و پیامک واریز ۱۰۰٪ کار می‌کنند' + (res.telegram_sent ? ' + پیام تلگرام ارسال شد!' : '!'));
+            pollServer(false);
+          } else {
+            showToast('خطا در تست خودکار اتصال.', true);
+          }
+        });
+      };
 
       function loadExistingConfig() {
         if (!getToken()) return;

@@ -979,6 +979,18 @@ export const api = {
     }
   },
 
+  async adminGetReceiptImage(paymentId: string): Promise<{ ok: boolean; data_uri?: string; error?: string }> {
+    try {
+      const r = await fetch(`/api/payment/admin/receipt-image?payment_id=${encodeURIComponent(paymentId)}`, {
+        headers: headers(),
+      });
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j?.ok ? j : { ok: false, error: j?.error || 'تصویر رسید یافت نشد.' };
+    } catch {
+      return { ok: false, error: 'اتصال برقرار نشد.' };
+    }
+  },
+
   async adminGatewayAction(
     subRoute: 'cards' | 'devices' | 'keys' | 'payments' | 'simulate-sms',
     payload: Record<string, unknown>
