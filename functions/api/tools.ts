@@ -3,6 +3,7 @@ import { planAssistantReply } from '../../lib/assistantStrategy';
 import {
   Env,
   requireAuth,
+  requireUser,
   json,
   getClientIp,
   ensureCoreTablesSafe,
@@ -16,6 +17,8 @@ import {
   runSectionAi,
   derivedSessionId,
 } from './_shared';
+import { deliverViaTelegram } from '../../lib/telegram/bot';
+import { syncPhoneGrantsToUser } from '../../lib/payment/gateway';
 import {
   getTool,
   buildToolSystemPrompt,
@@ -408,16 +411,45 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       // One active grant per (phone, product). If it exists, refresh it (keep code unless asked).
       const existing = await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND product_id = ?2`).bind(phone, productId).first<GrantRow>();
       const code = existing && !body.newCode ? existing.code : genCode();
+      // Helper: sync to verified website user + push/queue via Telegram if configured
+      const notifyGrantSideEffects = async () => {
+        try {
+          const u = await env.DB.prepare(`SELECT id, phone_verified_at FROM users WHERE phone = ?1 LIMIT 1`)
+            .bind(phone)
+            .first<{ id: string; phone_verified_at: string }>();
+          if (u?.id && u.phone_verified_at) {
+            await syncPhoneGrantsToUser(env, u.id, phone).catch(() => {});
+          }
+          if (env.TELEGRAM_BOT_TOKEN) {
+            const toolMeta = productId === 'all' ? null : getTool(productId);
+            await deliverViaTelegram(env as any, {
+              phone,
+              productId,
+              productName: toolMeta?.name || 'همه ابزارهای هوشمند',
+              planName: plan?.name || `${days} روزه`,
+              code,
+              expiresAt,
+              note,
+              source: 'admin_grant',
+            }).catch(() => {});
+          }
+        } catch {
+          /* non-fatal */
+        }
+      };
+
       if (existing) {
         await env.DB.prepare(
           `UPDATE tool_access SET code = ?1, status = 'active', max_devices = ?2, message_quota = ?3, note = ?4, expires_at = ?5, created_at = ?6, devices = CASE WHEN ?7 = 1 THEN '[]' ELSE devices END WHERE id = ?8`
         ).bind(code, maxDevices, messageQuota, note, expiresAt, nowIso(), body.newCode ? 1 : 0, existing.id).run();
+        await notifyGrantSideEffects();
         return json({ ok: true, id: existing.id, phone, productId, code, maxDevices, messageQuota, expiresAt, refreshed: true });
       }
       const id = `ta-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
       await env.DB.prepare(
         `INSERT INTO tool_access (id, phone, product_id, code, status, max_devices, message_quota, devices, note, created_at, expires_at) VALUES (?1,?2,?3,?4,'active',?5,?6,'[]',?7,?8,?9)`
       ).bind(id, phone, productId, code, maxDevices, messageQuota, note, nowIso(), expiresAt).run();
+      await notifyGrantSideEffects();
       return json({ ok: true, id, phone, productId, code, maxDevices, messageQuota, expiresAt });
     }
 
@@ -432,6 +464,105 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       await env.DB.prepare(`UPDATE tool_access SET devices = '[]' WHERE id = ?1`).bind(id).run();
       return json({ ok: true });
     }
+  }
+
+  // ---- PUBLIC (AUTHENTICATED USER): autoUnlock without typing code ----
+  if (action === 'autoUnlock') {
+    if (!secret) return json({ ok: false, error: 'سرویس دسترسی پیکربندی نشده است.' }, { status: 503 });
+    const productId = String(body.productId || '');
+    const deviceId = String(body.deviceId || '').slice(0, 80);
+    if (!deviceId || !getTool(productId)) {
+      return json({ ok: false, reason: 'invalid_request' }, { status: 400 });
+    }
+    const user = await requireUser(request, env);
+    if (!user) {
+      return json({ ok: false, reason: 'not_authenticated' });
+    }
+
+    const nowMs = Date.now();
+    let grant: GrantRow | undefined;
+    let resolvedPhone = '';
+
+    // Path A: Verified phone on user account -> any active grant for that phone
+    if (user.phone && user.phone_verified_at) {
+      const phone = normalizePhone(String(user.phone));
+      if (phone) {
+        const rows = await env.DB.prepare(`SELECT * FROM tool_access WHERE phone = ?1 AND status = 'active'`)
+          .bind(phone)
+          .all<GrantRow>();
+        grant = (rows.results || []).find(
+          (r) => scopeCovers(r.product_id, productId) && (!r.expires_at || new Date(r.expires_at).getTime() > nowMs)
+        );
+        if (grant) resolvedPhone = phone;
+      }
+    }
+
+    // Path B: Paid gateway order owned directly by authenticated `user.id`
+    if (!grant) {
+      try {
+        const paidOrders = (
+          await env.DB.prepare(
+            `SELECT phone, access_code, product_id FROM payment_orders
+             WHERE user_id = ?1 AND status = 'paid' AND access_code <> ''
+             ORDER BY paid_at DESC, created_at DESC LIMIT 20`
+          )
+            .bind(String(user.id))
+            .all<{ phone: string; access_code: string; product_id: string }>()
+        ).results || [];
+
+        for (const po of paidOrders) {
+          if (!scopeCovers(po.product_id, productId)) continue;
+          const uidKey = `uid:${String(user.id)}`;
+          const row = await env.DB.prepare(
+            `SELECT * FROM tool_access WHERE (phone = ?1 OR phone = ?2) AND code = ?3 AND status = 'active' LIMIT 1`
+          )
+            .bind(po.phone || uidKey, uidKey, po.access_code)
+            .first<GrantRow>();
+          if (row && (!row.expires_at || new Date(row.expires_at).getTime() > nowMs)) {
+            grant = row;
+            resolvedPhone = row.phone || po.phone || String(user.phone || '');
+            break;
+          }
+        }
+      } catch {
+        /* payment_orders table optional */
+      }
+    }
+
+    if (!grant) {
+      return json({ ok: false, reason: user.phone && user.phone_verified_at ? 'no_active_grant' : 'not_verified' });
+    }
+    const phone = resolvedPhone || grant.phone;
+
+    const devices = parseDevices(grant.devices);
+    if (!devices.includes(deviceId)) {
+      if (devices.length >= grant.max_devices) {
+        return json({
+          ok: false,
+          reason: 'device_limit',
+          error: `سقف تعداد دستگاه مجاز این اشتراک (${grant.max_devices} دستگاه) تکمیل شده است.`,
+        });
+      }
+      devices.push(deviceId);
+      await env.DB.prepare(`UPDATE tool_access SET devices = ?1 WHERE id = ?2`)
+        .bind(JSON.stringify(devices), grant.id)
+        .run();
+    }
+
+    const exp = grant.expires_at
+      ? Math.min(new Date(grant.expires_at).getTime(), nowMs + 30 * 86400_000)
+      : nowMs + 30 * 86400_000;
+    const token = await signAccessToken({ phone, scope: grant.product_id, did: deviceId, gid: grant.id, exp }, secret);
+    const data = await loadContent(env);
+    return json({
+      ok: true,
+      autoUnlocked: true,
+      unlocked: true,
+      phone,
+      token,
+      expiresAt: new Date(exp).toISOString(),
+      tool: publicTool(productId, data),
+    });
   }
 
   // ---- PUBLIC: unlock ----

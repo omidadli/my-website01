@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS bot_orders (
   plan_id         TEXT DEFAULT '',
   plan_name       TEXT DEFAULT '',
   amount_toman    INTEGER NOT NULL DEFAULT 0,
+  expected_amount_toman INTEGER NOT NULL DEFAULT 0,
+  payment_id      TEXT DEFAULT '',
   -- awaiting_payment | receipt_submitted | auto_approved | needs_review
   -- | approved | rejected | fulfilled
   status          TEXT NOT NULL DEFAULT 'awaiting_payment',

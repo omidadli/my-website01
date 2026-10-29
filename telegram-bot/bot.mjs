@@ -17,6 +17,7 @@ import { createStore } from './lib/store.mjs';
 import * as tg from './lib/tg.mjs';
 import { normalizePhone, displayPhone, genId } from './lib/normalize.mjs';
 import * as flow from './lib/flow.mjs';
+import { createPayexaClient, verifyPayexaWebhookSignature } from './lib/payexaClient.mjs';
 
 const problems = assertConfig();
 if (problems.length) {
@@ -26,6 +27,7 @@ if (problems.length) {
 
 const store = createStore(config.dataDir);
 const TOKEN = config.token;
+const payexa = createPayexaClient({ baseUrl: config.siteUrl, apiKey: config.gatewayApiKey });
 
 /* ------------------------------- flood guard ------------------------------- */
 const buckets = new Map();
@@ -132,15 +134,148 @@ async function menuVerify(chatId) {
   await sendKb(chatId, r.text, r.keyboard);
 }
 
-async function onContact(chatId, contact) {
-  const r = flow.handleContact(store, chatId, contact);
-  await sendKb(chatId, r.text, tg.mainMenuKeyboard());
-  if (r.ok) await dispatchQueuedFor(chatId);
+/* ----------------------- website account sync bridge ----------------------- */
+async function syncSiteAccountBridge(payload) {
+  if (!config.siteUrl || !config.webhookSecret) return null;
+  try {
+    const res = await fetch(`${config.siteUrl}/api/user?action=bot_sync_user`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Bot-Webhook-Secret': config.webhookSecret,
+      },
+      body: JSON.stringify(payload),
+    });
+    const j = await res.json().catch(() => null);
+    return j && typeof j === 'object' ? j : null;
+  } catch {
+    return null;
+  }
 }
 
-async function onTextMessage(chatId, text, user) {
+async function onContact(chatId, contact, tgFrom = {}) {
+  const r = flow.handleContact(store, chatId, contact);
+  await sendKb(chatId, r.text, tg.mainMenuKeyboard());
+  if (!r.ok) return;
+  await dispatchQueuedFor(chatId);
+
+  const synced = await syncSiteAccountBridge({
+    op: 'check',
+    phone: r.verifiedPhone,
+    tgUserId: String(chatId),
+    tgUsername: tgFrom?.username || '',
+  });
+  if (!synced?.ok) return;
+
+  if (synced.exists) {
+    const profUrl = synced.magicToken
+      ? `${config.siteUrl}/profile?tg_auth=${synced.magicToken}`
+      : `${config.siteUrl}/profile`;
+    await send(
+      chatId,
+      `🌐 حساب کاربری شما در سایت (<b>${tg.escapeHtml(synced.user?.fullName || r.verifiedPhone)}</b>) به‌صورت خودکار متصل و همگام شد!`,
+      /^https:\/\/(?!localhost\b)/i.test(profUrl)
+        ? { reply_markup: tg.inlineKeyboard([[{ text: '👤 ورود یک‌کلیکی به پروفایل سایت', url: profUrl }]]) }
+        : {}
+    );
+  } else {
+    store.upsertUser(chatId, {
+      pending: { kind: 'web_reg_name', phone: r.verifiedPhone },
+    });
+    await sendKb(
+      chatId,
+      '🌐 <b>تکمیل ثبت‌نام یکپارچه در وب‌سایت</b>\n\n' +
+        'با این شماره هنوز در وب‌سایت حساب کاربری ندارید. برای اینکه سرویس‌های خریداری‌شده مستقیماً داخل پروفایل شما فعال شوند، همین‌جا حساب شما را می‌سازیم:\n\n' +
+        '👤 <b>گام ۱ از ۳ — نام و نام خانوادگی خود را ارسال کنید:</b>',
+      { keyboard: [[{ text: '❌ انصراف' }]], resize_keyboard: true, one_time_keyboard: true }
+    );
+  }
+}
+
+async function onTextMessage(chatId, text, user, messageId = 0) {
   const t = String(text || '').trim();
   const pending = store.getUser(chatId)?.pending || {};
+
+  if (t === '❌ انصراف' && pending.kind) {
+    store.upsertUser(chatId, { pending: null });
+    return sendKb(chatId, 'لغو شد.', tg.mainMenuKeyboard());
+  }
+
+  // In-bot Website Account Registration Wizard (3 steps)
+  if (pending.kind === 'web_reg_name' && !t.startsWith('/')) {
+    if (t.length < 2 || t.length > 80) {
+      return send(chatId, '⚠️ لطفاً نام و نام خانوادگی معتبر (حداقل ۲ کاراکتر) ارسال کنید:');
+    }
+    store.upsertUser(chatId, {
+      pending: { kind: 'web_reg_email', phone: pending.phone, fullName: t },
+    });
+    return sendKb(
+      chatId,
+      `✅ نام ثبت شد: <b>${tg.escapeHtml(t)}</b>\n\n📧 <b>گام ۲ از ۳ — آدرس ایمیل خود را وارد کنید:</b>`,
+      {
+        keyboard: [[{ text: '⏭ رد شدن (ثبت بدون ایمیل)' }], [{ text: '❌ انصراف' }]],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      }
+    );
+  }
+
+  if (pending.kind === 'web_reg_email' && !t.startsWith('/')) {
+    let email = '';
+    if (t !== '⏭ رد شدن (ثبت بدون ایمیل)') {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) {
+        return send(chatId, '⚠️ فرمت ایمیل صحیح نیست. ایمیل معتبر بفرستید یا دکمه رد شدن را بزنید:');
+      }
+      email = t.toLowerCase();
+    }
+    store.upsertUser(chatId, {
+      pending: { kind: 'web_reg_password', phone: pending.phone, fullName: pending.fullName, email },
+    });
+    return sendKb(
+      chatId,
+      '🔐 <b>گام ۳ از ۳ — یک رمز عبور دلخواه (حداقل ۶ کاراکتر) برای حساب وب‌سایت بفرستید:</b>\n' +
+        '🛡 پیام رمز عبور شما بلافاصله پس از ثبت از چت حذف می‌شود.',
+      { keyboard: [[{ text: '❌ انصراف' }]], resize_keyboard: true, one_time_keyboard: true }
+    );
+  }
+
+  if (pending.kind === 'web_reg_password' && !t.startsWith('/')) {
+    if (t.length < 6) {
+      return send(chatId, '⚠️ رمز عبور باید حداقل ۶ کاراکتر باشد:');
+    }
+    if (messageId > 0) {
+      await tg.deleteMessage(TOKEN, chatId, messageId).catch(() => {});
+    }
+    const reg = await syncSiteAccountBridge({
+      op: 'register',
+      tgUserId: String(chatId),
+      tgUsername: user?.username || '',
+      phone: pending.phone,
+      fullName: pending.fullName,
+      email: pending.email || '',
+      password: t,
+    });
+    if (!reg?.ok) {
+      return send(chatId, `⚠️ ${tg.escapeHtml(reg?.error || 'خطا در ثبت‌نام حساب وب‌سایت.')}`);
+    }
+    store.upsertUser(chatId, { pending: null });
+    const profUrl = reg.magicToken
+      ? `${config.siteUrl}/profile?tg_auth=${reg.magicToken}`
+      : `${config.siteUrl}/profile`;
+    await sendKb(
+      chatId,
+      `🎉 <b>حساب کاربری شما در سایت ساخته و متصل شد!</b>\n` +
+        `👤 نام: <b>${tg.escapeHtml(pending.fullName)}</b>\n` +
+        `📱 شناسه ورود: <code>${tg.escapeHtml(pending.phone)}</code>`,
+      tg.mainMenuKeyboard()
+    );
+    if (/^https:\/\/(?!localhost\b)/i.test(profUrl)) {
+      await send(chatId, '👇 مشاهده پروفایل کاربری در سایت:', {
+        reply_markup: tg.inlineKeyboard([[{ text: '👤 ورود یک‌کلیکی به پروفایل سایت', url: profUrl }]]),
+      });
+    }
+    return;
+  }
 
   // 1) OTP entry
   if (pending.kind === 'awaiting_otp') {
@@ -360,6 +495,27 @@ async function showPendingOrders(chatId) {
 
 /* ------------------------------ callback queries ------------------------------ */
 async function onCallback(chatId, messageId, cbId, data, fromId) {
+  // user: instant check on automated card-to-card payment (`chkpay:<paymentId>`)
+  if (data.startsWith('chkpay:')) {
+    const paymentId = data.slice(7);
+    const verified = await payexa.verifyPayment(paymentId);
+    if (!verified.ok) {
+      const msg = verified?.error?.message || 'هنوز پیامک واریز از بانک دریافت نشده است. چند ثانیه دیگر دوباره تلاش کنید.';
+      return answer(cbId, msg, true);
+    }
+    answer(cbId, '✅ پرداخت شما تأیید شد!');
+    if (verified.data?.first_verification) {
+      await tg.editMessageText(
+        TOKEN,
+        chatId,
+        messageId,
+        `✅ <b>پرداخت شماره <code>${tg.escapeHtml(paymentId)}</code> تأیید شد!</b>\nکد دسترسی شما صادر و فعال گردید.`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
+    return;
+  }
+
   // user: re-deliver
   if (data.startsWith('redeliver:')) {
     const d = store.allDeliveries().find((x) => x.id === data.slice(10));
@@ -457,7 +613,7 @@ async function handleUpdate(u) {
   if (msg.chat.type !== 'private') return; // private chats only
   if (!allowMessage(chatId)) return send(chatId, '⏳ لطفاً کمی آرام‌تر!');
 
-  if (msg.contact) return onContact(chatId, msg.contact);
+  if (msg.contact) return onContact(chatId, msg.contact, msg.from);
 
   const text = msg.text || msg.caption || '';
   if (!text) {
@@ -485,16 +641,21 @@ async function handleUpdate(u) {
     return send(chatId, 'فقط پیام متنی یا عکس رسید قابل پردازش است. 🙂');
   }
 
-  return onTextMessage(chatId, text, msg.from);
+  return onTextMessage(chatId, text, msg.from, msg.message_id || 0);
 }
 
 /* -------------------------------- HTTP bridge -------------------------------- */
-function readBody(req) {
+function readRawBody(req) {
   return new Promise((resolve) => {
     let data = '';
     req.on('data', (c) => { data += c; if (data.length > 1_000_000) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+    req.on('end', () => resolve(data));
   });
+}
+
+async function readBody(req) {
+  const raw = await readRawBody(req);
+  try { return JSON.parse(raw || '{}'); } catch { return {}; }
 }
 
 function json(res, code, obj) {
@@ -517,6 +678,31 @@ const server = http.createServer(async (req, res) => {
     json(res, 200, { ok: true });
     handleUpdate(update).catch((e) => console.error('[update]', e));
     return;
+  }
+
+  // Automated Card-to-Card Gateway HMAC Webhook (`POST /api/payexa-webhook`)
+  if (req.method === 'POST' && url.pathname === '/api/payexa-webhook') {
+    const raw = await readRawBody(req);
+    const sig = String(req.headers['x-payexa-signature'] || '');
+    if (!verifyPayexaWebhookSignature(config.gatewayApiKey, raw, sig)) {
+      return json(res, 401, { ok: false, error: 'invalid_signature' });
+    }
+    let event = {};
+    try { event = JSON.parse(raw || '{}'); } catch {}
+    if (event.event === 'payment.paid' && event.payment_id) {
+      const ver = await payexa.verifyPayment(event.payment_id, event.amount);
+      if (ver.ok && ver.data?.first_verification) {
+        const meta = ver.data.metadata || {};
+        const tgUserId = String(meta.tg_user_id || '');
+        if (tgUserId) {
+          await send(
+            tgUserId,
+            `🎉 <b>پرداخت شما به‌صورت خودکار تأیید شد!</b>\n🆔 شناسه: <code>${tg.escapeHtml(event.payment_id)}</code>\nاشتراک شما فعال گردید.`
+          );
+        }
+      }
+    }
+    return json(res, 200, { ok: true });
   }
 
   // Website bridge — authenticated by shared secret

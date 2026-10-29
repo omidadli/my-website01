@@ -39,6 +39,7 @@ import {
   getNeuromarketingTrigger,
 } from '../../../lib/toolPlans';
 import { Theme } from '../../types';
+import { QuickCheckoutModal } from './QuickCheckoutModal';
 
 interface Props {
   tool: AiToolMeta;
@@ -119,6 +120,7 @@ export const ToolChatModal: React.FC<Props> = ({
   const [unlocking, setUnlocking] = useState(false);
   const [gateError, setGateError] = useState('');
   const [selectedPlan, setSelectedPlan] = useState<string>(plans.find((p) => p.popular)?.id || plans[0]?.id || '');
+  const [checkoutPlan, setCheckoutPlan] = useState<ToolPlan | null>(null);
 
   // Chat state
   const [messages, setMessages] = useState<Msg[]>(() => {
@@ -229,7 +231,30 @@ export const ToolChatModal: React.FC<Props> = ({
           return;
         }
       }
+
+      // Seamless Auto-Unlock: if logged into website with verified phone & active subscription, unlock silently!
+      const autoRes = await api.autoUnlockTool({ productId: tool.id, deviceId });
       if (!alive) return;
+      if (autoRes.ok && autoRes.token) {
+        try { localStorage.setItem(tokenKey(tool.id), autoRes.token); } catch {}
+        setPaid(true);
+        setWelcomeMsg(autoRes.tool?.welcome || '');
+        setMessages((prev) =>
+          prev.length
+            ? prev
+            : [
+                {
+                  role: 'assistant',
+                  content:
+                    autoRes.tool?.welcome ||
+                    `سلام 👋 اشتراک فعال شما از طریق حساب کاربری تأییدشده شناسایی شد. با «${tool.name}» در خدمتم!`,
+                },
+              ]
+        );
+        setView('chat');
+        return;
+      }
+
       if (freeTrialLimit > 0) {
         setWelcomeMsg(trialWelcome);
         setMessages(prev => prev.length ? prev : [{ role: 'assistant', content: trialWelcome }]);
@@ -866,11 +891,21 @@ export const ToolChatModal: React.FC<Props> = ({
               <span>{neuro.socialBadge}</span>
             </div>
 
-            {/* How to buy — Instant Channel Funnel */}
+            {/* How to buy — Instant Automated Gateway + Channel Funnel */}
             <div className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardCls}`}>
               <p className="text-sm font-black flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-500" /> روش سریع فعال‌سازی و دریافت کد دسترسی:
+                <ShieldCheck className="w-4 h-4 text-emerald-500" /> روش سریع فعال‌سازی و دریافت آنی کد دسترسی:
               </p>
+              {selPlan && (
+                <button
+                  type="button"
+                  onClick={() => setCheckoutPlan(selPlan)}
+                  className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white font-black text-xs sm:text-sm shadow-lg shadow-emerald-500/25 hover:opacity-95 transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>خرید آنلاین و فعال‌سازی خودکار پلن «{selPlan.name}» (بدون نیاز به ارسال رسید)</span>
+                </button>
+              )}
               {purchaseNote && (
                 <p className={`text-[12px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                   {purchaseNote}
@@ -969,6 +1004,17 @@ export const ToolChatModal: React.FC<Props> = ({
           </div>
         )}
       </div>
+
+      {checkoutPlan && (
+        <QuickCheckoutModal
+          theme={theme}
+          productId={tool.id}
+          productName={tool.name}
+          plan={checkoutPlan}
+          priceLabel={resolvePlanPrice(tool.id, checkoutPlan, data)}
+          onClose={() => setCheckoutPlan(null)}
+        />
+      )}
     </div>
   );
 };

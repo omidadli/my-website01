@@ -28,11 +28,14 @@ export interface BotEnv {
   DB: D1Like;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_BOT_USERNAME?: string;
   /** comma-separated Telegram user ids */
   TELEGRAM_ADMIN_IDS?: string;
   /** card-to-card payment info shown in the purchase flow */
   BOT_CARD_NUMBER?: string;
   BOT_CARD_HOLDER?: string;
+  BOT_CARD_IBAN?: string;
+  BOT_CARD_BANK?: string;
   /** 'vision' (default) | 'always' | 'off' — auto-approval policy for receipts */
   TELEGRAM_AUTO_APPROVE?: string;
   /** Dedicated Gemini secret used only for Telegram payment-receipt OCR. */
@@ -42,7 +45,9 @@ export interface BotEnv {
   Gemini_api_key?: string;
   TELEGRAM_VISION_MODEL?: string;
   SITE_URL?: string;
+  SITE_BASE_URL?: string;
   SUPPORT_HANDLE?: string;
+  PAYMENT_REQUIRE_ONLINE_DEVICE?: string;
 }
 
 export interface BotUserRow {
@@ -67,8 +72,10 @@ export interface BotOrderRow {
   plan_id: string;
   plan_name: string;
   amount_toman: number;
-  /** Exact requested transfer amount, including the per-order random suffix. */
+  /** Exact requested transfer amount, including the per-order unique delta. */
   expected_amount_toman?: number;
+  /** Linked Payexa-v2 SMS gateway payment_id (`PAY-...`) when created via unified gateway. */
+  payment_id?: string;
   status: string; // awaiting_payment | receipt_submitted | auto_approved | needs_review | approved | rejected | fulfilled
   ref_code: string;
   receipt_file_id: string;
@@ -121,6 +128,7 @@ const BOT_TABLES = [
     plan_name TEXT DEFAULT '',
     amount_toman INTEGER NOT NULL DEFAULT 0,
     expected_amount_toman INTEGER NOT NULL DEFAULT 0,
+    payment_id TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'awaiting_payment',
     ref_code TEXT DEFAULT '',
     receipt_file_id TEXT DEFAULT '',
@@ -164,25 +172,32 @@ const BOT_TABLES = [
   )`,
 ];
 
-let ready: Promise<void> | null = null;
+const readyByDb = new WeakMap<object, Promise<void>>();
 
 export const ensureBotTables = (env: BotEnv): Promise<void> => {
-  if (!ready) {
-    ready = (async () => {
+  const dbKey = env.DB as unknown as object;
+  let pending = readyByDb.get(dbKey);
+  if (!pending) {
+    pending = (async () => {
       await env.DB.batch(BOT_TABLES.map((sql) => env.DB.prepare(sql)));
       // Backward-compatible additive migration for already-created D1 databases.
-      try {
-        await env.DB.prepare(`ALTER TABLE bot_orders ADD COLUMN expected_amount_toman INTEGER NOT NULL DEFAULT 0`).run();
-      } catch (error) {
-        // Column already exists. Ignore only the duplicate-column case.
-        if (!String((error as any)?.message || error).toLowerCase().includes('duplicate column')) throw error;
+      for (const colSql of [
+        `ALTER TABLE bot_orders ADD COLUMN expected_amount_toman INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE bot_orders ADD COLUMN payment_id TEXT DEFAULT ''`,
+      ]) {
+        try {
+          await env.DB.prepare(colSql).run();
+        } catch (error) {
+          if (!String((error as any)?.message || error).toLowerCase().includes('duplicate column')) throw error;
+        }
       }
     })().catch((e) => {
-      ready = null;
+      readyByDb.delete(dbKey);
       throw e;
     });
+    readyByDb.set(dbKey, pending);
   }
-  return ready;
+  return pending;
 };
 
 export const nowIso = (): string => new Date().toISOString();
@@ -249,11 +264,11 @@ export const findVerifiedByPhone = async (env: BotEnv, phone: string): Promise<B
 
 export const insertOrder = async (env: BotEnv, order: BotOrderRow): Promise<void> => {
   await env.DB.prepare(
-    `INSERT INTO bot_orders (id, tg_user_id, phone, product_id, product_name, plan_id, plan_name, amount_toman, expected_amount_toman, status, ref_code, receipt_file_id, receipt_json, note, created_at, decided_at, decided_by, delivery_id)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)`
+    `INSERT INTO bot_orders (id, tg_user_id, phone, product_id, product_name, plan_id, plan_name, amount_toman, expected_amount_toman, payment_id, status, ref_code, receipt_file_id, receipt_json, note, created_at, decided_at, decided_by, delivery_id)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)`
   ).bind(
     order.id, order.tg_user_id, order.phone, order.product_id, order.product_name, order.plan_id, order.plan_name,
-    order.amount_toman, order.expected_amount_toman || order.amount_toman, order.status, order.ref_code, order.receipt_file_id, order.receipt_json, order.note,
+    order.amount_toman, order.expected_amount_toman || order.amount_toman, order.payment_id || '', order.status, order.ref_code, order.receipt_file_id, order.receipt_json, order.note,
     order.created_at, order.decided_at, order.decided_by, order.delivery_id
   ).run();
 };
@@ -266,8 +281,8 @@ export const updateOrder = async (env: BotEnv, id: string, patch: Partial<BotOrd
   if (!cur) return;
   const next = { ...cur, ...patch };
   await env.DB.prepare(
-    `UPDATE bot_orders SET phone=?1, status=?2, ref_code=?3, receipt_file_id=?4, receipt_json=?5, note=?6, decided_at=?7, decided_by=?8, delivery_id=?9 WHERE id=?10`
-  ).bind(next.phone, next.status, next.ref_code, next.receipt_file_id, next.receipt_json, next.note, next.decided_at, next.decided_by, next.delivery_id, id).run();
+    `UPDATE bot_orders SET phone=?1, status=?2, ref_code=?3, receipt_file_id=?4, receipt_json=?5, note=?6, decided_at=?7, decided_by=?8, delivery_id=?9, payment_id=?10 WHERE id=?11`
+  ).bind(next.phone, next.status, next.ref_code, next.receipt_file_id, next.receipt_json, next.note, next.decided_at, next.decided_by, next.delivery_id, next.payment_id || '', id).run();
 };
 
 export const ordersOf = async (env: BotEnv, tgUserId: string): Promise<BotOrderRow[]> =>

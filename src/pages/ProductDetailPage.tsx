@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Sparkles,
@@ -16,9 +16,11 @@ import {
   Crown,
 } from 'lucide-react';
 import { useContent } from '../context/ContentContext';
+import { useUser } from '../context/UserContext';
 import { Theme, Page } from '../types';
 import { Head } from '../components/nd/Kit';
 import { ToolChatModal } from '../components/tools/ToolChatModal';
+import { QuickCheckoutModal } from '../components/tools/QuickCheckoutModal';
 import { getProductDetail } from '../data/productDetails';
 import { AI_TOOLS, AiToolMeta } from '../data/tools';
 import { getPlans, resolvePlanPrice, ToolPlan, INITIAL_FREE_COINS } from '../../lib/toolPlans';
@@ -55,8 +57,32 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
   );
 
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [checkoutPlan, setCheckoutPlan] = useState<ToolPlan | null>(null);
   const [openFaqIdx, setOpenFaqIdx] = useState<number | null>(0);
   const [selectedPlan, setSelectedPlan] = useState<string>(plans.find((p) => p.popular)?.id || plans[0]?.id || '');
+
+  const { subscriptions, loading: authLoading } = useUser();
+  const activeUserSub = subscriptions.find(
+    (s) =>
+      s.status === 'active' &&
+      (s.productId === toolMeta.id || s.productId === productId || s.productId === 'all') &&
+      (!s.endDate || Date.parse(s.endDate) > Date.now())
+  );
+
+  // Direct launch support (`?open=chat`) from Profile Dashboard, Post-Payment Page, or Telegram 1-Click Link
+  useEffect(() => {
+    if (authLoading || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('open') === 'chat') {
+      params.delete('open');
+      const remaining = params.toString();
+      const cleanUrl = window.location.pathname + (remaining ? `?${remaining}` : '') + window.location.hash;
+      try {
+        window.history.replaceState(null, '', cleanUrl);
+      } catch {}
+      setIsChatOpen(true);
+    }
+  }, [authLoading, productId]);
 
   const selPlan = plans.find((p) => p.id === selectedPlan);
   const purchaseMsg = `سلام امید 👋 می‌خوام پلنِ «${selPlan?.name || ''}» از ابزار «${toolMeta.name}» رو فعال کنم${
@@ -108,18 +134,31 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
 
         {/* Primary CTA button */}
         <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <button
-            onClick={() => setIsChatOpen(true)}
-            className="nd-btn nd-btn-accent px-8 py-3.5 text-sm font-black flex items-center justify-center gap-2 shadow-lg cursor-pointer"
-          >
-            <MessageCircle className="w-4 h-4" />
-            <span>شروع تست گفتگو با ۵۰۰ سکه هدیه</span>
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          {activeUserSub ? (
+            <button
+              onClick={() => setIsChatOpen(true)}
+              className="px-8 py-3.5 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white text-sm font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 hover:opacity-95 transition cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>ورود مستقیم به سرویس فعال شما ({activeUserSub.planName || 'اشتراک فعال'})</span>
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={() => setIsChatOpen(true)}
+              className="nd-btn nd-btn-accent px-8 py-3.5 text-sm font-black flex items-center justify-center gap-2 shadow-lg cursor-pointer"
+            >
+              <MessageCircle className="w-4 h-4" />
+              <span>شروع تست گفتگو با ۵۰۰ سکه هدیه</span>
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         <p className={`text-xs ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
-          بدون نیاز به ثبت کارت بانکی · کسر ۱۵۰ سکه برای هر تحلیل · فعال‌سازی آنی
+          {activeUserSub
+            ? 'اشتراک شما در این سرویس فعال است و بدون نیاز به کد دسترسی مستقیماً متصل می‌شوید'
+            : 'بدون نیاز به ثبت کارت بانکی · کسر ۱۵۰ سکه برای هر تحلیل · فعال‌سازی آنی'}
         </p>
       </section>
 
@@ -302,34 +341,48 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
                 </div>
 
                 <span
-                  className={`mt-4 text-center text-xs font-black rounded-xl py-2.5 transition-colors ${
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedPlan(p.id);
+                    setCheckoutPlan(p);
+                  }}
+                  className={`mt-4 text-center text-xs font-black rounded-xl py-2.5 transition-colors flex items-center justify-center gap-1.5 ${
                     isSel
-                      ? 'bg-[color:var(--nd-accent)] text-white'
+                      ? 'bg-[color:var(--nd-accent)] text-white shadow-md'
                       : isDark
-                      ? 'bg-white/8 text-slate-200'
-                      : 'bg-slate-100 text-slate-700'
+                      ? 'bg-white/8 text-slate-200 hover:bg-white/15'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
-                  {isSel ? 'پلن انتخابی شما ✓' : 'انتخاب'}
+                  <Zap className="w-3.5 h-3.5" />
+                  {isSel ? 'خرید آنی و فعال‌سازی خودکار ←' : 'انتخاب و خرید آنی'}
                 </span>
               </button>
             );
           })}
         </div>
 
-        {/* Quick Contact Funnel */}
+        {/* Instant Gateway + Support Channels */}
         <div className="nd-card p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h3 className={`text-sm font-black flex items-center gap-2 ${isDark ? 'text-white' : ''}`}>
                 <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                <span>روش سریع فعال‌سازی و دریافت کد اختصاصی:</span>
+                <span>درگاه خودکار کارت‌به‌کارت (تأیید پیامکی در چند ثانیه — بدون نیاز به ارسال رسید):</span>
               </h3>
               <p className={`text-xs mt-1 ${isDark ? 'text-slate-400' : 'nd-muted'}`}>
-                روی پیام‌رسان دلخواه کلیک کنید تا پیام آماده ارسال شده و کد دسترسی اختصاصی را تحویل بگیرید.
+                پس از کارت‌به‌کارت مبلغ یکتا، سامانه از روی پیامک بانک به‌صورت خودکار اشتراک را فعال و کد دسترسی را صادر می‌کند.
               </p>
             </div>
-            <span className="text-xs font-bold text-[color:var(--nd-accent)]">پشتیبانی: {phoneLabel}</span>
+            {selPlan && (
+              <button
+                onClick={() => setCheckoutPlan(selPlan)}
+                className="px-5 py-3 rounded-2xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white text-xs sm:text-sm font-black shadow-lg shadow-emerald-500/25 hover:opacity-95 transition flex items-center justify-center gap-2 shrink-0 cursor-pointer"
+              >
+                <Zap className="w-4 h-4" />
+                <span>خرید آنی پلن «{selPlan.name}»</span>
+              </button>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -459,6 +512,18 @@ export const ProductDetailPage: React.FC<Props> = ({ productId, theme = 'dark', 
           socialProof={cfg?.socialProof}
           urgency={cfg?.urgency}
           onClose={() => setIsChatOpen(false)}
+        />
+      )}
+
+      {/* Instant Automated Card-to-Card Checkout Modal */}
+      {checkoutPlan && (
+        <QuickCheckoutModal
+          theme={theme}
+          productId={toolMeta.id}
+          productName={toolMeta.name}
+          plan={checkoutPlan}
+          priceLabel={resolvePlanPrice(toolMeta.id, checkoutPlan, data)}
+          onClose={() => setCheckoutPlan(null)}
         />
       )}
     </div>

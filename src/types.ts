@@ -10,6 +10,7 @@ export type Page =
   | 'products'
   | 'profile'
   | 'admin'
+  | 'pay'
   | (string & {});
 
 export interface UserProfile {
@@ -17,6 +18,10 @@ export interface UserProfile {
   fullName: string;
   email: string;
   phone?: string;
+  phoneVerified?: boolean;
+  phoneVerifiedAt?: string;
+  tgUserId?: string;
+  tgUsername?: string;
   avatarUrl?: string;
   joinedAt: string;
   bio?: string;

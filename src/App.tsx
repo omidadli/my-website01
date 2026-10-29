@@ -28,6 +28,7 @@ const ProductsPage = lazy(() => import('./pages/ProductsPage').then((m) => ({ de
 const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage').then((m) => ({ default: m.ProductDetailPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then((m) => ({ default: m.AdminPage })));
 const ProfilePage = lazy(() => import('./pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
+const PaymentPage = lazy(() => import('./pages/PaymentPage').then((m) => ({ default: m.PaymentPage })));
 const CustomPageView = lazy(() => import('./pages/CustomPageView').then((m) => ({ default: m.CustomPageView })));
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PageLoader } from './components/PageLoader';
@@ -57,6 +58,9 @@ function MainLayout({
   );
   const [selectedProductId, setSelectedProductId] = useState<string | null>(() =>
     initialRoute?.page === 'products' ? initialRoute.productId || null : null,
+  );
+  const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(() =>
+    initialRoute?.page === 'pay' ? initialRoute.paymentId || null : null,
   );
   const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
   const [isThemeTransitioning, setIsThemeTransitioning] = useState<boolean>(false);
@@ -117,6 +121,7 @@ function MainLayout({
       // clicking the "آموزش" nav while reading a post goes back to the list.
       setSelectedBlogPostId(route.page === 'blog' ? route.postId : null);
       setSelectedProductId(route.page === 'products' ? route.productId || null : null);
+      setSelectedPaymentId(route.page === 'pay' ? route.paymentId || null : null);
     };
 
     syncFromUrl();
@@ -355,6 +360,14 @@ function MainLayout({
 
             {currentPage === 'admin' && (
               <AdminPage
+                onNavigate={handleNavigate}
+              />
+            )}
+
+            {currentPage === 'pay' && selectedPaymentId && (
+              <PaymentPage
+                theme={theme}
+                paymentId={selectedPaymentId}
                 onNavigate={handleNavigate}
               />
             )}

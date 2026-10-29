@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS users (
   login_type TEXT NOT NULL DEFAULT 'email',  -- 'email' | 'phone'
   email TEXT DEFAULT '',
   phone TEXT DEFAULT '',
+  phone_verified_at TEXT NOT NULL DEFAULT '',
+  tg_user_id TEXT NOT NULL DEFAULT '',
+  tg_username TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
   password_salt TEXT NOT NULL,
   avatar_url TEXT DEFAULT '',
@@ -123,6 +126,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_login ON users (login_id);
+CREATE INDEX IF NOT EXISTS idx_users_phone ON users (phone);
+CREATE INDEX IF NOT EXISTS idx_users_tg_user_id ON users (tg_user_id);
 
 -- Persistent HttpOnly-cookie sessions for users (separate from admin tokens).
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -293,3 +298,209 @@ CREATE TABLE IF NOT EXISTS ai_key_events (
   );
 
 CREATE INDEX IF NOT EXISTS idx_ai_key_events_time ON ai_key_events (created_at);
+
+-- ---------------------------------------------------------------------------
+-- Telegram bot tables (migrations/0006_telegram_bot.sql)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS bot_users (
+  tg_user_id    TEXT PRIMARY KEY,
+  first_name    TEXT DEFAULT '',
+  username      TEXT DEFAULT '',
+  phone         TEXT DEFAULT '',
+  verified_at   TEXT DEFAULT '',
+  verify_via    TEXT DEFAULT '',
+  pending_state TEXT DEFAULT '',
+  pending_json  TEXT DEFAULT '',
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bot_users_phone ON bot_users (phone);
+
+CREATE TABLE IF NOT EXISTS bot_orders (
+  id              TEXT PRIMARY KEY,
+  tg_user_id      TEXT NOT NULL,
+  phone           TEXT DEFAULT '',
+  product_id      TEXT NOT NULL,
+  product_name    TEXT DEFAULT '',
+  plan_id         TEXT DEFAULT '',
+  plan_name       TEXT DEFAULT '',
+  amount_toman    INTEGER NOT NULL DEFAULT 0,
+  expected_amount_toman INTEGER NOT NULL DEFAULT 0,
+  payment_id      TEXT DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'awaiting_payment',
+  ref_code        TEXT DEFAULT '',
+  receipt_file_id TEXT DEFAULT '',
+  receipt_json    TEXT DEFAULT '',
+  note            TEXT DEFAULT '',
+  created_at      TEXT NOT NULL,
+  decided_at      TEXT DEFAULT '',
+  decided_by      TEXT DEFAULT '',
+  delivery_id     TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bot_orders_status ON bot_orders (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_bot_orders_ref ON bot_orders (ref_code);
+CREATE INDEX IF NOT EXISTS idx_bot_orders_tg ON bot_orders (tg_user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS bot_deliveries (
+  id           TEXT PRIMARY KEY,
+  tg_user_id   TEXT DEFAULT '',
+  phone        TEXT DEFAULT '',
+  product_id   TEXT DEFAULT '',
+  product_name TEXT DEFAULT '',
+  plan_name    TEXT DEFAULT '',
+  order_id     TEXT DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'queued',
+  source       TEXT DEFAULT 'order',
+  code         TEXT DEFAULT '',
+  expires_at   TEXT DEFAULT '',
+  note         TEXT DEFAULT '',
+  created_at   TEXT NOT NULL,
+  delivered_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bot_deliveries_tg ON bot_deliveries (tg_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_bot_deliveries_phone ON bot_deliveries (phone, status);
+
+CREATE TABLE IF NOT EXISTS bot_updates (
+  update_id  INTEGER PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_events (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  detail     TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- Automated Card-to-Card SMS Payment Gateway (migrations/0007_payment_gateway.sql)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS payment_cards (
+  id               TEXT PRIMARY KEY,
+  card_number      TEXT NOT NULL,
+  holder_name      TEXT NOT NULL,
+  iban             TEXT DEFAULT '',
+  bank_name        TEXT DEFAULT '',
+  bank_slug        TEXT DEFAULT 'shetab',
+  is_active        INTEGER NOT NULL DEFAULT 1,
+  priority         INTEGER NOT NULL DEFAULT 1,
+  daily_limit_rial INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_cards_active ON payment_cards (is_active, priority);
+
+CREATE TABLE IF NOT EXISTS payment_devices (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  device_serial   TEXT DEFAULT '',
+  token_hash      TEXT NOT NULL UNIQUE,
+  token_mask      TEXT NOT NULL,
+  pair_code       TEXT DEFAULT '',
+  pair_token      TEXT DEFAULT '',
+  pair_expires_at TEXT DEFAULT '',
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  last_seen_at  TEXT DEFAULT '',
+  battery_level INTEGER NOT NULL DEFAULT -1,
+  device_model  TEXT DEFAULT '',
+  app_version   TEXT DEFAULT '',
+  sms_count     INTEGER NOT NULL DEFAULT 0,
+  matched_count INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_devices_token ON payment_devices (token_hash);
+
+CREATE TABLE IF NOT EXISTS payment_api_keys (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  key_hash        TEXT NOT NULL UNIQUE,
+  key_mask        TEXT NOT NULL,
+  signing_secret  TEXT NOT NULL,
+  allowed_origins TEXT DEFAULT '',
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  last_used_at    TEXT DEFAULT '',
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_api_keys_hash ON payment_api_keys (key_hash);
+
+CREATE TABLE IF NOT EXISTS payment_orders (
+  id                    TEXT PRIMARY KEY,
+  order_id              TEXT NOT NULL,
+  source                TEXT NOT NULL DEFAULT 'website',
+  status                TEXT NOT NULL DEFAULT 'pending',
+  amount_rial           INTEGER NOT NULL,
+  payable_amount_rial   INTEGER NOT NULL,
+  card_id               TEXT DEFAULT '',
+  card_number           TEXT NOT NULL,
+  card_holder           TEXT NOT NULL,
+  card_bank             TEXT DEFAULT '',
+  card_bank_slug        TEXT DEFAULT 'shetab',
+  phone                 TEXT DEFAULT '',
+  user_id               TEXT DEFAULT '',
+  tg_user_id            TEXT DEFAULT '',
+  product_id            TEXT DEFAULT '',
+  product_name          TEXT DEFAULT '',
+  plan_id               TEXT DEFAULT '',
+  plan_name             TEXT DEFAULT '',
+  description           TEXT DEFAULT '',
+  callback_url          TEXT DEFAULT '',
+  return_url            TEXT DEFAULT '',
+  metadata_json         TEXT DEFAULT '',
+  api_key_id            TEXT DEFAULT '',
+  buyer_secret_hash     TEXT DEFAULT '',
+  matched_sms_id        TEXT DEFAULT '',
+  paid_at               TEXT DEFAULT '',
+  verified_at           TEXT DEFAULT '',
+  fulfilled_at          TEXT DEFAULT '',
+  access_code           TEXT DEFAULT '',
+  access_expires_at     TEXT DEFAULT '',
+  receipt_ref           TEXT DEFAULT '',
+  receipt_note          TEXT DEFAULT '',
+  receipt_image_b64     TEXT DEFAULT '',
+  receipt_submitted_at  TEXT DEFAULT '',
+  webhook_delivered_at  TEXT DEFAULT '',
+  expires_at            TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_status_payable ON payment_orders (status, payable_amount_rial);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_created ON payment_orders (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_order_id ON payment_orders (order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_phone ON payment_orders (phone, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_user ON payment_orders (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS payment_sms_logs (
+  id                  TEXT PRIMARY KEY,
+  device_id           TEXT NOT NULL,
+  msg_hash            TEXT NOT NULL UNIQUE,
+  sender              TEXT DEFAULT '',
+  body_sanitized      TEXT DEFAULT '',
+  received_at         TEXT NOT NULL,
+  parsed_amount_rial  INTEGER NOT NULL DEFAULT 0,
+  is_deposit          INTEGER NOT NULL DEFAULT 0,
+  matched_payment_id  TEXT DEFAULT '',
+  status              TEXT NOT NULL DEFAULT 'ignored_non_deposit',
+  created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_sms_logs_created ON payment_sms_logs (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS phone_verifications (
+  token       TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  phone       TEXT DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'pending',
+  tg_user_id  TEXT DEFAULT '',
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  verified_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_phone_verifications_user ON phone_verifications (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS payment_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+

@@ -122,6 +122,7 @@ export const PAGE_DEFAULT_TITLES: Record<string, string> = {
   products: 'محصولات و دوره‌های آموزشی',
   contact: 'تماس و رزرو جلسه مشاوره',
   admin: 'پیشخوان مدیریت CMS',
+  pay: 'درگاه پرداخت خودکار کارت‌به‌کارت',
 };
 
 export const pageDefaultTitle = (page: string): string => PAGE_DEFAULT_TITLES[page] || page;
@@ -192,7 +193,7 @@ export const resolveSeo = (args: {
     ogDescription: pageSeo.ogDescription || description,
     ogImage: pageSeo.ogImage || globalSeo.ogImage || '',
     ogType: 'website',
-    noIndex: pageSeo.noIndex === true || args.page === 'admin',
+    noIndex: pageSeo.noIndex === true || args.page === 'admin' || args.page === 'pay',
   };
 };
 

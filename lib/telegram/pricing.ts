@@ -5,7 +5,7 @@
  * labels are Persian display strings (e.g. «۵۹۰٬۰۰۰ تومان»); receipts and the
  * card-to-card flow need the numeric Toman amount, so we parse the label here.
  */
-import { TOOL_PLANS, getPlan, type ToolPlan } from '../toolPlans';
+import { TOOL_PLANS, resolvePlanPrice, type ToolPlan } from '../toolPlans';
 import { TOOLS } from '../tools';
 
 const PERSIAN_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
@@ -49,10 +49,13 @@ export interface BotPlan extends ToolPlan {
   amountToman: number;
 }
 
-export const botPlans = (productId: string): BotPlan[] =>
-  (TOOL_PLANS[productId] || []).map((p) => ({ ...p, amountToman: priceToToman(p.price) }));
+export const botPlans = (productId: string, cmsData?: any): BotPlan[] =>
+  (TOOL_PLANS[productId] || []).map((p) => {
+    const effectivePrice = resolvePlanPrice(productId, p, cmsData);
+    return { ...p, price: effectivePrice, amountToman: priceToToman(effectivePrice) || priceToToman(p.price) };
+  });
 
-export const botPlan = (productId: string, planId: string): BotPlan | undefined =>
-  botPlans(productId).find((p) => p.id === planId);
+export const botPlan = (productId: string, planId: string, cmsData?: any): BotPlan | undefined =>
+  botPlans(productId, cmsData).find((p) => p.id === planId);
 
 export const botProductPath = (productId: string): string => `/products/${encodeURIComponent(productId)}`;

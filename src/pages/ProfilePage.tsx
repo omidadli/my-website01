@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Theme, Page } from '../types';
 import { useUser } from '../context/UserContext';
 import { useContent } from '../context/ContentContext';
+import { api } from '../services/api';
 import {
   User,
   Mail,
@@ -29,8 +30,16 @@ import {
   Star,
   Zap,
   ArrowUpLeft,
+  ShieldCheck,
+  Copy,
+  Check,
+  Loader2,
+  ExternalLink,
+  KeyRound,
+  Send,
+  X,
 } from 'lucide-react';
-import { linkProps, pathForPage, postPath } from '../utils/router';
+import { linkProps, navigate, pathForPage, pathForPayment, pathForProduct, postPath } from '../utils/router';
 
 type ProfileTab = 'dashboard' | 'saved' | 'subscriptions' | 'consultations' | 'activity' | 'settings';
 
@@ -114,7 +123,7 @@ function StatCard({ icon, label, value, color }: { icon: React.ReactNode; label:
 }
 
 function LoginPrompt() {
-  const { login, register } = useUser();
+  const { login, register, botUsername } = useUser();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -206,7 +215,7 @@ function LoginPrompt() {
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="مثلاً: علی رضایی"
-                className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)]"
+                className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)]"
               />
             </div>
           )}
@@ -220,7 +229,7 @@ function LoginPrompt() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@example.com"
-                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
                 />
               </div>
               <div>
@@ -231,7 +240,7 @@ function LoginPrompt() {
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="09123456789"
-                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+                  className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
                 />
               </div>
             </>
@@ -244,7 +253,7 @@ function LoginPrompt() {
                 value={emailOrPhone}
                 onChange={(e) => setEmailOrPhone(e.target.value)}
                 placeholder="name@example.com یا 09123456789"
-                className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
+                className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)] text-right"
               />
             </div>
           )}
@@ -255,12 +264,14 @@ function LoginPrompt() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={mode === 'register' ? 'حداقل ۶ کاراکتر' : 'رمز عبور'}
-              className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)]"
+              className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] placeholder:text-[color:var(--nd-faint)]"
             />
           </div>
 
           {mode === 'login' && (
-            <p className="text-[11px] text-[color:var(--nd-faint)]">با ایمیل یا شماره موبایلی که ثبت‌نام کرده‌اید وارد شوید.</p>
+            <p className="text-[11px] text-[color:var(--nd-faint)] leading-relaxed">
+              با ایمیل یا شماره موبایلی که در سایت یا ربات تلگرام ثبت‌نام کرده‌اید وارد شوید.
+            </p>
           )}
 
           {error && (
@@ -278,6 +289,23 @@ function LoginPrompt() {
             <ArrowUpLeft className="w-4 h-4" />
           </button>
         </form>
+
+        {botUsername && (
+          <div className="mt-4 p-3 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-center space-y-2">
+            <p className="text-[11px] text-[color:var(--nd-muted)]">
+              می‌توانید از طریق ربات تلگرام نیز ثبت‌نام یکپارچه انجام دهید یا لینک ورود یک‌کلیکی دریافت کنید:
+            </p>
+            <a
+              href={`https://t.me/${botUsername}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 text-white text-xs font-bold hover:bg-sky-600 transition"
+            >
+              <Send className="w-3.5 h-3.5" />
+              ورود / ثبت‌نام سریع در تلگرام
+            </a>
+          </div>
+        )}
 
         <p className="mt-4 text-[11px] text-[color:var(--nd-faint)] text-center">
           {mode === 'login' ? 'حساب ندارید؟ ' : 'قبلاً ثبت‌نام کرده‌اید؟ '}
@@ -308,21 +336,58 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
     isLoggedIn,
     logout,
     updateProfile,
+    changePassword,
+    refresh,
     savedArticles,
     subscriptions,
     consultations,
     activities,
+    orders,
+    botUsername,
     removeSavedArticle,
     markArticleAsRead,
   } = useUser();
   const { data } = useContent();
   const [activeTab, setActiveTab] = useState<ProfileTab>('dashboard');
   const [editName, setEditName] = useState(profile?.fullName || '');
+  const [editEmail, setEditEmail] = useState(profile?.email || '');
   const [editPhone, setEditPhone] = useState(profile?.phone || '');
   const [editBio, setEditBio] = useState(profile?.bio || '');
   const [editing, setEditing] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [saveSuccess, setSaveSuccess] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Password change state
+  const [curPassword, setCurPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwdSaving, setPwdSaving] = useState(false);
+  const [pwdFeedback, setPwdFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Phone verification flow state (strictly above early return!)
+  const [verifyPhoneInput, setVerifyPhoneInput] = useState(profile?.phone || '');
+  const [verifySession, setVerifySession] = useState<{
+    token: string;
+    verifyUrl?: string;
+    command: string;
+    devCanSimulate?: boolean;
+  } | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  useEffect(() => {
+    if (profile?.phone && !verifyPhoneInput) setVerifyPhoneInput(profile.phone);
+  }, [profile?.phone, verifyPhoneInput]);
+
+  useEffect(() => {
+    if (!verifySession || profile?.phoneVerified) return;
+    const iv = setInterval(() => {
+      refresh().catch(() => {});
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [verifySession, profile?.phoneVerified, refresh]);
 
   // NOTE: every hook must run on EVERY render — no early return above useMemo.
   // (A hooks-order change after login used to crash the whole profile page.)
@@ -340,36 +405,78 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
   }
 
   const readCount = savedArticles.filter((a) => a.read).length;
-  const activeSubs = subscriptions.filter((s) => s.status === 'active').length;
+  const activeSubscriptions = subscriptions.filter((s) => s.status === 'active');
+  const activeSubs = activeSubscriptions.length;
   const pendingConsults = consultations.filter((c) => c.status === 'pending' || c.status === 'reviewing').length;
 
+  const launchService = (productId: string) => {
+    if (!productId || productId === 'all') {
+      onNavigate('products');
+      return;
+    }
+    navigate(`${pathForProduct(productId)}?open=chat`);
+  };
+
   const startEditing = () => {
-    // Seed the form from the CURRENT profile — the state's initial values were
-    // captured while logged out and would wipe the name on save.
     setEditName(profile.fullName || '');
+    setEditEmail(profile.email || '');
     setEditPhone(profile.phone || '');
     setEditBio(profile.bio || '');
     setSaveError('');
+    setSaveSuccess('');
     setEditing(true);
   };
 
   const handleSaveProfile = async () => {
     if (saving) return;
     setSaveError('');
+    setSaveSuccess('');
     const name = editName.trim();
     if (name.length < 2) return setSaveError('لطفاً نام و نام خانوادگی را وارد کنید.');
+    const email = editEmail.trim().toLowerCase();
     const phone = editPhone.trim();
+    if (!email && !phone) {
+      return setSaveError('حساب شما باید حداقل ایمیل یا شماره موبایل داشته باشد.');
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return setSaveError('فرمت ایمیل واردشده صحیح نیست.');
+    }
     if (phone && !/^(\+98|0098|98|0)?9\d{9}$/.test(phone.replace(/[\s-]/g, ''))) {
       return setSaveError('شماره موبایل باید با 09 شروع شود (مثل 09123456789).');
     }
     setSaving(true);
-    const res = await updateProfile({ fullName: name, phone, bio: editBio.trim() });
+    const res = await updateProfile({ fullName: name, email, phone, bio: editBio.trim() });
     setSaving(false);
     if (!res.ok) {
       setSaveError(res.error === 'not_authenticated' ? 'جلسه شما منقضی شده است؛ دوباره وارد شوید.' : (res.error || 'ذخیره تغییرات ناموفق بود.'));
       return;
     }
     setEditing(false);
+    setSaveSuccess('اطلاعات حساب کاربری شما با موفقیت ذخیره شد.');
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pwdSaving) return;
+    setPwdFeedback(null);
+    if (!curPassword) return setPwdFeedback({ ok: false, msg: 'لطفاً رمز عبور فعلی خود را وارد کنید.' });
+    if (!newPassword || newPassword.length < 6) {
+      return setPwdFeedback({ ok: false, msg: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.' });
+    }
+    if (newPassword !== confirmPassword) {
+      return setPwdFeedback({ ok: false, msg: 'تکرار رمز عبور جدید با رمز واردشده مطابقت ندارد.' });
+    }
+    setPwdSaving(true);
+    const res = await changePassword({ currentPassword: curPassword, newPassword });
+    setPwdSaving(false);
+    if (!res.ok) {
+      setPwdFeedback({ ok: false, msg: res.error || 'خطا در تغییر رمز عبور.' });
+      return;
+    }
+    setCurPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPwdFeedback({ ok: true, msg: 'رمز عبور شما با موفقیت تغییر یافت.' });
   };
 
   return (
@@ -417,15 +524,27 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
               </span>
             </div>
             {profile.bio && <p className="text-sm text-[color:var(--nd-ink-2)] max-w-xl">{profile.bio}</p>}
-            <div className="flex items-center justify-center sm:justify-start gap-2 mt-4">
-              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 text-amber-500 text-[11px] font-bold">
-                <Star className="w-3.5 h-3.5" />
-                کاربر ویژه
-              </div>
-              {activeSubs > 0 && (
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mt-4">
+              {activeSubs > 0 ? (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/15 text-amber-500 text-[11px] font-bold">
+                  <Star className="w-3.5 h-3.5" />
+                  مشترک ویژه ({activeSubs} سرویس فعال)
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[color:var(--nd-line)] text-[color:var(--nd-muted)] text-[11px] font-bold">
+                  <User className="w-3.5 h-3.5" />
+                  عضو وب‌سایت
+                </div>
+              )}
+              {profile.phoneVerified ? (
                 <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/15 text-emerald-500 text-[11px] font-bold">
-                  <Zap className="w-3.5 h-3.5" />
-                  {activeSubs} اشتراک فعال
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  تلگرام و شماره متصل{profile.tgUsername ? ` (@${profile.tgUsername})` : ''}
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-500 text-[11px] font-bold">
+                  <Phone className="w-3.5 h-3.5" />
+                  تلگرام متصل نشده
                 </div>
               )}
             </div>
@@ -439,6 +558,117 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
           </button>
         </div>
       </motion.div>
+
+      {/* Phone Ownership Verification Banner (Connects Website <-> Telegram & Enables Zero-Code Auto-Unlock) */}
+      {!profile.phoneVerified && (
+        <div className="nd-glass rounded-3xl p-5 sm:p-6 mb-6 border border-emerald-500/30 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-black text-[color:var(--nd-ink)] flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                <span>تأیید مالکیت شماره موبایل و اتصال یکپارچه به تلگرام</span>
+              </h3>
+              <p className="text-xs text-[color:var(--nd-muted)] leading-relaxed">
+                با تأیید شماره از طریق تلگرام، تمام خریدهای قبلی و جدید شما به‌طور خودکار به این حساب متصل شده و ابزارهای هوشمند بدون نیاز به وارد کردن کد دسترسی برایتان باز می‌شوند.
+              </p>
+            </div>
+          </div>
+
+          {!verifySession ? (
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <input
+                type="tel"
+                dir="ltr"
+                value={verifyPhoneInput}
+                onChange={(e) => setVerifyPhoneInput(e.target.value)}
+                placeholder="09123456789"
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-emerald-500 outline-none text-base font-mono text-left text-[color:var(--nd-ink)]"
+              />
+              <button
+                type="button"
+                disabled={verifyLoading}
+                onClick={async () => {
+                  setVerifyError('');
+                  setVerifyLoading(true);
+                  const res = await api.startPhoneVerification(verifyPhoneInput.trim());
+                  setVerifyLoading(false);
+                  if (!res.ok || !res.token) {
+                    setVerifyError(res.error || 'خطا در ایجاد لینک تأیید.');
+                    return;
+                  }
+                  setVerifySession({
+                    token: res.token,
+                    verifyUrl: res.verifyUrl,
+                    command: res.command || `/start verify_${res.token}`,
+                    devCanSimulate: res.devCanSimulate,
+                  });
+                }}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold hover:bg-emerald-500 transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {verifyLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                <span>دریافت لینک تأیید تلگرام</span>
+              </button>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 space-y-3">
+              <div className="text-xs font-bold text-[color:var(--nd-ink)]">
+                گام نهایی: دکمه زیر را بزنید (یا دستور را در ربات تلگرام بفرستید) و دکمه «اشتراک شماره تلفن من» را انتخاب کنید:
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                {verifySession.verifyUrl && (
+                  <a
+                    href={verifySession.verifyUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2.5 rounded-xl bg-sky-500 text-white text-xs font-extrabold hover:bg-sky-400 transition inline-flex items-center gap-1.5"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    باز کردن مستقیم در تلگرام
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(verifySession.command);
+                      setCopiedCmd(true);
+                      setTimeout(() => setCopiedCmd(false), 2000);
+                    } catch {}
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl bg-[color:var(--nd-line)] text-[color:var(--nd-ink)] text-xs font-mono font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  dir="ltr"
+                >
+                  {copiedCmd ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  {verifySession.command}
+                </button>
+                {verifySession.devCanSimulate && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const sim = await api.devCompletePhoneVerification(verifySession.token, verifyPhoneInput.trim());
+                      if (sim.ok) {
+                        await refresh();
+                        setVerifySession(null);
+                      } else {
+                        setVerifyError(sim.error || 'خطا در شبیه‌سازی.');
+                      }
+                    }}
+                    className="px-3.5 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-extrabold hover:bg-amber-400 transition cursor-pointer"
+                  >
+                    ⚡ تأیید فوری (شبیه‌ساز محیط توسعه)
+                  </button>
+                )}
+              </div>
+              <div className="text-[11px] opacity-70 flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
+                <span>در انتظار دریافت تأییدیه از ربات تلگرام (به‌روزرسانی خودکار هر ۴ ثانیه)...</span>
+              </div>
+            </div>
+          )}
+
+          {verifyError && <div className="text-xs font-bold text-rose-500">{verifyError}</div>}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1.5 mb-6 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
@@ -471,10 +701,74 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
             <div className="space-y-6">
               {/* Stats */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                <StatCard icon={<CreditCard className="w-5 h-5" />} label="سرویس‌های فعال من" value={activeSubs} color="linear-gradient(135deg,#10b981,#059669)" />
                 <StatCard icon={<BookMarked className="w-5 h-5" />} label="مقالات ذخیره شده" value={savedArticles.length} color="linear-gradient(135deg,#6366f1,#8b5cf6)" />
-                <StatCard icon={<BookmarkCheck className="w-5 h-5" />} label="مقالات خوانده شده" value={readCount} color="linear-gradient(135deg,#10b981,#059669)" />
-                <StatCard icon={<CreditCard className="w-5 h-5" />} label="اشتراک فعال" value={activeSubs} color="linear-gradient(135deg,#f59e0b,#d97706)" />
+                <StatCard icon={<BookmarkCheck className="w-5 h-5" />} label="مقالات خوانده شده" value={readCount} color="linear-gradient(135deg,#f59e0b,#d97706)" />
                 <StatCard icon={<MessageSquare className="w-5 h-5" />} label="درخواست در حال بررسی" value={pendingConsults} color="linear-gradient(135deg,#ec4899,#db2777)" />
+              </div>
+
+              {/* Active Purchased AI Services — 1-Click Direct Launch */}
+              <div className="nd-glass rounded-2xl p-5 border border-emerald-500/20">
+                <div className="flex items-center justify-between gap-2 mb-4">
+                  <h3 className="text-sm font-black text-[color:var(--nd-ink)] flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-500" />
+                    <span>سرویس‌های هوشمند فعال من</span>
+                  </h3>
+                  <button
+                    onClick={() => onNavigate('products')}
+                    className="text-xs font-bold text-[color:var(--nd-accent)] hover:underline cursor-pointer"
+                  >
+                    همه ابزارهای هوشمند
+                  </button>
+                </div>
+
+                {activeSubscriptions.length === 0 ? (
+                  <div className="p-5 rounded-2xl bg-[color:var(--nd-line)] flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="text-center sm:text-right">
+                      <p className="text-sm font-bold text-[color:var(--nd-ink)] mb-1">هنوز اشتراک فعالی در سرویس‌های هوشمند ندارید</p>
+                      <p className="text-xs text-[color:var(--nd-muted)]">
+                        پس از خرید از سایت یا ربات تلگرام، سرویس بلافاصله همین‌جا فعال شده و با یک کلیک آماده استفاده است.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onNavigate('products')}
+                      className="nd-btn nd-btn-accent px-5 py-2.5 text-xs shrink-0 cursor-pointer"
+                    >
+                      مشاهده و فعال‌سازی ابزارها
+                      <ArrowUpLeft className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                    {activeSubscriptions.map((sub) => (
+                      <div
+                        key={sub.id}
+                        className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/25 flex flex-col justify-between gap-4"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <h4 className="text-sm font-black text-[color:var(--nd-ink)]">{sub.productName}</h4>
+                              <StatusBadge status="active" />
+                            </div>
+                            <p className="text-xs text-[color:var(--nd-muted)]">
+                              پلن: <span className="font-bold text-[color:var(--nd-ink)]">{sub.planName || 'اشتراک فعال'}</span>
+                              {sub.endDate ? ` • تا ${formatDate(sub.endDate)}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => launchService(sub.productId)}
+                          className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white text-xs font-extrabold shadow-md shadow-emerald-500/20 hover:opacity-95 transition flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <Zap className="w-4 h-4" />
+                          <span>ورود مستقیم و استفاده از سرویس</span>
+                          <ArrowUpLeft className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Quick actions */}
@@ -652,20 +946,104 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
                         </div>
                       </div>
 
-                      <div>
-                        <div className="text-[11px] font-bold text-[color:var(--nd-muted)] mb-2">امکانات این پلن:</div>
-                        <div className="flex flex-wrap gap-2">
-                          {sub.features.map((f, i) => (
-                            <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[color:var(--nd-accent)]/10 text-[color:var(--nd-accent)] text-[11px] font-bold">
-                              <CheckCircle2 className="w-3 h-3" />
-                              {f}
-                            </span>
-                          ))}
+                      {sub.features.length > 0 && (
+                        <div className="mb-4">
+                          <div className="text-[11px] font-bold text-[color:var(--nd-muted)] mb-2">امکانات این پلن:</div>
+                          <div className="flex flex-wrap gap-2">
+                            {sub.features.map((f, i) => (
+                              <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[color:var(--nd-accent)]/10 text-[color:var(--nd-accent)] text-[11px] font-bold">
+                                <CheckCircle2 className="w-3 h-3" />
+                                {f}
+                              </span>
+                            ))}
+                          </div>
                         </div>
+                      )}
+
+                      <div className="pt-3 border-t border-[color:var(--nd-line)] flex flex-wrap items-center justify-between gap-3">
+                        {sub.status === 'active' ? (
+                          <button
+                            onClick={() => launchService(sub.productId)}
+                            className="py-2.5 px-5 rounded-xl bg-gradient-to-l from-emerald-500 to-teal-500 text-white text-xs font-extrabold shadow-md shadow-emerald-500/20 hover:opacity-95 transition inline-flex items-center gap-2 cursor-pointer"
+                          >
+                            <Sparkles className="w-4 h-4" />
+                            <span>ورود مستقیم و شروع گفتگو با سرویس</span>
+                            <ArrowUpLeft className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => (sub.productId && sub.productId !== 'all' ? navigate(pathForProduct(sub.productId)) : onNavigate('products'))}
+                            className="nd-btn nd-btn-accent px-5 py-2.5 text-xs cursor-pointer"
+                          >
+                            تمدید اشتراک سرویس
+                            <ArrowUpLeft className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <span className="text-[11px] text-[color:var(--nd-faint)]">
+                          متصل به حساب کاربری • بدون نیاز به کد دستی
+                        </span>
                       </div>
                     </div>
                   </motion.div>
                 ))
+              )}
+
+              {/* Payment Orders History */}
+              {orders.length > 0 && (
+                <div className="nd-glass rounded-2xl p-5 sm:p-6 space-y-3 mt-6">
+                  <h3 className="text-sm font-black text-[color:var(--nd-ink)] flex items-center gap-2">
+                    <CreditCard className="w-4 h-4 text-[color:var(--nd-accent)]" />
+                    <span>سفارش‌ها و فاکتورهای پرداخت</span>
+                  </h3>
+                  <div className="space-y-2.5">
+                    {orders.map((ord) => {
+                      const statusMap: Record<string, { label: string; cls: string }> = {
+                        paid: { label: 'پرداخت موفق ✅', cls: 'bg-emerald-500/15 text-emerald-500' },
+                        pending: { label: 'در انتظار پرداخت', cls: 'bg-amber-500/15 text-amber-500' },
+                        needs_review: { label: 'در حال بررسی رسید', cls: 'bg-sky-500/15 text-sky-500' },
+                        rejected: { label: 'نیاز به ارسال مجدد رسید', cls: 'bg-rose-500/15 text-rose-500' },
+                        expired: { label: 'منقضی شده', cls: 'bg-slate-500/15 text-slate-400' },
+                      };
+                      const st = statusMap[ord.status] || statusMap.pending;
+                      return (
+                        <div
+                          key={ord.id}
+                          className="p-3.5 rounded-xl bg-[color:var(--nd-line)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-extrabold text-[color:var(--nd-ink)]">
+                                {ord.productName || ord.productId || 'سفارش اشتراک'}
+                                {ord.planName ? ` — ${ord.planName}` : ''}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${st.cls}`}>{st.label}</span>
+                            </div>
+                            <div className="text-[11px] text-[color:var(--nd-faint)]">
+                              مبلغ: {(ord.payableToman || ord.amountToman).toLocaleString('fa-IR')} تومان • {formatDate(ord.createdAt)}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {ord.status === 'paid' && ord.productId ? (
+                              <button
+                                onClick={() => launchService(ord.productId)}
+                                className="px-3.5 py-2 rounded-xl bg-emerald-500 text-white text-[11px] font-bold hover:bg-emerald-600 transition cursor-pointer"
+                              >
+                                استفاده از سرویس
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => navigate(pathForPayment(ord.id))}
+                                className="px-3.5 py-2 rounded-xl bg-[color:var(--nd-accent)] text-white text-[11px] font-bold hover:opacity-90 transition cursor-pointer"
+                              >
+                                مشاهده فاکتور
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -757,98 +1135,203 @@ export function ProfilePage({ theme, onNavigate, onSelectPost }: ProfilePageProp
           )}
 
           {activeTab === 'settings' && (
-            <div className="nd-glass rounded-2xl p-5 sm:p-6 max-w-2xl">
-              <div className="flex items-center justify-between mb-5">
-                <h3 className="text-base font-black text-[color:var(--nd-ink)]">اطلاعات حساب کاربری</h3>
-                {!editing ? (
-                  <button onClick={startEditing} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[color:var(--nd-line)] text-xs font-bold text-[color:var(--nd-ink)] hover:bg-[color:var(--nd-accent)] hover:text-white transition-colors">
-                    <Edit3 className="w-3.5 h-3.5" />
-                    ویرایش
-                  </button>
-                ) : (
-                  <button onClick={handleSaveProfile} disabled={saving} className="inline-flex items-center gap-1.5 nd-btn nd-btn-accent px-3 py-1.5 text-xs disabled:opacity-60">
-                    <Save className="w-3.5 h-3.5" />
-                    {saving ? 'در حال ذخیره…' : 'ذخیره'}
-                  </button>
+            <div className="space-y-6 max-w-2xl">
+              <div className="nd-glass rounded-2xl p-5 sm:p-6">
+                <div className="flex items-center justify-between mb-5 gap-2">
+                  <h3 className="text-base font-black text-[color:var(--nd-ink)]">اطلاعات حساب کاربری</h3>
+                  {!editing ? (
+                    <button onClick={startEditing} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[color:var(--nd-line)] text-xs font-bold text-[color:var(--nd-ink)] hover:bg-[color:var(--nd-accent)] hover:text-white transition-colors cursor-pointer">
+                      <Edit3 className="w-3.5 h-3.5" />
+                      ویرایش اطلاعات
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditing(false);
+                          setSaveError('');
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[color:var(--nd-line)] text-xs font-bold text-[color:var(--nd-muted)] hover:text-[color:var(--nd-ink)] transition cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        انصراف
+                      </button>
+                      <button onClick={handleSaveProfile} disabled={saving} className="inline-flex items-center gap-1.5 nd-btn nd-btn-accent px-3 py-1.5 text-xs disabled:opacity-60 cursor-pointer">
+                        <Save className="w-3.5 h-3.5" />
+                        {saving ? 'در حال ذخیره…' : 'ذخیره'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {saveError && (
+                  <div role="alert" className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs font-bold text-red-500">
+                    {saveError}
+                  </div>
                 )}
+                {saveSuccess && (
+                  <div role="status" className="mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold text-emerald-500">
+                    {saveSuccess}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">نام و نام خانوادگی</label>
+                    {editing ? (
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)]"
+                      />
+                    ) : (
+                      <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center gap-2">
+                        <User className="w-4 h-4 text-[color:var(--nd-faint)]" />
+                        {profile.fullName}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">ایمیل</label>
+                    {editing ? (
+                      <input
+                        type="email"
+                        dir="ltr"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        placeholder="name@example.com"
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-left text-[color:var(--nd-ink)]"
+                      />
+                    ) : (
+                      <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-[color:var(--nd-faint)]" />
+                        <span dir="ltr">{profile.email || 'ثبت نشده (از دکمه ویرایش اضافه کنید)'}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">شماره تماس</label>
+                    {editing ? (
+                      <input
+                        type="tel"
+                        dir="ltr"
+                        value={editPhone}
+                        onChange={(e) => setEditPhone(e.target.value)}
+                        placeholder="09123456789"
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-left text-[color:var(--nd-ink)]"
+                      />
+                    ) : (
+                      <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-2" dir="ltr">
+                          <Phone className="w-4 h-4 text-[color:var(--nd-faint)]" />
+                          {profile.phone || 'وارد نشده'}
+                        </span>
+                        {profile.phoneVerified && (
+                          <span className="text-[10px] font-bold text-emerald-500">تأییدشده در تلگرام ✅</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">درباره من</label>
+                    {editing ? (
+                      <textarea
+                        value={editBio}
+                        onChange={(e) => setEditBio(e.target.value)}
+                        rows={3}
+                        placeholder="کمی درباره خودتان بنویسید..."
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)] resize-none"
+                      />
+                    ) : (
+                      <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] min-h-[80px]">
+                        {profile.bio || 'نوشته نشده'}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-4 border-t border-[color:var(--nd-line)] space-y-1">
+                    <div className="text-[11px] text-[color:var(--nd-faint)]">
+                      وضعیت همگام‌سازی تلگرام:{' '}
+                      <span className="font-bold text-[color:var(--nd-ink)]">
+                        {profile.phoneVerified
+                          ? `متصل و همگام${profile.tgUsername ? ` (@${profile.tgUsername})` : ''} ✅`
+                          : 'متصل نشده'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-[color:var(--nd-faint)]">
+                      شناسه کاربری: <span className="font-mono text-[color:var(--nd-muted)]">{profile.id}</span>
+                    </div>
+                    <div className="text-[11px] text-[color:var(--nd-faint)]">
+                      تاریخ عضویت: {formatDate(profile.joinedAt)}
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {saveError && (
-                <div role="alert" className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs font-bold text-red-500">
-                  {saveError}
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">نام و نام خانوادگی</label>
-                  {editing ? (
+              {/* Password Change Card */}
+              <div className="nd-glass rounded-2xl p-5 sm:p-6">
+                <h3 className="text-base font-black text-[color:var(--nd-ink)] mb-4 flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-[color:var(--nd-accent)]" />
+                  <span>تغییر رمز عبور حساب</span>
+                </h3>
+                <form onSubmit={handlePasswordChange} className="space-y-3.5">
+                  <div>
+                    <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">رمز عبور فعلی</label>
                     <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)]"
+                      type="password"
+                      value={curPassword}
+                      onChange={(e) => setCurPassword(e.target.value)}
+                      placeholder="رمز عبور فعلی خود را وارد کنید"
+                      className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)]"
                     />
-                  ) : (
-                    <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center gap-2">
-                      <User className="w-4 h-4 text-[color:var(--nd-faint)]" />
-                      {profile.fullName}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">رمز عبور جدید (حداقل ۶ کاراکتر)</label>
+                      <input
+                        type="password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="رمز عبور جدید"
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">تکرار رمز عبور جدید</label>
+                      <input
+                        type="password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="تکرار رمز عبور جدید"
+                        className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-base text-[color:var(--nd-ink)]"
+                      />
+                    </div>
+                  </div>
+                  {pwdFeedback && (
+                    <div
+                      className={`p-3 rounded-xl border text-xs font-bold ${
+                        pwdFeedback.ok
+                          ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-500'
+                          : 'bg-red-500/10 border-red-500/25 text-red-500'
+                      }`}
+                    >
+                      {pwdFeedback.msg}
                     </div>
                   )}
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">ایمیل</label>
-                  <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center gap-2 opacity-70">
-                    <Mail className="w-4 h-4 text-[color:var(--nd-faint)]" />
-                    {profile.email}
-                    <span className="text-[10px] text-[color:var(--nd-faint)] ms-auto">غیر قابل ویرایش</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">شماره تماس</label>
-                  {editing ? (
-                    <input
-                      type="tel"
-                      value={editPhone}
-                      onChange={(e) => setEditPhone(e.target.value)}
-                      placeholder="09123456789"
-                      className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)]"
-                    />
-                  ) : (
-                    <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] flex items-center gap-2">
-                      <Phone className="w-4 h-4 text-[color:var(--nd-faint)]" />
-                      {profile.phone || 'وارد نشده'}
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-bold text-[color:var(--nd-muted)] mb-1.5">درباره من</label>
-                  {editing ? (
-                    <textarea
-                      value={editBio}
-                      onChange={(e) => setEditBio(e.target.value)}
-                      rows={3}
-                      placeholder="کمی درباره خودتان بنویسید..."
-                      className="w-full px-4 py-3 rounded-xl bg-[color:var(--nd-line)] border border-transparent focus:border-[color:var(--nd-accent)] outline-none text-sm text-[color:var(--nd-ink)] resize-none"
-                    />
-                  ) : (
-                    <div className="px-4 py-3 rounded-xl bg-[color:var(--nd-line)] text-sm text-[color:var(--nd-ink)] min-h-[80px]">
-                      {profile.bio || 'نوشته نشده'}
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-4 border-t border-[color:var(--nd-line)]">
-                  <div className="text-[11px] text-[color:var(--nd-faint)]">
-                    شناسه کاربری: <span className="font-mono text-[color:var(--nd-muted)]">{profile.id}</span>
-                  </div>
-                  <div className="text-[11px] text-[color:var(--nd-faint)] mt-1">
-                    تاریخ عضویت: {formatDate(profile.joinedAt)}
-                  </div>
-                </div>
+                  <button
+                    type="submit"
+                    disabled={pwdSaving}
+                    className="nd-btn nd-btn-accent px-5 py-2.5 text-xs disabled:opacity-60 cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{pwdSaving ? 'در حال ثبت رمز جدید…' : 'بروزرسانی رمز عبور'}</span>
+                  </button>
+                </form>
               </div>
             </div>
           )}

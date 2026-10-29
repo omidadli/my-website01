@@ -31,6 +31,19 @@ export interface Env {
   GEMINI_API_KEY?: string;
   /** optional extra env fallbacks (5 key slots per section live in the admin panel) */
   OPENAI_API_KEY?: string;
+  /** Telegram bot & automated card-to-card SMS payment gateway */
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_ADMIN_IDS?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_RECEIPT_GEMINI_API_KEY?: string;
+  TELEGRAM_VISION_MODEL?: string;
+  BOT_CARD_NUMBER?: string;
+  BOT_CARD_HOLDER?: string;
+  BOT_CARD_IBAN?: string;
+  BOT_CARD_BANK?: string;
+  SITE_BASE_URL?: string;
+  PAYMENT_REQUIRE_ONLINE_DEVICE?: string;
 }
 
 export interface Ctx {
@@ -178,6 +191,10 @@ export const publicUserShape = (row: Record<string, any>) => ({
   fullName: row.full_name,
   email: row.email || '',
   phone: row.phone || '',
+  phoneVerified: Boolean(row.phone_verified_at),
+  phoneVerifiedAt: row.phone_verified_at || '',
+  tgUserId: row.tg_user_id || '',
+  tgUsername: row.tg_username || '',
   avatarUrl: row.avatar_url || '',
   bio: row.bio || '',
   joinedAt: row.created_at,
@@ -283,6 +300,9 @@ const CORE_TABLE_STATEMENTS = [
     login_type TEXT NOT NULL DEFAULT 'email',
     email TEXT DEFAULT '',
     phone TEXT DEFAULT '',
+    phone_verified_at TEXT NOT NULL DEFAULT '',
+    tg_user_id TEXT NOT NULL DEFAULT '',
+    tg_username TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     avatar_url TEXT DEFAULT '',
@@ -423,6 +443,9 @@ const CORE_TABLE_MIGRATIONS = [
   `ALTER TABLE tool_settings ADD COLUMN keys_json TEXT DEFAULT ''`,
   `ALTER TABLE chat_messages ADD COLUMN key_slot INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE chat_messages ADD COLUMN session_id TEXT DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN phone_verified_at TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN tg_user_id TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE users ADD COLUMN tg_username TEXT NOT NULL DEFAULT ''`,
 ];
 
 let coreTablesReady: Promise<void> | null = null;

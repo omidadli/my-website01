@@ -10,18 +10,37 @@ import type {
 } from '../types';
 import { api } from '../services/api';
 
+export interface UserOrderSummary {
+  id: string;
+  orderId: string;
+  productId: string;
+  productName: string;
+  planId: string;
+  planName: string;
+  amountToman: number;
+  payableToman: number;
+  status: string;
+  source: string;
+  accessCode: string;
+  createdAt: string;
+  paidAt: string;
+}
+
 interface UserContextValue {
   profile: UserProfile | null;
   savedArticles: SavedArticle[];
   subscriptions: UserSubscription[];
   consultations: ConsultationRequest[];
   activities: UserActivity[];
+  orders: UserOrderSummary[];
+  botUsername: string;
   isLoggedIn: boolean;
   loading: boolean;
   register: (payload: { fullName: string; email?: string; phone?: string; emailOrPhone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
   login: (payload: { email?: string; phone?: string; emailOrPhone?: string; password: string }) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateProfile: (updates: Partial<Omit<UserProfile, 'id' | 'joinedAt'>>) => Promise<{ ok: boolean; error?: string }>;
+  changePassword: (payload: { currentPassword?: string; newPassword: string }) => Promise<{ ok: boolean; error?: string }>;
   saveArticle: (postId: string, notes?: string) => void;
   removeSavedArticle: (postId: string) => void;
   markArticleAsRead: (postId: string) => void;
@@ -85,15 +104,22 @@ function syncMascotName(name: string) {
   } catch { /* ignore */ }
 }
 
+const cleanRealSubs = (list?: UserSubscription[]): UserSubscription[] =>
+  (list || []).filter((s) => Boolean(s && String(s.productId || '').trim() !== ''));
+
 export function UserProvider({ children }: { children: React.ReactNode }) {
   // Hydrate immediately from the cached API response so the UI never flashes "logged out".
   const cached = api.getCachedMe();
+  const hasPendingTgAuth =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('tg_auth');
   const [profile, setProfile] = useState<UserProfile | null>(cached?.profile || null);
   const [savedArticles, setSavedArticles] = useState<SavedArticle[]>(cached?.savedArticles || []);
-  const [subscriptions, setSubscriptions] = useState<UserSubscription[]>(cached?.subscriptions || []);
+  const [subscriptions, setSubscriptions] = useState<UserSubscription[]>(cleanRealSubs(cached?.subscriptions));
   const [consultations, setConsultations] = useState<ConsultationRequest[]>(cached?.consultations || []);
   const [activities, setActivities] = useState<UserActivity[]>(cached?.activities || []);
-  const [loading, setLoading] = useState<boolean>(!cached);
+  const [orders, setOrders] = useState<UserOrderSummary[]>((cached as any)?.orders || []);
+  const [botUsername, setBotUsername] = useState<string>((cached as any)?.botUsername || '');
+  const [loading, setLoading] = useState<boolean>(hasPendingTgAuth || !cached);
   const cloudOk = useRef<boolean | null>(null);
   const [fallback, setFallback] = useState<LocalFallback>(() => loadFallback());
   // Monotonic auth counter: every successful register/login bumps this so a
@@ -109,19 +135,44 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // On mount: verify the cookie against the server — but ONLY if a mount-auth
-  // isn't already in flight right after register/login. If the user has just
-  // finished auth via register()/login() their state will be set by that call;
-  // avoid racing them with an in-flight 401 and wiping the freshly-logged-in user.
+  // On mount: if `?tg_auth=<token>` is present (1-click Telegram launch), redeem it FIRST;
+  // otherwise verify the existing session cookie against `/api/user`.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const tgToken = params.get('tg_auth');
+        if (tgToken) {
+          params.delete('tg_auth');
+          const remaining = params.toString();
+          const cleanUrl = window.location.pathname + (remaining ? `?${remaining}` : '') + window.location.hash;
+          try {
+            window.history.replaceState(null, '', cleanUrl);
+          } catch {}
+
+          const tr = await api.userTokenLogin(tgToken);
+          if (cancelled) return;
+          if (tr.ok && tr.profile) {
+            cloudOk.current = true;
+            authGeneration.current += 1;
+            setProfile(tr.profile);
+            setSavedArticles(tr.savedArticles || []);
+            setSubscriptions(cleanRealSubs(tr.subscriptions));
+            setConsultations(tr.consultations || []);
+            setActivities(tr.activities || []);
+            setOrders(tr.orders || []);
+            if (tr.profile.fullName) syncMascotName(tr.profile.fullName);
+            setLoading(false);
+            return;
+          }
+        }
+      }
+
       // Small delay: let any just-sent register/login response settle its cookie
       // before we probe, otherwise we may fire a GET that sees a not-yet-set cookie.
       await new Promise((res) => setTimeout(res, 200));
       if (cancelled) return;
-      // Capture the auth generation BEFORE the request so a register/login that
-      // completes while getMe() is in flight invalidates this probe.
       const myGen = authGeneration.current;
       try {
         const r = await api.getMe();
@@ -130,30 +181,30 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           cloudOk.current = true;
           setProfile(r.profile || null);
           setSavedArticles(r.savedArticles || []);
-          setSubscriptions(r.subscriptions || []);
+          setSubscriptions(cleanRealSubs(r.subscriptions));
           setConsultations(r.consultations || []);
           setActivities(r.activities || []);
+          setOrders(r.orders || []);
+          if (r.botUsername) setBotUsername(r.botUsername);
           if (r.profile?.fullName) syncMascotName(r.profile.fullName);
         } else if (r.error === 'not_authenticated') {
           cloudOk.current = true;
-          // A successful register/login happened while this probe was in flight —
-          // its state is authoritative; do not touch it.
+          if (r.botUsername) setBotUsername(r.botUsername);
           if (myGen !== authGeneration.current) return;
           setProfile(null);
           setSavedArticles([]);
           setSubscriptions([]);
           setConsultations([]);
           setActivities([]);
+          setOrders([]);
         } else {
-          // network / server error: keep whatever we have (cache) and fall back
-          // to the offline store only when nothing is loaded yet.
           cloudOk.current = false;
           setProfile((current) => {
             if (current) return current;
             return loadFallback().profile || null;
           });
           setSavedArticles((current) => current.length ? current : (loadFallback().savedArticles || []));
-          setSubscriptions((current) => current.length ? current : (loadFallback().subscriptions || []));
+          setSubscriptions((current) => current.length ? current : cleanRealSubs(loadFallback().subscriptions));
           setConsultations((current) => current.length ? current : (loadFallback().consultations || []));
           setActivities((current) => current.length ? current : (loadFallback().activities || []));
         }
@@ -163,7 +214,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         if (f.profile) {
           setProfile(f.profile);
           setSavedArticles(f.savedArticles);
-          setSubscriptions(f.subscriptions);
+          setSubscriptions(cleanRealSubs(f.subscriptions));
           setConsultations(f.consultations);
           setActivities(f.activities);
         }
@@ -180,15 +231,18 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (r.ok) {
       setProfile(r.profile || null);
       setSavedArticles(r.savedArticles || []);
-      setSubscriptions(r.subscriptions || []);
+      setSubscriptions(cleanRealSubs(r.subscriptions));
       setConsultations(r.consultations || []);
       setActivities(r.activities || []);
+      setOrders(r.orders || []);
+      if (r.botUsername) setBotUsername(r.botUsername);
     } else if (r.error === 'not_authenticated') {
       setProfile(null);
       setSavedArticles([]);
       setSubscriptions([]);
       setConsultations([]);
       setActivities([]);
+      setOrders([]);
     }
   }, []);
 
@@ -202,9 +256,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         authGeneration.current += 1;
         setProfile(r.profile || null);
         setSavedArticles(r.savedArticles || []);
-        setSubscriptions(r.subscriptions || []);
+        setSubscriptions(cleanRealSubs(r.subscriptions));
         setConsultations(r.consultations || []);
         setActivities(r.activities || []);
+        setOrders((r as any).orders || []);
         if (r.profile?.fullName) syncMascotName(r.profile.fullName);
         return { ok: true };
       }
@@ -227,19 +282,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     const next: LocalFallback = {
       profile: newProfile,
       savedArticles: [],
-      subscriptions: [{
-        id: genId(),
-        productId: '',
-        productName: 'حساب کاربری امید عدلی',
-        planId: '',
-        planName: 'کاربر جدید',
-        status: 'active',
-        startDate: newProfile.joinedAt,
-        endDate: new Date(Date.now() + 30*86400000).toISOString(),
-        price: 'رایگان',
-        autoRenew: true,
-        features: ['دسترسی به لیست مقالات ذخیره شده', 'ثبت درخواست مشاوره', 'پیگیری وضعیت درخواست‌ها'],
-      }],
+      subscriptions: [],
       consultations: [],
       activities: [{ id: genId(), type: 'subscription_started', description: 'حساب کاربری شما ایجاد شد', timestamp: newProfile.joinedAt }],
     };
@@ -248,6 +291,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     setSubscriptions(next.subscriptions);
     setConsultations(next.consultations);
     setActivities(next.activities);
+    setOrders([]);
     persistFallback(next);
     return { ok: true };
   }, [fallback.profile, persistFallback]);
@@ -262,9 +306,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         authGeneration.current += 1;
         setProfile(r.profile || null);
         setSavedArticles(r.savedArticles || []);
-        setSubscriptions(r.subscriptions || []);
+        setSubscriptions(cleanRealSubs(r.subscriptions));
         setConsultations(r.consultations || []);
         setActivities(r.activities || []);
+        setOrders((r as any).orders || []);
         if (r.profile?.fullName) syncMascotName(r.profile.fullName);
         return { ok: true };
       }
@@ -277,9 +322,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     authGeneration.current += 1;
     setProfile(f.profile);
     setSavedArticles(f.savedArticles);
-    setSubscriptions(f.subscriptions);
+    setSubscriptions(cleanRealSubs(f.subscriptions));
     setConsultations(f.consultations);
     setActivities(f.activities);
+    setOrders([]);
     syncMascotName(f.profile.fullName);
     return { ok: true };
   }, []);
@@ -291,15 +337,20 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     setSubscriptions([]);
     setConsultations([]);
     setActivities([]);
+    setOrders([]);
     persistFallback({ profile: null, savedArticles: [], subscriptions: [], consultations: [], activities: [] });
   }, [persistFallback]);
 
   const updateProfile = useCallback(async (updates: Partial<Omit<UserProfile, 'id' | 'joinedAt'>>) => {
     if (!profile) return { ok: false, error: 'not_authenticated' };
     if (cloudOk.current !== false) {
-      const r = await api.userUpdateProfile({ fullName: updates.fullName, phone: updates.phone, bio: updates.bio });
+      const r = await api.userUpdateProfile({
+        fullName: updates.fullName,
+        email: updates.email,
+        phone: updates.phone,
+        bio: updates.bio,
+      });
       if (r.ok) {
-        // The server normalises (phone format, trimmed name) — its row wins.
         setProfile((p) => (p && r.profile ? { ...p, ...r.profile } : p));
         return { ok: true };
       }
@@ -313,6 +364,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     });
     return { ok: true };
   }, [profile, fallback, persistFallback]);
+
+  const changePassword = useCallback(async (payload: { currentPassword?: string; newPassword: string }) => {
+    if (!profile) return { ok: false, error: 'not_authenticated' };
+    if (cloudOk.current !== false) {
+      return api.userChangePassword(payload);
+    }
+    return { ok: true };
+  }, [profile]);
 
   const logActivity = useCallback((activity: Omit<UserActivity, 'id' | 'timestamp'>) => {
     const entry: UserActivity = { ...activity, id: genId(), timestamp: new Date().toISOString() };
@@ -414,12 +473,15 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         subscriptions,
         consultations,
         activities,
+        orders,
+        botUsername,
         isLoggedIn: !!profile,
         loading,
         register,
         login,
         logout,
         updateProfile,
+        changePassword,
         saveArticle,
         removeSavedArticle,
         markArticleAsRead,
